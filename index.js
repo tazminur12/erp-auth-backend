@@ -2389,35 +2389,240 @@ app.get("/vendors/:id", async (req, res) => {
 
 
 // ✅ DELETE (soft delete)
-app.delete("/vendors/:id", async (req, res) => {
+// app.delete("/vendors/:id", async (req, res) => {
+//   try {
+//     const { id } = req.params;
+
+//     if (!ObjectId.isValid(id)) {
+//       return res.status(400).json({ error: true, message: "Invalid vendor ID" });
+//     }
+
+//     const result = await vendors.updateOne(
+//       { _id: new ObjectId(id) },
+//       { $set: { isActive: false } }
+//     );
+
+//     if (result.modifiedCount === 0) {
+//       return res.status(404).json({ error: true, message: "Vendor not found" });
+//     }
+
+//     res.json({ success: true, message: "Vendor deleted successfully" });
+//   } catch (error) {
+//     console.error("Error deleting vendor:", error);
+//     res.status(500).json({
+//       error: true,
+//       message: "Internal server error while deleting vendor",
+//     });
+//   }
+// });
+
+
+
+
+// ✅ GET: Vendor statistics overview
+app.get("/vendors/stats/overview", async (req, res) => {
   try {
-    const { id } = req.params;
+    // Totals
+    const totalVendors = await vendors.countDocuments({ isActive: true });
 
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: true, message: "Invalid vendor ID" });
-    }
+    // Today
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
 
-    const result = await vendors.updateOne(
-      { _id: new ObjectId(id) },
-      { $set: { isActive: false } }
-    );
+    const todayCount = await vendors.countDocuments({
+      isActive: true,
+      createdAt: { $gte: todayStart, $lte: todayEnd },
+    });
 
-    if (result.modifiedCount === 0) {
-      return res.status(404).json({ error: true, message: "Vendor not found" });
-    }
+    // This month
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const thisMonthCount = await vendors.countDocuments({
+      isActive: true,
+      createdAt: { $gte: monthStart },
+    });
 
-    res.json({ success: true, message: "Vendor deleted successfully" });
+    // With NID / Passport
+    const withNID = await vendors.countDocuments({ isActive: true, nid: { $exists: true, $ne: "" } });
+    const withPassport = await vendors.countDocuments({ isActive: true, passport: { $exists: true, $ne: "" } });
+
+    // By tradeLocation
+    const byLocation = await vendors.aggregate([
+      { $match: { isActive: true } },
+      { $group: { _id: "$tradeLocation", count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]).toArray();
+
+    res.json({
+      success: true,
+      stats: {
+        total: totalVendors,
+        today: todayCount,
+        thisMonth: thisMonthCount,
+        withNID,
+        withPassport,
+        byLocation
+      }
+    });
   } catch (error) {
-    console.error("Error deleting vendor:", error);
+    console.error("Error fetching vendor statistics:", error);
     res.status(500).json({
       error: true,
-      message: "Internal server error while deleting vendor",
+      message: "Internal server error while fetching vendor statistics",
     });
   }
 });
 
+// ✅ GET: Vendor statistics data (detailed analytics)
+app.get("/vendors/stats/data", async (req, res) => {
+  try {
+    const { period = 'month', location } = req.query;
 
+    let dateFilter = {};
+    const now = new Date();
+    
+    // Set date range based on period
+    switch (period) {
+      case 'week':
+        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        dateFilter = { $gte: weekAgo };
+        break;
+      case 'month':
+        const monthAgo = new Date(now.getFullYear(), now.getMonth(), 1);
+        dateFilter = { $gte: monthAgo };
+        break;
+      case 'quarter':
+        const quarterStart = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
+        dateFilter = { $gte: quarterStart };
+        break;
+      case 'year':
+        const yearStart = new Date(now.getFullYear(), 0, 1);
+        dateFilter = { $gte: yearStart };
+        break;
+      default:
+        dateFilter = { $gte: new Date(now.getFullYear(), now.getMonth(), 1) };
+    }
 
+    // Base match filter
+    let matchFilter = { isActive: true, createdAt: dateFilter };
+    
+    // Add location filter if specified
+    if (location) {
+      matchFilter.tradeLocation = { $regex: location, $options: 'i' };
+    }
+
+    // Vendor registration trends over time
+    const registrationTrends = await vendors.aggregate([
+      { $match: matchFilter },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" },
+            day: period === 'week' ? { $dayOfMonth: "$createdAt" } : null
+          },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } }
+    ]).toArray();
+
+    // Vendors by location (top locations)
+    const vendorsByLocation = await vendors.aggregate([
+      { $match: matchFilter },
+      { $group: { _id: "$tradeLocation", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 10 }
+    ]).toArray();
+
+    // Vendor demographics (with/without documents)
+    const documentStats = await vendors.aggregate([
+      { $match: matchFilter },
+      {
+        $group: {
+          _id: null,
+          withNID: {
+            $sum: { $cond: [{ $and: [{ $ne: ["$nid", ""] }, { $ne: ["$nid", null] }] }, 1, 0] }
+          },
+          withPassport: {
+            $sum: { $cond: [{ $and: [{ $ne: ["$passport", ""] }, { $ne: ["$passport", null] }] }, 1, 0] }
+          },
+          withoutDocuments: {
+            $sum: { 
+              $cond: [
+                { $and: [
+                  { $or: [{ $eq: ["$nid", ""] }, { $eq: ["$nid", null] }] },
+                  { $or: [{ $eq: ["$passport", ""] }, { $eq: ["$passport", null] }] }
+                ]}, 
+                1, 0
+              ]
+            }
+          },
+          total: { $sum: 1 }
+        }
+      }
+    ]).toArray();
+
+    // Recent vendor activity (last 30 days)
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const recentVendors = await vendors.find({
+      isActive: true,
+      createdAt: { $gte: thirtyDaysAgo }
+    }).sort({ createdAt: -1 }).limit(10).toArray();
+
+    // Vendor growth rate
+    const currentPeriod = await vendors.countDocuments(matchFilter);
+    
+    let previousPeriodFilter = {};
+    const currentDate = new Date();
+    switch (period) {
+      case 'week':
+        const twoWeeksAgo = new Date(currentDate.getTime() - 14 * 24 * 60 * 60 * 1000);
+        const oneWeekAgo = new Date(currentDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+        previousPeriodFilter = { isActive: true, createdAt: { $gte: twoWeeksAgo, $lt: oneWeekAgo } };
+        break;
+      case 'month':
+        const lastMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
+        const currentMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+        previousPeriodFilter = { isActive: true, createdAt: { $gte: lastMonth, $lt: currentMonth } };
+        break;
+      default:
+        previousPeriodFilter = { isActive: true, createdAt: { $gte: new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1), $lt: new Date(currentDate.getFullYear(), currentDate.getMonth(), 1) } };
+    }
+    
+    const previousPeriod = await vendors.countDocuments(previousPeriodFilter);
+    const growthRate = previousPeriod > 0 ? ((currentPeriod - previousPeriod) / previousPeriod * 100) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        period,
+        totalVendors: currentPeriod,
+        growthRate: Math.round(growthRate * 100) / 100,
+        registrationTrends,
+        vendorsByLocation,
+        documentStats: documentStats[0] || { withNID: 0, withPassport: 0, withoutDocuments: 0, total: 0 },
+        recentVendors,
+        summary: {
+          period,
+          total: currentPeriod,
+          previousPeriod,
+          growthRate: Math.round(growthRate * 100) / 100,
+          topLocation: vendorsByLocation[0] || null
+        }
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching vendor statistics data:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while fetching vendor statistics data",
+    });
+  }
+});
 
 // Start server only if not in Vercel environment
 if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
