@@ -11,11 +11,40 @@ const port = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors({
-  origin: 'http://localhost:5173', // Vite dev server
+  origin: [
+    'http://localhost:5173', // Vite dev server
+    'https://erp-dashboard1.netlify.app' // Netlify production
+  ],
   credentials: true
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Middleware to ensure database is initialized before handling requests
+app.use(async (req, res, next) => {
+  try {
+    await ensureDatabaseInitialized();
+    
+    // If database connection failed, return appropriate error for database-dependent routes
+    if (dbConnectionError && req.path !== '/') {
+      return res.status(503).json({ 
+        success: false,
+        error: 'Database connection failed',
+        message: 'Please check your MongoDB credentials in .env file',
+        details: dbConnectionError.message
+      });
+    }
+    
+    next();
+  } catch (error) {
+    console.error('Database initialization error:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Database connection failed',
+      message: 'Please try again later'
+    });
+  }
+});
 
 // MongoDB Setup
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@cluster0.unn2dmm.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
@@ -182,6 +211,7 @@ const initializeDefaultCustomerTypes = async (db, customerTypes) => {
   console.log("✅ Default customer types initialized successfully");
 };
 
+
 // Initialize default branches
 const initializeDefaultBranches = async (db, branches, counters) => {
   const defaultBranches = [
@@ -222,179 +252,306 @@ const initializeDefaultBranches = async (db, branches, counters) => {
   console.log("✅ Default branches initialized successfully");
 };
 
-// Main async function to run server logic
-async function run() {
+// Global variables for database collections
+let db, users, branches, counters, customers, customerTypes, transactions;
+
+// Initialize database connection
+async function initializeDatabase() {
   try {
     await client.connect();
     console.log("✅ MongoDB connected");
 
-    const db = client.db("erpDashboard");
-    const users = db.collection("users");
-    const branches = db.collection("branches");
-    const counters = db.collection("counters");
-    const customers = db.collection("customers");
-    const customerTypes = db.collection("customerTypes");
-    const transactions = db.collection("transactions");
+    db = client.db("erpDashboard");
+    users = db.collection("users");
+    branches = db.collection("branches");
+    counters = db.collection("counters");
+    customers = db.collection("customers");
+    customerTypes = db.collection("customerTypes");
+    transactions = db.collection("transactions");
+    services = db.collection("services");
+    sales = db.collection("sales");
+    vendors = db.collection("vendors");
+
+    
+
 
     // Initialize default branches
     await initializeDefaultBranches(db, branches, counters);
     
     // Initialize default customer types
     await initializeDefaultCustomerTypes(db, customerTypes);
+  } catch (error) {
+    console.error("❌ Database initialization error:", error);
+    throw error;
+  }
+}
 
-    // ==================== ROOT ENDPOINT ====================
-    app.get("/", (req, res) => {
-      res.send("🚀 ERP Dashboard API is running!");
+// Initialize database connection immediately
+let isInitialized = false;
+let dbConnectionError = null;
+
+async function ensureDatabaseInitialized() {
+  if (!isInitialized) {
+    try {
+      await initializeDatabase();
+      isInitialized = true;
+      console.log("✅ Database initialized successfully");
+    } catch (error) {
+      console.error("❌ Database initialization failed:", error.message);
+      dbConnectionError = error;
+      // Don't throw the error, just log it
+    }
+  }
+}
+
+// Initialize database on startup
+ensureDatabaseInitialized().catch(console.error);
+
+// ==================== ROOT ENDPOINT ====================
+app.get("/", (req, res) => {
+  // Return HTML page with a link to the dashboard
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="bn">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>ERP Dashboard API</title>
+        <style>
+            body {
+                font-family: 'Hind Siliguri', Arial, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                margin: 0;
+                padding: 0;
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .container {
+                background: white;
+                padding: 3rem;
+                border-radius: 20px;
+                box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+                text-align: center;
+                max-width: 500px;
+                width: 90%;
+            }
+            h1 {
+                color: #333;
+                margin-bottom: 1rem;
+                font-size: 2.5rem;
+            }
+            .status {
+                color: #28a745;
+                font-size: 1.2rem;
+                margin-bottom: 2rem;
+                font-weight: 600;
+            }
+            .dashboard-link {
+                display: inline-block;
+                background: linear-gradient(45deg, #667eea, #764ba2);
+                color: white;
+                text-decoration: none;
+                padding: 15px 30px;
+                border-radius: 50px;
+                font-size: 1.1rem;
+                font-weight: 600;
+                transition: transform 0.3s ease, box-shadow 0.3s ease;
+                margin: 10px;
+            }
+            .dashboard-link:hover {
+                transform: translateY(-3px);
+                box-shadow: 0 10px 25px rgba(102, 126, 234, 0.4);
+            }
+            .api-info {
+                margin-top: 2rem;
+                padding: 1rem;
+                background: #f8f9fa;
+                border-radius: 10px;
+                color: #666;
+            }
+            .version {
+                font-size: 0.9rem;
+                color: #999;
+                margin-top: 1rem;
+            }
+        </style>
+        <link href="https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    </head>
+    <body>
+        <div class="container">
+            <h1>🚀 ERP Dashboard API</h1>
+            <div class="status">✅ API সফলভাবে চলছে!</div>
+            
+            <a href="https://erp-dashboard1.netlify.app" class="dashboard-link" target="_blank">
+                📊 ড্যাশবোর্ডে যান
+            </a>
+            
+            <div class="api-info">
+                <p><strong>API Status:</strong> সক্রিয়</p>
+                <p><strong>Version:</strong> 1.0.0</p>
+                <p><strong>Database:</strong> MongoDB</p>
+                <p><strong>Authentication:</strong> Firebase + JWT</p>
+            </div>
+            
+            <div class="version">
+                ERP Dashboard Backend API - Powered by Node.js & Express
+            </div>
+        </div>
+    </body>
+    </html>
+  `);
+});
+
+// ==================== AUTH ROUTES ====================
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { email, firebaseUid, displayName, branchId } = req.body;
+
+    if (!email || !firebaseUid) {
+      return res.status(400).json({ 
+        error: 'Email and firebaseUid are required.' 
+      });
+    }
+
+    // Check if user already exists
+    let user = await users.findOne({ 
+      email: email.toLowerCase(), 
+      firebaseUid,
+      isActive: true 
     });
 
-    // ==================== AUTH ROUTES ====================
-    app.post("/api/auth/login", async (req, res) => {
-      try {
-        const { email, firebaseUid, displayName, branchId } = req.body;
-
-        if (!email || !firebaseUid) {
-          return res.status(400).json({ 
-            error: 'Email and firebaseUid are required.' 
-          });
-        }
-
-        // Check if user already exists
-        let user = await users.findOne({ 
-          email: email.toLowerCase(), 
-          firebaseUid,
-          isActive: true 
+    // If user doesn't exist, create new user (auto signup)
+    if (!user) {
+      if (!displayName || !branchId) {
+        return res.status(400).json({ 
+          error: 'For new users, displayName and branchId are required.' 
         });
+      }
 
-        // If user doesn't exist, create new user (auto signup)
-        if (!user) {
-          if (!displayName || !branchId) {
-            return res.status(400).json({ 
-              error: 'For new users, displayName and branchId are required.' 
-            });
-          }
-
-          // Get branch information
-          const branch = await branches.findOne({ branchId, isActive: true });
-          if (!branch) {
-            return res.status(400).json({ 
-              error: 'Invalid branch ID.' 
-            });
-          }
-
-          // Generate unique ID for the user based on branch
-          const uniqueId = await generateUniqueId(db, branch.branchCode);
-
-          // Create new user with default role 'user'
-          const newUser = {
-            uniqueId,
-            displayName,
-            email: email.toLowerCase(),
-            branchId,
-            branchName: branch.branchName,
-            branchLocation: branch.branchLocation,
-            firebaseUid,
-            role: 'user',
-            isActive: true,
-            createdAt: new Date(),
-            updatedAt: new Date()
-          };
-
-          const result = await users.insertOne(newUser);
-          user = { ...newUser, _id: result.insertedId };
-          
-          console.log(`✅ New user created: ${uniqueId} (${displayName})`);
-        }
-
-        // Generate JWT token
-        const token = jwt.sign(
-          {
-            sub: user._id.toString(),
-            uniqueId: user.uniqueId,
-            email: user.email,
-            role: user.role,
-            branchId: user.branchId
-          },
-          process.env.JWT_SECRET,
-          { expiresIn: process.env.JWT_EXPIRES || '7d' }
-        );
-
-        res.json({
-          success: true,
-          message: user.uniqueId ? 'User created and logged in successfully' : 'Login successful',
-          token,
-          user: {
-            uniqueId: user.uniqueId,
-            displayName: user.displayName,
-            email: user.email,
-            role: user.role,
-            branchId: user.branchId,
-            branchName: user.branchName
-          }
+      // Get branch information
+      const branch = await branches.findOne({ branchId, isActive: true });
+      if (!branch) {
+        return res.status(400).json({ 
+          error: 'Invalid branch ID.' 
         });
+      }
 
-      } catch (error) {
-        console.error('Login error:', error);
-        res.status(500).json({ 
-          error: 'Internal server error during login.' 
-        });
+      // Generate unique ID for the user based on branch
+      const uniqueId = await generateUniqueId(db, branch.branchCode);
+
+      // Create new user with default role 'user'
+      const newUser = {
+        uniqueId,
+        displayName,
+        email: email.toLowerCase(),
+        branchId,
+        branchName: branch.branchName,
+        branchLocation: branch.branchLocation,
+        firebaseUid,
+        role: 'user',
+        isActive: true,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+
+      const result = await users.insertOne(newUser);
+      user = { ...newUser, _id: result.insertedId };
+      
+      console.log(`✅ New user created: ${uniqueId} (${displayName})`);
+    }
+
+    // Generate JWT token
+    const token = jwt.sign(
+      {
+        sub: user._id.toString(),
+        uniqueId: user.uniqueId,
+        email: user.email,
+        role: user.role,
+        branchId: user.branchId
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES || '7d' }
+    );
+
+    res.json({
+      success: true,
+      message: user.uniqueId ? 'User created and logged in successfully' : 'Login successful',
+      token,
+      user: {
+        uniqueId: user.uniqueId,
+        displayName: user.displayName,
+        email: user.email,
+        role: user.role,
+        branchId: user.branchId,
+        branchName: user.branchName
       }
     });
 
-    // ==================== BRANCH ROUTES ====================
-    app.get("/api/branches/active", async (req, res) => {
-      try {
-        const activeBranches = await branches.find({ isActive: true })
-          .project({ branchId: 1, branchName: 1, branchLocation: 1, branchCode: 1 })
-          .sort({ branchName: 1 })
-          .toArray();
-
-        res.json({
-          success: true,
-          branches: activeBranches
-        });
-      } catch (error) {
-        console.error('Get active branches error:', error);
-        res.status(500).json({ 
-          error: 'Internal server error while fetching branches.' 
-        });
-      }
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error during login.' 
     });
+  }
+});
 
-    // ==================== JWT TOKEN GENERATION ====================
-    app.post("/jwt", async (req, res) => {
-      try {
-        const { email } = req.body;
-        if (!email) {
-          return res.status(400).send({ error: true, message: "Email is required" });
-        }
-      
-        // Fetch user from DB
-        const user = await users.findOne({ email: email.toLowerCase() });
-        if (!user) {
-          return res.status(404).send({ error: true, message: "User not found" });
-        }
-      
-        // Sign token including role and uniqueId
-        const token = jwt.sign(
-          { 
-            email, 
-            role: user.role || "user",
-            uniqueId: user.uniqueId,
-            branchId: user.branchId
-          },
-          process.env.JWT_SECRET,
-          { expiresIn: "7d" }
-        );
-      
-        res.send({ token });
-      } catch (error) {
-        console.error('JWT generation error:', error);
-        res.status(500).send({ error: true, message: "Internal server error" });
-      }
+// ==================== BRANCH ROUTES ====================
+app.get("/api/branches/active", async (req, res) => {
+  try {
+    const activeBranches = await branches.find({ isActive: true })
+      .project({ branchId: 1, branchName: 1, branchLocation: 1, branchCode: 1 })
+      .sort({ branchName: 1 })
+      .toArray();
+
+    res.json({
+      success: true,
+      branches: activeBranches
     });
+  } catch (error) {
+    console.error('Get active branches error:', error);
+    res.status(500).json({ 
+      error: 'Internal server error while fetching branches.' 
+    });
+  }
+});
 
-    // ==================== USER ROUTES ====================
-    app.post("/users", async (req, res) => {
+// ==================== JWT TOKEN GENERATION ====================
+app.post("/jwt", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).send({ error: true, message: "Email is required" });
+    }
+  
+    // Fetch user from DB
+    const user = await users.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(404).send({ error: true, message: "User not found" });
+    }
+  
+    // Sign token including role and uniqueId
+    const token = jwt.sign(
+      { 
+        email, 
+        role: user.role || "user",
+        uniqueId: user.uniqueId,
+        branchId: user.branchId
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+  
+    res.send({ token });
+  } catch (error) {
+    console.error('JWT generation error:', error);
+    res.status(500).send({ error: true, message: "Internal server error" });
+  }
+});
+
+// ==================== USER ROUTES ====================
+app.post("/users", async (req, res) => {
       try {
         const { email, displayName, branchId, firebaseUid, role = "user" } = req.body;
         
@@ -458,6 +615,14 @@ async function run() {
 
     app.get("/users", async (req, res) => {
       try {
+        // Check if database is connected
+        if (!users) {
+          return res.status(503).json({ 
+            error: true, 
+            message: "Database not connected. Please try again later." 
+          });
+        }
+
         const allUsers = await users.find({ isActive: true })
           .project({ firebaseUid: 0 })
           .sort({ createdAt: -1 })
@@ -1059,6 +1224,14 @@ async function run() {
     // Get all customers
     app.get("/customers", async (req, res) => {
       try {
+        // Check if database is connected
+        if (!customers) {
+          return res.status(503).json({ 
+            error: true, 
+            message: "Database not connected. Please try again later." 
+          });
+        }
+
         const { customerType, division, district, upazila, search, passportNumber, nidNumber, expiringSoon } = req.query;
         
         let filter = { isActive: true };
@@ -1404,145 +1577,282 @@ async function run() {
       }
     });
 
-    // ==================== TRANSACTION ROUTES ====================
+   
+
+// Get all service types
+app.get('/api/services', async (req, res) => {
+  try {
+    const allServices = await services.find().toArray();
+    res.json({ services: allServices });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch services' });
+  }
+});
+
+// Add new service type
+app.post('/api/services', async (req, res) => {
+  try {
+    const { value, label } = req.body;
+    if (!value || !label) return res.status(400).json({ error: 'Value and Label required' });
+
+    const exists = await services.findOne({ value });
+    if (exists) return res.status(400).json({ error: 'Service type already exists' });
+
+    await services.insertOne({ value, label, statuses: [] });
+    res.status(201).json({ message: 'Service type added' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to add service type' });
+  }
+});
+
+// Delete service type
+app.delete('/api/services/:serviceValue', async (req, res) => {
+  try {
+    const { serviceValue } = req.params;
+    await services.deleteOne({ value: serviceValue });
+    res.json({ message: 'Service type deleted' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete service type' });
+  }
+});
+
+// ------------------- Service Status Routes -------------------
+
+// Get statuses for a service
+app.get('/api/services/:serviceValue/statuses', async (req, res) => {
+  try {
+    const { serviceValue } = req.params;
+    const service = await services.findOne({ value: serviceValue });
+    if (!service) return res.status(404).json({ error: 'Service not found' });
+
+    res.json({ statuses: service.statuses });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch statuses' });
+  }
+});
+
+// Add a status to a service
+app.post('/api/services/:serviceValue/statuses', async (req, res) => {
+  try {
+    const { serviceValue } = req.params;
+    const { value, label } = req.body;
+
+    if (!value || !label) return res.status(400).json({ error: 'Value and Label required' });
+
+    const service = await services.findOne({ value: serviceValue });
+    if (!service) return res.status(404).json({ error: 'Service not found' });
+
+    const exists = service.statuses.find(st => st.value === value);
+    if (exists) return res.status(400).json({ error: 'Status already exists' });
+
+    await services.updateOne(
+      { value: serviceValue },
+      { $push: { statuses: { value, label } } }
+    );
+
+    res.status(201).json({ message: 'Status added' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to add status' });
+  }
+});
+
+// Delete a status
+app.delete('/api/services/:serviceValue/statuses/:statusValue', async (req, res) => {
+  try {
+    const { serviceValue, statusValue } = req.params;
+    const service = await services.findOne({ value: serviceValue });
+    if (!service) return res.status(404).json({ error: 'Service not found' });
+
+    await services.updateOne(
+      { value: serviceValue },
+      { $pull: { statuses: { value: statusValue } } }
+    );
+
+    res.json({ message: 'Status deleted' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete status' });
+  }
+});
+
+// Fallback delete using body
+app.delete('/api/services/:serviceValue/statuses', async (req, res) => {
+  try {
+    const { serviceValue } = req.params;
+    const { value } = req.body;
+    const service = await services.findOne({ value: serviceValue });
+    if (!service) return res.status(404).json({ error: 'Service not found' });
+
+    await services.updateOne(
+      { value: serviceValue },
+      { $pull: { statuses: { value } } }
+    );
+
+    res.json({ message: 'Status deleted' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete status' });
+  }
+});
+
+
     
-    // Create new transaction
-    app.post("/transactions", async (req, res) => {
-      try {
-        const {
-          transactionType,
-          customerId,
-          category,
-          paymentMethod,
-          paymentDetails,
-          notes,
-          date,
-          createdBy,
-          branchId
-        } = req.body;
 
-        // Validation
-        if (!transactionType || !customerId || !category || !paymentMethod || !paymentDetails || !date) {
-          return res.status(400).json({
-            error: true,
-            message: "Transaction type, customer ID, category, payment method, payment details, and date are required"
-          });
-        }
+// ==================== TRANSACTION ROUTES ====================
 
-        // Validate transaction type
-        if (!['credit', 'debit'].includes(transactionType)) {
-          return res.status(400).json({
-            error: true,
-            message: "Transaction type must be 'credit' or 'debit'"
-          });
-        }
+// Create new transaction
+app.post("/transactions", async (req, res) => {
+  try {
+    const {
+      transactionType,
+      customerId,
+      category,
+      paymentMethod,
+      paymentDetails,
+      customerBankAccount,
+      notes,
+      date,
+      createdBy,
+      branchId
+    } = req.body;
 
-        // Validate payment method
-        const validPaymentMethods = ['bank', 'cheque', 'mobile-banking'];
-        if (!validPaymentMethods.includes(paymentMethod)) {
-          return res.status(400).json({
-            error: true,
-            message: "Invalid payment method"
-          });
-        }
+    // Validation
+    if (!transactionType || !customerId || !category || !paymentMethod || !paymentDetails || !date) {
+      return res.status(400).json({
+        error: true,
+        message: "Transaction type, customer ID, category, payment method, payment details, and date are required"
+      });
+    }
 
-        // Validate date format
-        if (!isValidDate(date)) {
-          return res.status(400).json({
-            error: true,
-            message: "Invalid date format. Please use YYYY-MM-DD format"
-          });
-        }
+    // Validate transaction type
+    if (!['credit', 'debit'].includes(transactionType)) {
+      return res.status(400).json({
+        error: true,
+        message: "Transaction type must be 'credit' or 'debit'"
+      });
+    }
 
-        // Check if customer exists
-        const customer = await customers.findOne({ 
-          customerId: customerId,
-          isActive: true 
-        });
+    // Validate and normalize payment method (frontend ids)
+    const validPaymentMethods = ['cash', 'bank-transfer', 'cheque', 'mobile-banking', 'others', 'bank'];
+    if (!validPaymentMethods.includes(paymentMethod)) {
+      return res.status(400).json({
+        error: true,
+        message: "Invalid payment method"
+      });
+    }
 
-        if (!customer) {
-          return res.status(404).json({
-            error: true,
-            message: "Customer not found"
-          });
-        }
+    // Normalize to canonical storage values
+    const normalizedPaymentMethod = paymentMethod === 'bank' ? 'bank-transfer' : paymentMethod;
 
-        // Get branch information
-        const branch = await branches.findOne({ branchId, isActive: true });
-        if (!branch) {
-          return res.status(400).json({
-            error: true,
-            message: "Invalid branch ID"
-          });
-        }
+    // Validate date format
+    if (!isValidDate(date)) {
+      return res.status(400).json({
+        error: true,
+        message: "Invalid date format. Please use YYYY-MM-DD format"
+      });
+    }
 
-        // Generate unique transaction ID
-        const transactionId = await generateTransactionId(db, branch.branchCode);
+    // Validate amount
+    const parsedAmount = parseFloat(paymentDetails?.amount);
+    if (!parsedAmount || parsedAmount <= 0) {
+      return res.status(400).json({
+        error: true,
+        message: "Amount must be greater than 0"
+      });
+    }
 
-        // Create transaction object
-        const newTransaction = {
-          transactionId,
-          transactionType,
-          customerId: customer.customerId,
-          customerName: customer.name,
-          customerPhone: customer.mobile,
-          customerEmail: customer.email,
-          category,
-          paymentMethod,
-          paymentDetails: {
-            bankName: paymentDetails.bankName || null,
-            accountNumber: paymentDetails.accountNumber || null,
-            chequeNumber: paymentDetails.chequeNumber || null,
-            mobileProvider: paymentDetails.mobileProvider || null,
-            transactionId: paymentDetails.transactionId || null,
-            amount: parseFloat(paymentDetails.amount) || 0,
-            reference: paymentDetails.reference || null
-          },
-          notes: notes || null,
-          date: new Date(date),
-          createdBy: createdBy || null,
-          branchId: branch.branchId,
-          branchName: branch.branchName,
-          branchCode: branch.branchCode,
-          status: 'completed',
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          isActive: true
-        };
+    // Check if customer exists
+    const customer = await customers.findOne({ 
+      customerId: customerId,
+      isActive: true 
+    });
 
-        const result = await transactions.insertOne(newTransaction);
+    if (!customer) {
+      return res.status(404).json({
+        error: true,
+        message: "Customer not found"
+      });
+    }
 
-        res.status(201).json({
-          success: true,
-          message: "Transaction created successfully",
-          transaction: {
-            _id: result.insertedId,
-            transactionId: newTransaction.transactionId,
-            transactionType: newTransaction.transactionType,
-            customerId: newTransaction.customerId,
-            customerName: newTransaction.customerName,
-            customerPhone: newTransaction.customerPhone,
-            customerEmail: newTransaction.customerEmail,
-            category: newTransaction.category,
-            paymentMethod: newTransaction.paymentMethod,
-            paymentDetails: newTransaction.paymentDetails,
-            notes: newTransaction.notes,
-            date: newTransaction.date,
-            branchId: newTransaction.branchId,
-            branchName: newTransaction.branchName,
-            status: newTransaction.status,
-            createdAt: newTransaction.createdAt
-          }
-        });
+    // Get branch information
+    const branch = await branches.findOne({ branchId, isActive: true });
+    if (!branch) {
+      return res.status(400).json({
+        error: true,
+        message: "Invalid branch ID"
+      });
+    }
 
-      } catch (error) {
-        console.error('Create transaction error:', error);
-        res.status(500).json({ 
-          error: true, 
-          message: "Internal server error while creating transaction" 
-        });
+    // Generate unique transaction ID
+    const transactionId = await generateTransactionId(db, branch.branchCode);
+
+    // Create transaction object
+    const newTransaction = {
+      transactionId,
+      transactionType,
+      customerId: customer.customerId,
+      customerName: customer.name,
+      customerPhone: customer.mobile,
+      customerEmail: customer.email,
+      category,
+      paymentMethod: normalizedPaymentMethod,
+      paymentDetails: {
+        bankName: paymentDetails?.bankName || null,
+        accountNumber: paymentDetails?.accountNumber || null,
+        chequeNumber: paymentDetails?.chequeNumber || null,
+        mobileProvider: paymentDetails?.mobileProvider || null,
+        transactionId: paymentDetails?.transactionId || null,
+        amount: parsedAmount,
+        reference: paymentDetails?.reference || null
+      },
+      customerBankAccount: {
+        bankName: customerBankAccount?.bankName || null,
+        accountNumber: customerBankAccount?.accountNumber || null
+      },
+      notes: notes || null,
+      date: new Date(date),
+      createdBy: createdBy || null,
+      branchId: branch.branchId,
+      branchName: branch.branchName,
+      branchCode: branch.branchCode,
+      status: 'completed',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      isActive: true
+    };
+
+    const result = await transactions.insertOne(newTransaction);
+
+    res.status(201).json({
+      success: true,
+      message: "Transaction created successfully",
+      transaction: {
+        _id: result.insertedId,
+        transactionId: newTransaction.transactionId,
+        transactionType: newTransaction.transactionType,
+        customerId: newTransaction.customerId,
+        customerName: newTransaction.customerName,
+        customerPhone: newTransaction.customerPhone,
+        customerEmail: newTransaction.customerEmail,
+        category: newTransaction.category,
+        paymentMethod: newTransaction.paymentMethod,
+        paymentDetails: newTransaction.paymentDetails,
+        notes: newTransaction.notes,
+        date: newTransaction.date,
+        branchId: newTransaction.branchId,
+        branchName: newTransaction.branchName,
+        status: newTransaction.status,
+        createdAt: newTransaction.createdAt
       }
     });
+
+  } catch (error) {
+    console.error('Create transaction error:', error);
+    res.status(500).json({ 
+      error: true, 
+      message: "Internal server error while creating transaction" 
+    });
+  }
+});
+    
 
     // Get all transactions with filters
     app.get("/transactions", async (req, res) => {
@@ -1674,12 +1984,16 @@ async function run() {
 
         // Validate payment method if being updated
         if (updateData.paymentMethod) {
-          const validPaymentMethods = ['bank', 'cheque', 'mobile-banking'];
+          const validPaymentMethods = ['cash', 'bank-transfer', 'cheque', 'mobile-banking', 'others', 'bank'];
           if (!validPaymentMethods.includes(updateData.paymentMethod)) {
             return res.status(400).json({
               error: true,
               message: "Invalid payment method"
             });
+          }
+          // Normalize legacy 'bank' to 'bank-transfer'
+          if (updateData.paymentMethod === 'bank') {
+            updateData.paymentMethod = 'bank-transfer';
           }
         }
 
@@ -1933,15 +2247,183 @@ async function run() {
       }
     });
 
-    // Start server
-    app.listen(port, () => {
-      console.log(`🚀 Server is running on port ${port}`);
+    
+    
+    // Sale And Invoice 
+
+    // ✅ POST: Get Sale from saleData
+app.post("/sales", async (req, res) => {
+  try {
+    const { saleData } = req.body;
+    const { saleId } = saleData;
+
+    const sale = await sales.findOne({ saleId, isActive: true });
+    if (!sale) {
+      return res.status(404).json({ error: true, message: "Sale not found" });
+    }
+
+    res.json({ success: true, sale });
+  } catch (error) {
+    console.error("Sale fetch error:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while fetching sale",
+    });
+  }
+});
+
+// ✅ GET: Get Sale by saleId
+app.get("/sales/:saleId", async (req, res) => {
+  try {
+    const { saleId } = req.params;
+
+    const sale = await sales.findOne({ saleId, isActive: true });
+    if (!sale) {
+      return res.status(404).json({ error: true, message: "Sale not found" });
+    }
+
+    res.json({ success: true, sale });
+  } catch (error) {
+    console.error("Get sale error:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while fetching sale",
+    });
+  }
+});
+
+// Vendor add and list
+
+    // ✅ POST: Add new vendor
+app.post("/vendors", async (req, res) => {
+  try {
+    const {
+      tradeName,
+      tradeLocation,
+      ownerName,
+      contactNo,
+      dob,
+      nid,
+      passport
+    } = req.body;
+
+    if (!tradeName || !tradeLocation || !ownerName || !contactNo) {
+      return res.status(400).json({
+        error: true,
+        message: "Trade Name, Location, Owner Name & Contact No are required",
+      });
+    }
+
+    const newVendor = {
+      tradeName: tradeName.trim(),
+      tradeLocation: tradeLocation.trim(),
+      ownerName: ownerName.trim(),
+      contactNo: contactNo.trim(),
+      dob: dob || null,
+      nid: nid?.trim() || "",
+      passport: passport?.trim() || "",
+      isActive: true,
+      createdAt: new Date(),
+    };
+
+    const result = await vendors.insertOne(newVendor);
+
+    res.status(201).json({
+      success: true,
+      message: "Vendor added successfully",
+      vendorId: result.insertedId,
+    });
+  } catch (error) {
+    console.error("Error adding vendor:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while adding vendor",
+    });
+  }
+});
+
+
+// ✅ GET: All active vendors
+app.get("/vendors", async (req, res) => {
+  try {
+    const allVendors = await vendors.find({ isActive: true }).toArray();
+    res.json({ success: true, vendors: allVendors });
+  } catch (error) {
+    console.error("Error fetching vendors:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while fetching vendors",
+    });
+  }
+});
+
+
+// ✅ GET: Single vendor by ID
+app.get("/vendors/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if valid MongoDB ObjectId
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid vendor ID" });
+    }
+
+    const vendor = await vendors.findOne({
+      _id: new ObjectId(id),
+      isActive: true,
     });
 
+    if (!vendor) {
+      return res.status(404).json({ error: true, message: "Vendor not found" });
+    }
+
+    res.json({ success: true, vendor });
   } catch (error) {
-    console.error("❌ Server startup error:", error);
-    process.exit(1);
+    console.error("Error fetching vendor:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while fetching vendor",
+    });
   }
+});
+
+
+// ✅ DELETE (soft delete)
+app.delete("/vendors/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid vendor ID" });
+    }
+
+    const result = await vendors.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { isActive: false } }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(404).json({ error: true, message: "Vendor not found" });
+    }
+
+    res.json({ success: true, message: "Vendor deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting vendor:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while deleting vendor",
+    });
+  }
+});
+
+
+
+
+// Start server only if not in Vercel environment
+if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
+  app.listen(port, () => {
+    console.log(`🚀 Server is running on port ${port}`);
+  });
 }
 
 // Handle graceful shutdown
@@ -1951,5 +2433,26 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-// Run the server
-run().catch(console.error);
+
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({
+    success: false,
+    error: 'Internal server error',
+    message: 'Something went wrong'
+  });
+});
+
+// 404 handler
+app.use('*', (req, res) => {
+  res.status(404).json({
+    success: false,
+    error: 'Not Found',
+    message: 'API endpoint not found'
+  });
+});
+
+// Export the app for Vercel
+module.exports = app;

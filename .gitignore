@@ -188,3 +188,4 @@ docker-compose.yml
 # Local configuration files
 config/local.js
 config/local.json
+.vercel
