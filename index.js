@@ -1834,6 +1834,9 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
+// Alias: without /api
+ 
+
 // Create a category
 app.post('/api/categories', async (req, res) => {
   try {
@@ -1857,6 +1860,9 @@ app.post('/api/categories', async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to create category' });
   }
 });
+
+// Alias: without /api
+ 
 
 // Update a category
 app.put('/api/categories/:categoryId', async (req, res) => {
@@ -1887,6 +1893,9 @@ app.put('/api/categories/:categoryId', async (req, res) => {
   }
 });
 
+// Aliases: without /api and singular path
+ 
+
 // Delete a category
 app.delete('/api/categories/:categoryId', async (req, res) => {
   try {
@@ -1901,6 +1910,9 @@ app.delete('/api/categories/:categoryId', async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to delete category' });
   }
 });
+
+// Alias: without /api
+ 
 
 // -------------------- Subcategory Routes --------------------
 
@@ -1934,6 +1946,9 @@ app.post('/api/categories/:categoryId/subcategories', async (req, res) => {
   }
 });
 
+// Alias: without /api
+ 
+
 // Update subcategory (partial)
 app.patch('/api/categories/:categoryId/subcategories/:subCategoryId', async (req, res) => {
   try {
@@ -1962,6 +1977,13 @@ app.patch('/api/categories/:categoryId/subcategories/:subCategoryId', async (req
   }
 });
 
+// Aliases: support PUT and without /api
+ 
+
+ 
+
+ 
+
 // Delete subcategory
 app.delete('/api/categories/:categoryId/subcategories/:subCategoryId', async (req, res) => {
   try {
@@ -1982,6 +2004,9 @@ app.delete('/api/categories/:categoryId/subcategories/:subCategoryId', async (re
     res.status(500).json({ success: false, message: 'Failed to delete subcategory' });
   }
 });
+
+// Alias: without /api
+ 
 
 // ==================== TRANSACTION ROUTES ====================
 
