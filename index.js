@@ -253,7 +253,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, transactions;
+let db, users, branches, counters, customers, customerTypes, transactions, services, sales, vendors;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -900,6 +900,22 @@ app.post("/users", async (req, res) => {
           });
         }
 
+        // Validate value format (should be lowercase, alphanumeric with hyphens/underscores)
+        if (!/^[a-z0-9_-]+$/.test(value)) {
+          return res.status(400).json({
+            error: true,
+            message: "Value must contain only lowercase letters, numbers, hyphens, and underscores"
+          });
+        }
+
+        // Validate prefix format (should be uppercase letters and numbers)
+        if (!/^[A-Z0-9]+$/.test(prefix)) {
+          return res.status(400).json({
+            error: true,
+            message: "Prefix must contain only uppercase letters and numbers"
+          });
+        }
+
         // Check if customer type already exists
         const existingType = await customerTypes.findOne({ 
           value: value.toLowerCase(),
@@ -950,6 +966,14 @@ app.post("/users", async (req, res) => {
         const { id } = req.params;
         const updateData = req.body;
         
+        // Validate ObjectId
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).json({
+            error: true,
+            message: "Invalid customer type ID format"
+          });
+        }
+        
         // Remove fields that shouldn't be updated
         delete updateData._id;
         delete updateData.createdAt;
@@ -957,6 +981,14 @@ app.post("/users", async (req, res) => {
 
         // Check if value is being updated and if it already exists
         if (updateData.value) {
+          // Validate value format
+          if (!/^[a-z0-9_-]+$/.test(updateData.value)) {
+            return res.status(400).json({
+              error: true,
+              message: "Value must contain only lowercase letters, numbers, hyphens, and underscores"
+            });
+          }
+
           const existingType = await customerTypes.findOne({ 
             value: updateData.value.toLowerCase(),
             _id: { $ne: new ObjectId(id) },
@@ -970,6 +1002,17 @@ app.post("/users", async (req, res) => {
             });
           }
           updateData.value = updateData.value.toLowerCase();
+        }
+
+        // Validate prefix format if being updated
+        if (updateData.prefix) {
+          if (!/^[A-Z0-9]+$/.test(updateData.prefix)) {
+            return res.status(400).json({
+              error: true,
+              message: "Prefix must contain only uppercase letters and numbers"
+            });
+          }
+          updateData.prefix = updateData.prefix.toUpperCase();
         }
 
         const result = await customerTypes.updateOne(
@@ -1004,9 +1047,30 @@ app.post("/users", async (req, res) => {
       try {
         const { id } = req.params;
         
+        // Validate ObjectId
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).json({
+            error: true,
+            message: "Invalid customer type ID format"
+          });
+        }
+        
+        // First get the customer type to check its value
+        const customerTypeToDelete = await customerTypes.findOne({ 
+          _id: new ObjectId(id), 
+          isActive: true 
+        });
+
+        if (!customerTypeToDelete) {
+          return res.status(404).json({ 
+            error: true, 
+            message: "Customer type not found" 
+          });
+        }
+
         // Check if any customers are using this type
         const customersUsingType = await customers.countDocuments({ 
-          customerType: req.body.value || (await customerTypes.findOne({ _id: new ObjectId(id) }))?.value,
+          customerType: customerTypeToDelete.value,
           isActive: true 
         });
 
@@ -1021,13 +1085,6 @@ app.post("/users", async (req, res) => {
           { _id: new ObjectId(id), isActive: true },
           { $set: { isActive: false, updatedAt: new Date() } }
         );
-
-        if (result.matchedCount === 0) {
-          return res.status(404).json({ 
-            error: true, 
-            message: "Customer type not found" 
-          });
-        }
 
         res.json({
           success: true,
@@ -1578,17 +1635,6 @@ app.post("/users", async (req, res) => {
     });
 
    
-
-// Get all service types
-app.get('/api/services', async (req, res) => {
-  try {
-    const allServices = await services.find().toArray();
-    res.json({ services: allServices });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch services' });
-  }
-});
-
 // Add new service type
 app.post('/api/services', async (req, res) => {
   try {
@@ -1602,6 +1648,15 @@ app.post('/api/services', async (req, res) => {
     res.status(201).json({ message: 'Service type added' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to add service type' });
+  }
+});
+// Get all service types
+app.get('/api/services', async (req, res) => {
+  try {
+    const allServices = await services.find().toArray();
+    res.json({ services: allServices });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch services' });
   }
 });
 
@@ -2387,6 +2442,146 @@ app.get("/vendors/:id", async (req, res) => {
   }
 });
 
+// ✅ PATCH: Update vendor information
+app.patch("/vendors/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    // Check if valid MongoDB ObjectId
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid vendor ID" });
+    }
+
+    // Check if vendor exists
+    const existingVendor = await vendors.findOne({
+      _id: new ObjectId(id),
+      isActive: true,
+    });
+
+    if (!existingVendor) {
+      return res.status(404).json({ error: true, message: "Vendor not found" });
+    }
+
+    // Prepare update data - only allow specific fields to be updated
+    const allowedFields = ['tradeName', 'tradeLocation', 'ownerName', 'contactNo', 'dob', 'nid', 'passport'];
+    const filteredUpdateData = {};
+    
+    // Only allow specific fields to be updated
+    allowedFields.forEach(field => {
+      if (updateData[field] !== undefined) {
+        // Trim string fields
+        if (typeof updateData[field] === 'string') {
+          filteredUpdateData[field] = updateData[field].trim();
+        } else {
+          filteredUpdateData[field] = updateData[field];
+        }
+      }
+    });
+
+    // Validate required fields if they are being updated
+    if (filteredUpdateData.tradeName && !filteredUpdateData.tradeName) {
+      return res.status(400).json({
+        error: true,
+        message: "Trade Name cannot be empty"
+      });
+    }
+
+    if (filteredUpdateData.tradeLocation && !filteredUpdateData.tradeLocation) {
+      return res.status(400).json({
+        error: true,
+        message: "Trade Location cannot be empty"
+      });
+    }
+
+    if (filteredUpdateData.ownerName && !filteredUpdateData.ownerName) {
+      return res.status(400).json({
+        error: true,
+        message: "Owner Name cannot be empty"
+      });
+    }
+
+    if (filteredUpdateData.contactNo && !filteredUpdateData.contactNo) {
+      return res.status(400).json({
+        error: true,
+        message: "Contact Number cannot be empty"
+      });
+    }
+
+    // Validate contact number format if being updated
+    if (filteredUpdateData.contactNo && !/^01[3-9]\d{8}$/.test(filteredUpdateData.contactNo)) {
+      return res.status(400).json({
+        error: true,
+        message: "Invalid contact number format. Please use 01XXXXXXXXX format"
+      });
+    }
+
+    // Validate date of birth format if being updated
+    if (filteredUpdateData.dob && filteredUpdateData.dob !== null && !isValidDate(filteredUpdateData.dob)) {
+      return res.status(400).json({
+        error: true,
+        message: "Invalid date format. Please use YYYY-MM-DD format"
+      });
+    }
+
+    // Check if contact number already exists for another vendor
+    if (filteredUpdateData.contactNo) {
+      const existingVendorWithContact = await vendors.findOne({
+        contactNo: filteredUpdateData.contactNo,
+        _id: { $ne: new ObjectId(id) },
+        isActive: true
+      });
+
+      if (existingVendorWithContact) {
+        return res.status(400).json({
+          error: true,
+          message: "Vendor with this contact number already exists"
+        });
+      }
+    }
+
+    // Add update timestamp
+    filteredUpdateData.updatedAt = new Date();
+
+    // Remove fields that shouldn't be updated
+    delete filteredUpdateData._id;
+    delete filteredUpdateData.createdAt;
+    delete filteredUpdateData.isActive;
+
+    // Update vendor
+    const result = await vendors.updateOne(
+      { _id: new ObjectId(id), isActive: true },
+      { $set: filteredUpdateData }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(400).json({
+        error: true,
+        message: "No changes made or vendor not found"
+      });
+    }
+
+    // Get updated vendor data
+    const updatedVendor = await vendors.findOne({
+      _id: new ObjectId(id),
+      isActive: true,
+    });
+
+    res.json({
+      success: true,
+      message: "Vendor information updated successfully",
+      modifiedCount: result.modifiedCount,
+      vendor: updatedVendor
+    });
+
+  } catch (error) {
+    console.error("Error updating vendor:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while updating vendor",
+    });
+  }
+});
 
 // ✅ DELETE (soft delete)
 // app.delete("/vendors/:id", async (req, res) => {
