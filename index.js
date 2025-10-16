@@ -176,6 +176,74 @@ const generateTransactionId = async (db, branchCode) => {
   return `TXN${branchCode}${dateStr}${serial}`;
 };
 
+// Helper: Generate unique Order ID
+const generateOrderId = async (db, branchCode) => {
+  const counterCollection = db.collection("counters");
+  
+  // Get current date in DDMMYY format
+  const today = new Date();
+  const dateStr = String(today.getDate()).padStart(2, '0') + 
+                  String(today.getMonth() + 1).padStart(2, '0') + 
+                  today.getFullYear().toString().slice(-2);
+  
+  // Create counter key for order and date
+  const counterKey = `order_${branchCode}_${dateStr}`;
+  
+  // Find or create counter
+  let counter = await counterCollection.findOne({ counterKey });
+  
+  if (!counter) {
+    // Create new counter starting from 0
+    await counterCollection.insertOne({ counterKey, sequence: 0 });
+    counter = { sequence: 0 };
+  }
+  
+  // Increment sequence
+  const newSequence = counter.sequence + 1;
+  
+  // Update counter
+  await counterCollection.updateOne(
+    { counterKey },
+    { $set: { sequence: newSequence } }
+  );
+  
+  // Format: ORD + branchCode + DDMMYY + 00001 (e.g., ORDDH2508290001)
+  const serial = String(newSequence).padStart(4, '0');
+  
+  return `ORD${branchCode}${dateStr}${serial}`;
+};
+
+// Helper: Generate unique Vendor ID
+const generateVendorId = async (db) => {
+  const counterCollection = db.collection("counters");
+  
+  // Create counter key for vendor
+  const counterKey = `vendor`;
+  
+  // Find or create counter
+  let counter = await counterCollection.findOne({ counterKey });
+  
+  if (!counter) {
+    // Create new counter starting from 0
+    await counterCollection.insertOne({ counterKey, sequence: 0 });
+    counter = { sequence: 0 };
+  }
+  
+  // Increment sequence
+  const newSequence = counter.sequence + 1;
+  
+  // Update counter
+  await counterCollection.updateOne(
+    { counterKey },
+    { $set: { sequence: newSequence } }
+  );
+  
+  // Format: VN + 00001 (e.g., VN00001)
+  const serial = String(newSequence).padStart(5, '0');
+  
+  return `VN${serial}`;
+};
+
 // Initialize default customer types
 const initializeDefaultCustomerTypes = async (db, customerTypes) => {
   const defaultTypes = [
@@ -249,11 +317,10 @@ const initializeDefaultBranches = async (db, branches, counters) => {
     );
   }
   
-  console.log("✅ Default branches initialized successfully");
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, transactions, services, sales, vendors;
+let db, users, branches, counters, customers, customerTypes, transactions, services, sales, vendors, orders, bankAccounts;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -271,6 +338,8 @@ async function initializeDatabase() {
     services = db.collection("services");
     sales = db.collection("sales");
     vendors = db.collection("vendors");
+    orders = db.collection("orders");
+    bankAccounts = db.collection("bankAccounts");
 
     
 
@@ -2369,7 +2438,11 @@ app.post("/vendors", async (req, res) => {
       });
     }
 
+    // Generate unique vendor ID
+    const vendorId = await generateVendorId(db);
+
     const newVendor = {
+      vendorId: vendorId,
       tradeName: tradeName.trim(),
       tradeLocation: tradeLocation.trim(),
       ownerName: ownerName.trim(),
@@ -2387,6 +2460,7 @@ app.post("/vendors", async (req, res) => {
       success: true,
       message: "Vendor added successfully",
       vendorId: result.insertedId,
+      vendorUniqueId: vendorId,
     });
   } catch (error) {
     console.error("Error adding vendor:", error);
@@ -2816,6 +2890,769 @@ app.get("/vendors/stats/data", async (req, res) => {
       error: true,
       message: "Internal server error while fetching vendor statistics data",
     });
+  }
+});
+
+// ==================== ORDER ROUTES ====================
+
+// ✅ POST: Create new order
+app.post("/orders", async (req, res) => {
+  try {
+    const {
+      vendorId,
+      orderType,
+      amount,
+      notes,
+      createdBy,
+      branchId
+    } = req.body;
+
+    // Validation
+    if (!vendorId || !orderType || !amount) {
+      return res.status(400).json({
+        error: true,
+        message: "Vendor ID, order type, and amount are required"
+      });
+    }
+
+    // Validate amount
+    const parsedAmount = parseFloat(amount);
+    if (!parsedAmount || parsedAmount <= 0) {
+      return res.status(400).json({
+        error: true,
+        message: "Amount must be greater than 0"
+      });
+    }
+
+    // Check if vendor exists - handle both MongoDB ObjectId and string ID
+    let vendor;
+    if (ObjectId.isValid(vendorId)) {
+      vendor = await vendors.findOne({ 
+        _id: new ObjectId(vendorId),
+        isActive: true 
+      });
+    } else {
+      // If not a valid ObjectId, search by other fields
+      vendor = await vendors.findOne({ 
+        $or: [
+          { _id: vendorId },
+          { tradeName: vendorId }
+        ],
+        isActive: true 
+      });
+    }
+
+    if (!vendor) {
+      return res.status(404).json({
+        error: true,
+        message: "Vendor not found"
+      });
+    }
+
+    // Get branch information
+    const branch = await branches.findOne({ branchId: branchId || 'main', isActive: true });
+    if (!branch) {
+      return res.status(400).json({
+        error: true,
+        message: "Invalid branch ID"
+      });
+    }
+
+    // Generate unique order ID
+    const orderId = await generateOrderId(db, branch.branchCode);
+
+    // Create order object
+    const newOrder = {
+      orderId,
+      vendorId: vendor._id,
+      vendorName: vendor.tradeName,
+      vendorLocation: vendor.tradeLocation,
+      vendorContact: vendor.contactNo,
+      vendorOwner: vendor.ownerName,
+      orderType: orderType.trim(),
+      amount: parsedAmount,
+      notes: notes || null,
+      status: 'pending', // pending, confirmed, completed, cancelled
+      createdBy: createdBy || null,
+      branchId: branch.branchId,
+      branchName: branch.branchName,
+      branchCode: branch.branchCode,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      isActive: true
+    };
+
+    const result = await orders.insertOne(newOrder);
+
+    res.status(201).json({
+      success: true,
+      message: "Order created successfully",
+      order: {
+        _id: result.insertedId,
+        orderId: newOrder.orderId,
+        vendorId: newOrder.vendorId,
+        vendorName: newOrder.vendorName,
+        vendorLocation: newOrder.vendorLocation,
+        vendorContact: newOrder.vendorContact,
+        vendorOwner: newOrder.vendorOwner,
+        orderType: newOrder.orderType,
+        amount: newOrder.amount,
+        notes: newOrder.notes,
+        status: newOrder.status,
+        branchId: newOrder.branchId,
+        branchName: newOrder.branchName,
+        createdAt: newOrder.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Create order error:', error);
+    res.status(500).json({ 
+      error: true, 
+      message: "Internal server error while creating order" 
+    });
+  }
+});
+
+// ✅ GET: Get all orders with filters
+app.get("/orders", async (req, res) => {
+  try {
+    const { 
+      vendorId, 
+      orderType, 
+      status, 
+      branchId, 
+      dateFrom, 
+      dateTo, 
+      search,
+      page = 1,
+      limit = 20
+    } = req.query;
+    
+    let filter = { isActive: true };
+    
+    // Apply filters
+    if (vendorId) filter.vendorId = new ObjectId(vendorId);
+    if (orderType) filter.orderType = { $regex: orderType, $options: 'i' };
+    if (status) filter.status = status;
+    if (branchId) filter.branchId = branchId;
+    
+    // Date range filter
+    if (dateFrom || dateTo) {
+      filter.createdAt = {};
+      if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
+      if (dateTo) {
+        const endDate = new Date(dateTo);
+        endDate.setHours(23, 59, 59, 999);
+        filter.createdAt.$lte = endDate;
+      }
+    }
+    
+    // Search filter
+    if (search) {
+      filter.$or = [
+        { orderId: { $regex: search, $options: 'i' } },
+        { vendorName: { $regex: search, $options: 'i' } },
+        { vendorContact: { $regex: search, $options: 'i' } },
+        { vendorOwner: { $regex: search, $options: 'i' } },
+        { orderType: { $regex: search, $options: 'i' } },
+        { notes: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // Calculate pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    
+    // Get total count
+    const totalCount = await orders.countDocuments(filter);
+    
+    // Get orders with pagination
+    const allOrders = await orders.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .toArray();
+
+    res.json({
+      success: true,
+      count: allOrders.length,
+      totalCount,
+      currentPage: parseInt(page),
+      totalPages: Math.ceil(totalCount / parseInt(limit)),
+      orders: allOrders
+    });
+  } catch (error) {
+    console.error('Get orders error:', error);
+    res.status(500).json({ 
+      error: true, 
+      message: "Internal server error while fetching orders" 
+    });
+  }
+});
+
+// ✅ GET: Get order by ID
+app.get("/orders/:orderId", async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    
+    const order = await orders.findOne({ 
+      orderId: orderId,
+      isActive: true 
+    });
+
+    if (!order) {
+      return res.status(404).json({ 
+        error: true, 
+        message: "Order not found" 
+      });
+    }
+
+    res.json({
+      success: true,
+      order: order
+    });
+  } catch (error) {
+    console.error('Get order error:', error);
+    res.status(500).json({ 
+      error: true, 
+      message: "Internal server error while fetching order" 
+    });
+  }
+});
+
+// ✅ PATCH: Update order
+app.patch("/orders/:orderId", async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const updateData = req.body;
+    
+    // Remove fields that shouldn't be updated
+    delete updateData.orderId;
+    delete updateData.createdAt;
+    updateData.updatedAt = new Date();
+
+    // Validate status if being updated
+    if (updateData.status) {
+      const validStatuses = ['pending', 'confirmed', 'completed', 'cancelled'];
+      if (!validStatuses.includes(updateData.status)) {
+        return res.status(400).json({
+          error: true,
+          message: "Invalid status. Must be one of: pending, confirmed, completed, cancelled"
+        });
+      }
+    }
+
+    // Validate amount if being updated
+    if (updateData.amount) {
+      const parsedAmount = parseFloat(updateData.amount);
+      if (!parsedAmount || parsedAmount <= 0) {
+        return res.status(400).json({
+          error: true,
+          message: "Amount must be greater than 0"
+        });
+      }
+      updateData.amount = parsedAmount;
+    }
+
+    const result = await orders.updateOne(
+      { orderId: orderId, isActive: true },
+      { $set: updateData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ 
+        error: true, 
+        message: "Order not found" 
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Order updated successfully",
+      modifiedCount: result.modifiedCount
+    });
+  } catch (error) {
+    console.error('Update order error:', error);
+    res.status(500).json({ 
+      error: true, 
+      message: "Internal server error while updating order" 
+    });
+  }
+});
+
+// ✅ DELETE: Delete order (soft delete)
+app.delete("/orders/:orderId", async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    
+    const result = await orders.updateOne(
+      { orderId: orderId, isActive: true },
+      { $set: { isActive: false, updatedAt: new Date() } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ 
+        error: true, 
+        message: "Order not found" 
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Order deleted successfully"
+    });
+  } catch (error) {
+    console.error('Delete order error:', error);
+    res.status(500).json({ 
+      error: true, 
+      message: "Internal server error while deleting order" 
+    });
+  }
+});
+
+// ✅ GET: Vendor Analytics (Enhanced)
+app.get("/vendors/analytics", async (req, res) => {
+  try {
+    const { period = '30' } = req.query; // Default to last 30 days
+    const days = parseInt(period);
+    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    // Vendor registration trends
+    const registrationTrends = await vendors.aggregate([
+      { 
+        $match: { 
+          isActive: true, 
+          createdAt: { $gte: startDate } 
+        } 
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" },
+            day: { $dayOfMonth: "$createdAt" }
+          },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } }
+    ]).toArray();
+
+    // Vendor demographics
+    const demographics = await vendors.aggregate([
+      { $match: { isActive: true } },
+      {
+        $group: {
+          _id: null,
+          withNID: { $sum: { $cond: [{ $ne: ["$nid", ""] }, 1, 0] } },
+          withPassport: { $sum: { $cond: [{ $ne: ["$passport", ""] }, 1, 0] } },
+          withBoth: { 
+            $sum: { 
+              $cond: [
+                { $and: [
+                  { $ne: ["$nid", ""] },
+                  { $ne: ["$passport", ""] }
+                ]}, 
+                1, 
+                0
+              ] 
+            } 
+          },
+          withoutDocs: { 
+            $sum: { 
+              $cond: [
+                { $and: [
+                  { $or: [{ $eq: ["$nid", ""] }, { $eq: ["$nid", null] }] },
+                  { $or: [{ $eq: ["$passport", ""] }, { $eq: ["$passport", null] }] }
+                ]}, 
+                1, 
+                0
+              ] 
+            } 
+          }
+        }
+      }
+    ]).toArray();
+
+    // Top performing vendors (by order count)
+    const topVendors = await orders.aggregate([
+      { $match: { isActive: true } },
+      {
+        $group: {
+          _id: "$vendorId",
+          vendorName: { $first: "$vendorName" },
+          orderCount: { $sum: 1 },
+          totalAmount: { $sum: "$amount" },
+          avgOrderValue: { $avg: "$amount" }
+        }
+      },
+      { $sort: { orderCount: -1 } },
+      { $limit: 10 }
+    ]).toArray();
+
+    res.json({
+      success: true,
+      analytics: {
+        registrationTrends,
+        demographics: demographics[0] || {},
+        topVendors
+      }
+    });
+  } catch (error) {
+    console.error("Vendor analytics error:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while fetching vendor analytics",
+    });
+  }
+});
+
+// ✅ GET: Order Analytics (Enhanced)
+app.get("/orders/analytics", async (req, res) => {
+  try {
+    const { branchId, period = '30' } = req.query;
+    const days = parseInt(period);
+    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    let filter = { isActive: true, createdAt: { $gte: startDate } };
+    if (branchId) filter.branchId = branchId;
+
+    // Order trends over time
+    const orderTrends = await orders.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" },
+            day: { $dayOfMonth: "$createdAt" }
+          },
+          count: { $sum: 1 },
+          totalAmount: { $sum: "$amount" }
+        }
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } }
+    ]).toArray();
+
+    // Order status distribution
+    const statusDistribution = await orders.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          totalAmount: { $sum: "$amount" }
+        }
+      }
+    ]).toArray();
+
+    // Order type performance
+    const typePerformance = await orders.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: "$orderType",
+          count: { $sum: 1 },
+          totalAmount: { $sum: "$amount" },
+          avgAmount: { $avg: "$amount" },
+          minAmount: { $min: "$amount" },
+          maxAmount: { $max: "$amount" }
+        }
+      },
+      { $sort: { totalAmount: -1 } }
+    ]).toArray();
+
+    // Revenue trends
+    const revenueTrends = await orders.aggregate([
+      { $match: { ...filter, status: { $in: ['confirmed', 'completed'] } } },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" },
+            day: { $dayOfMonth: "$createdAt" }
+          },
+          revenue: { $sum: "$amount" }
+        }
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } }
+    ]).toArray();
+
+    // Average order processing time (for completed orders)
+    const processingTime = await orders.aggregate([
+      { 
+        $match: { 
+          isActive: true, 
+          status: 'completed',
+          updatedAt: { $exists: true }
+        } 
+      },
+      {
+        $addFields: {
+          processingDays: {
+            $divide: [
+              { $subtract: ["$updatedAt", "$createdAt"] },
+              1000 * 60 * 60 * 24
+            ]
+          }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          avgProcessingDays: { $avg: "$processingDays" },
+          minProcessingDays: { $min: "$processingDays" },
+          maxProcessingDays: { $max: "$processingDays" }
+        }
+      }
+    ]).toArray();
+
+    res.json({
+      success: true,
+      analytics: {
+        orderTrends,
+        statusDistribution,
+        typePerformance,
+        revenueTrends,
+        processingTime: processingTime[0] || {}
+      }
+    });
+  } catch (error) {
+    console.error("Order analytics error:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while fetching order analytics",
+    });
+  }
+});
+
+// ==================== BANK ACCOUNTS ROUTES ====================
+// Schema (MongoDB):
+// {
+//   bankName, accountNumber, accountType, branchName, accountHolder,
+//   initialBalance, currentBalance, currency, contactNumber,
+//   status: 'Active'|'Inactive', createdAt, updatedAt, isDeleted, balanceHistory?
+// }
+
+// Create bank account
+app.post("/bank-accounts", async (req, res) => {
+  try {
+    const {
+      bankName,
+      accountNumber,
+      accountType = "Current",
+      branchName,
+      accountHolder,
+      initialBalance,
+      currency = "BDT",
+      contactNumber
+    } = req.body || {};
+
+    if (!bankName || !accountNumber || !accountType || !branchName || !accountHolder || initialBalance === undefined) {
+      return res.status(400).json({ success: false, error: "Missing required fields" });
+    }
+
+    const numericInitial = Number(initialBalance);
+    if (!Number.isFinite(numericInitial) || numericInitial < 0) {
+      return res.status(400).json({ success: false, error: "Invalid initialBalance" });
+    }
+
+    // Ensure unique accountNumber per currency
+    const existing = await bankAccounts.findOne({ accountNumber, currency, isDeleted: { $ne: true } });
+    if (existing) {
+      return res.status(409).json({ success: false, error: "Account with this number already exists" });
+    }
+
+    const doc = {
+      bankName,
+      accountNumber,
+      accountType,
+      branchName,
+      accountHolder,
+      initialBalance: numericInitial,
+      currentBalance: numericInitial,
+      currency,
+      contactNumber: contactNumber || null,
+      status: "Active",
+      isDeleted: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      balanceHistory: []
+    };
+
+    const result = await bankAccounts.insertOne(doc);
+    return res.json({ success: true, data: { _id: result.insertedId, ...doc } });
+  } catch (error) {
+    console.error("❌ Error creating bank account:", error);
+    res.status(500).json({ success: false, error: "Failed to create bank account" });
+  }
+});
+
+// Get all bank accounts with optional query filters
+app.get("/bank-accounts", async (req, res) => {
+  try {
+    const { status, accountType, currency, search } = req.query || {};
+    const query = { isDeleted: { $ne: true } };
+    if (status) query.status = status;
+    if (accountType) query.accountType = accountType;
+    if (currency) query.currency = currency;
+    if (search) {
+      query.$or = [
+        { bankName: { $regex: search, $options: "i" } },
+        { accountNumber: { $regex: search, $options: "i" } },
+        { branchName: { $regex: search, $options: "i" } },
+        { accountHolder: { $regex: search, $options: "i" } }
+      ];
+    }
+    const data = await bankAccounts.find(query).sort({ createdAt: -1 }).toArray();
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error("❌ Error fetching bank accounts:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch bank accounts" });
+  }
+});
+
+// Get single bank account
+app.get("/bank-accounts/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const account = await bankAccounts.findOne({ _id: new ObjectId(id), isDeleted: { $ne: true } });
+    if (!account) return res.status(404).json({ success: false, error: "Bank account not found" });
+    res.json({ success: true, data: account });
+  } catch (error) {
+    console.error("❌ Error getting bank account:", error);
+    res.status(500).json({ success: false, error: "Failed to get bank account" });
+  }
+});
+
+// Update bank account
+app.patch("/bank-accounts/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const update = { ...req.body };
+
+    if (update.initialBalance !== undefined) {
+      const numeric = Number(update.initialBalance);
+      if (!Number.isFinite(numeric) || numeric < 0) {
+        return res.status(400).json({ success: false, error: "Invalid initialBalance" });
+      }
+      update.initialBalance = numeric;
+    }
+
+    if (update.accountNumber || update.currency) {
+      const toCheckNumber = update.accountNumber;
+      const toCheckCurrency = update.currency;
+      if (toCheckNumber || toCheckCurrency) {
+        const current = await bankAccounts.findOne({ _id: new ObjectId(id) });
+        if (!current || current.isDeleted) {
+          return res.status(404).json({ success: false, error: "Bank account not found" });
+        }
+        const number = toCheckNumber || current.accountNumber;
+        const curr = toCheckCurrency || current.currency;
+        const existing = await bankAccounts.findOne({ _id: { $ne: new ObjectId(id) }, accountNumber: number, currency: curr, isDeleted: { $ne: true } });
+        if (existing) {
+          return res.status(409).json({ success: false, error: "Account with this number already exists" });
+        }
+      }
+    }
+
+    update.updatedAt = new Date();
+    const result = await bankAccounts.findOneAndUpdate(
+      { _id: new ObjectId(id), isDeleted: { $ne: true } },
+      { $set: update },
+      { returnDocument: "after" }
+    );
+    if (!result || !result.value) {
+      return res.status(404).json({ success: false, error: "Bank account not found" });
+    }
+    res.json({ success: true, data: result.value });
+  } catch (error) {
+    console.error("❌ Error updating bank account:", error);
+    res.status(500).json({ success: false, error: "Failed to update bank account" });
+  }
+});
+
+// Soft delete bank account
+app.delete("/bank-accounts/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await bankAccounts.findOneAndUpdate(
+      { _id: new ObjectId(id), isDeleted: { $ne: true } },
+      { $set: { isDeleted: true, status: "Inactive", updatedAt: new Date() } },
+      { returnDocument: "after" }
+    );
+    if (!result || !result.value) {
+      return res.status(404).json({ success: false, error: "Bank account not found" });
+    }
+    res.json({ success: true, data: result.value });
+  } catch (error) {
+    console.error("❌ Error deleting bank account:", error);
+    res.status(500).json({ success: false, error: "Failed to delete bank account" });
+  }
+});
+
+// Balance adjustment
+app.post("/bank-accounts/:id/adjust-balance", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amount, type, note } = req.body || {};
+
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid amount" });
+    }
+    if (!type || !["deposit", "withdrawal"].includes(type)) {
+      return res.status(400).json({ success: false, error: "Invalid transaction type" });
+    }
+
+    const account = await bankAccounts.findOne({ _id: new ObjectId(id), isDeleted: { $ne: true } });
+    if (!account) return res.status(404).json({ success: false, error: "Bank account not found" });
+
+    let newBalance = account.currentBalance;
+    if (type === "deposit") newBalance += numericAmount;
+    else newBalance -= numericAmount;
+    if (newBalance < 0) {
+      return res.status(400).json({ success: false, error: "Insufficient balance" });
+    }
+
+    const update = {
+      currentBalance: newBalance,
+      updatedAt: new Date()
+    };
+
+    const result = await bankAccounts.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: update, $push: { balanceHistory: { amount: numericAmount, type, note: note || null, at: new Date() } } },
+      { returnDocument: "after" }
+    );
+    res.json({ success: true, data: result.value });
+  } catch (error) {
+    console.error("❌ Error adjusting balance:", error);
+    res.status(500).json({ success: false, error: "Failed to adjust balance" });
+  }
+});
+
+// Bank stats overview
+app.get("/bank-accounts/stats/overview", async (req, res) => {
+  try {
+    const pipeline = [
+      { $match: { isDeleted: { $ne: true } } },
+      {
+        $group: {
+          _id: null,
+          totalAccounts: { $sum: 1 },
+          totalBalance: { $sum: "$currentBalance" },
+          totalInitialBalance: { $sum: "$initialBalance" },
+          activeAccounts: { $sum: { $cond: [{ $eq: ["$status", "Active"] }, 1, 0] } }
+        }
+      }
+    ];
+    const stats = await bankAccounts.aggregate(pipeline).toArray();
+    const data = stats[0] || { totalAccounts: 0, totalBalance: 0, totalInitialBalance: 0, activeAccounts: 0 };
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error("❌ Error getting bank stats:", error);
+    res.status(500).json({ success: false, error: "Failed to get bank stats" });
   }
 });
 
