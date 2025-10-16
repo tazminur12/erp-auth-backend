@@ -320,7 +320,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, transactions, services, sales, vendors, orders, bankAccounts;
+let db, users, branches, counters, customers, customerTypes, transactions, services, sales, vendors, orders, bankAccounts, categories;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -340,6 +340,7 @@ async function initializeDatabase() {
     vendors = db.collection("vendors");
     orders = db.collection("orders");
     bankAccounts = db.collection("bankAccounts");
+    categories = db.collection("categories");
 
     
 
@@ -1819,6 +1820,168 @@ app.delete('/api/services/:serviceValue/statuses', async (req, res) => {
 
 
     
+
+// ==================== CATEGORY ROUTES ====================
+
+// Get all categories
+app.get('/api/categories', async (req, res) => {
+  try {
+    const list = await categories.find().toArray();
+    res.json({ success: true, categories: list });
+  } catch (err) {
+    console.error('Get categories error:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch categories' });
+  }
+});
+
+// Create a category
+app.post('/api/categories', async (req, res) => {
+  try {
+    const { name, icon = '', description = '', subCategories = [] } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ success: false, message: 'Name is required' });
+    }
+
+    const newCategory = {
+      id: `cat-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      name: String(name).trim(),
+      icon: String(icon || ''),
+      description: String(description || ''),
+      subCategories: Array.isArray(subCategories) ? subCategories : []
+    };
+
+    await categories.insertOne(newCategory);
+    res.status(201).json({ success: true, category: newCategory });
+  } catch (err) {
+    console.error('Create category error:', err);
+    res.status(500).json({ success: false, message: 'Failed to create category' });
+  }
+});
+
+// Update a category
+app.put('/api/categories/:categoryId', async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const { name, icon, description, subCategories } = req.body || {};
+
+    const update = {};
+    if (typeof name !== 'undefined') update.name = String(name).trim();
+    if (typeof icon !== 'undefined') update.icon = String(icon || '');
+    if (typeof description !== 'undefined') update.description = String(description || '');
+    if (typeof subCategories !== 'undefined') update.subCategories = Array.isArray(subCategories) ? subCategories : [];
+
+    const result = await categories.findOneAndUpdate(
+      { id: categoryId },
+      { $set: update },
+      { returnDocument: 'after' }
+    );
+
+    if (!result || !result.value) {
+      return res.status(404).json({ success: false, message: 'Category not found' });
+    }
+
+    res.json({ success: true, category: result.value });
+  } catch (err) {
+    console.error('Update category error:', err);
+    res.status(500).json({ success: false, message: 'Failed to update category' });
+  }
+});
+
+// Delete a category
+app.delete('/api/categories/:categoryId', async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const del = await categories.deleteOne({ id: categoryId });
+    if (!del.deletedCount) {
+      return res.status(404).json({ success: false, message: 'Category not found' });
+    }
+    res.json({ success: true, message: 'Category deleted' });
+  } catch (err) {
+    console.error('Delete category error:', err);
+    res.status(500).json({ success: false, message: 'Failed to delete category' });
+  }
+});
+
+// -------------------- Subcategory Routes --------------------
+
+// Add subcategory
+app.post('/api/categories/:categoryId/subcategories', async (req, res) => {
+  try {
+    const { categoryId } = req.params;
+    const { name = 'নতুন সাব-ক্যাটাগরি', icon = '📁', description = 'সাব-ক্যাটাগরি বর্ণনা' } = req.body || {};
+
+    const newSub = {
+      id: `sub-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      name: String(name).trim() || 'নতুন সাব-ক্যাটাগরি',
+      icon: String(icon || '📁'),
+      description: String(description || '')
+    };
+
+    const result = await categories.findOneAndUpdate(
+      { id: categoryId },
+      { $push: { subCategories: newSub } },
+      { returnDocument: 'after' }
+    );
+
+    if (!result || !result.value) {
+      return res.status(404).json({ success: false, message: 'Category not found' });
+    }
+
+    res.status(201).json({ success: true, category: result.value, subCategory: newSub });
+  } catch (err) {
+    console.error('Add subcategory error:', err);
+    res.status(500).json({ success: false, message: 'Failed to add subcategory' });
+  }
+});
+
+// Update subcategory (partial)
+app.patch('/api/categories/:categoryId/subcategories/:subCategoryId', async (req, res) => {
+  try {
+    const { categoryId, subCategoryId } = req.params;
+    const { name, icon, description } = req.body || {};
+
+    const setParts = {};
+    if (typeof name !== 'undefined') setParts['subCategories.$.name'] = String(name).trim();
+    if (typeof icon !== 'undefined') setParts['subCategories.$.icon'] = String(icon || '');
+    if (typeof description !== 'undefined') setParts['subCategories.$.description'] = String(description || '');
+
+    const result = await categories.findOneAndUpdate(
+      { id: categoryId, 'subCategories.id': subCategoryId },
+      { $set: setParts },
+      { returnDocument: 'after' }
+    );
+
+    if (!result || !result.value) {
+      return res.status(404).json({ success: false, message: 'Category or subcategory not found' });
+    }
+
+    res.json({ success: true, category: result.value });
+  } catch (err) {
+    console.error('Update subcategory error:', err);
+    res.status(500).json({ success: false, message: 'Failed to update subcategory' });
+  }
+});
+
+// Delete subcategory
+app.delete('/api/categories/:categoryId/subcategories/:subCategoryId', async (req, res) => {
+  try {
+    const { categoryId, subCategoryId } = req.params;
+    const result = await categories.findOneAndUpdate(
+      { id: categoryId },
+      { $pull: { subCategories: { id: subCategoryId } } },
+      { returnDocument: 'after' }
+    );
+
+    if (!result || !result.value) {
+      return res.status(404).json({ success: false, message: 'Category not found' });
+    }
+
+    res.json({ success: true, category: result.value });
+  } catch (err) {
+    console.error('Delete subcategory error:', err);
+    res.status(500).json({ success: false, message: 'Failed to delete subcategory' });
+  }
+});
 
 // ==================== TRANSACTION ROUTES ====================
 
