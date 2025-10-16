@@ -2,6 +2,7 @@
 require("dotenv").config();
 
 const express = require("express");
+const http = require("http");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { MongoClient, ObjectId, ServerApiVersion } = require("mongodb");
@@ -1834,8 +1835,6 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
-// Alias: without /api
- 
 
 // Create a category
 app.post('/api/categories', async (req, res) => {
@@ -1861,7 +1860,6 @@ app.post('/api/categories', async (req, res) => {
   }
 });
 
-// Alias: without /api
  
 
 // Update a category
@@ -1893,8 +1891,6 @@ app.put('/api/categories/:categoryId', async (req, res) => {
   }
 });
 
-// Aliases: without /api and singular path
- 
 
 // Delete a category
 app.delete('/api/categories/:categoryId', async (req, res) => {
@@ -1910,9 +1906,6 @@ app.delete('/api/categories/:categoryId', async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to delete category' });
   }
 });
-
-// Alias: without /api
- 
 
 // -------------------- Subcategory Routes --------------------
 
@@ -1946,9 +1939,6 @@ app.post('/api/categories/:categoryId/subcategories', async (req, res) => {
   }
 });
 
-// Alias: without /api
- 
-
 // Update subcategory (partial)
 app.patch('/api/categories/:categoryId/subcategories/:subCategoryId', async (req, res) => {
   try {
@@ -1977,12 +1967,6 @@ app.patch('/api/categories/:categoryId/subcategories/:subCategoryId', async (req
   }
 });
 
-// Aliases: support PUT and without /api
- 
-
- 
-
- 
 
 // Delete subcategory
 app.delete('/api/categories/:categoryId/subcategories/:subCategoryId', async (req, res) => {
@@ -2005,7 +1989,6 @@ app.delete('/api/categories/:categoryId/subcategories/:subCategoryId', async (re
   }
 });
 
-// Alias: without /api
  
 
 // ==================== TRANSACTION ROUTES ====================
@@ -3846,9 +3829,38 @@ app.get("/bank-accounts/stats/overview", async (req, res) => {
 
 // Start server only if not in Vercel environment
 if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
-  app.listen(port, () => {
-    console.log(`🚀 Server is running on port ${port}`);
-  });
+  const host = process.env.HOST || '0.0.0.0';
+  const basePort = Number(process.env.PORT) || 3000;
+  const maxRetries = Number(process.env.PORT_MAX_RETRY || 10);
+
+  const listenWithRetry = (tryPort, attempt = 0) => {
+    const server = http.createServer(app);
+
+    server.on('listening', () => {
+      const address = server.address();
+      const actualPort = address && address.port ? address.port : tryPort;
+      if (!process.env.PORT) {
+        // Reflect chosen port so logs/tools know it
+        process.env.PORT = String(actualPort);
+      }
+      console.log(`🚀 Server is running on http://${host}:${actualPort}`);
+    });
+
+    server.on('error', (err) => {
+      if (err && err.code === 'EADDRINUSE' && attempt < maxRetries) {
+        const nextPort = tryPort + 1;
+        console.warn(`⚠️  Port ${tryPort} in use. Retrying on ${nextPort} (attempt ${attempt + 1}/${maxRetries})...`);
+        // Try next port
+        setTimeout(() => listenWithRetry(nextPort, attempt + 1), 200);
+      } else {
+        console.error('❌ Server failed to start:', err);
+      }
+    });
+
+    server.listen(tryPort, host);
+  };
+
+  listenWithRetry(basePort, 0);
 }
 
 // Handle graceful shutdown
