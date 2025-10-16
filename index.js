@@ -321,7 +321,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, transactions, services, sales, vendors, orders, bankAccounts, categories;
+let db, users, branches, counters, customers, customerTypes, transactions, services, sales, vendors, orders, bankAccounts, categories, agents;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -342,6 +342,7 @@ async function initializeDatabase() {
     orders = db.collection("orders");
     bankAccounts = db.collection("bankAccounts");
     categories = db.collection("categories");
+    agents = db.collection("agents");
 
     
 
@@ -474,6 +475,8 @@ app.get("/", (req, res) => {
     </html>
   `);
 });
+
+
 
 
 // ==================== AUTH ROUTES ====================
@@ -3610,6 +3613,211 @@ app.get("/orders/analytics", async (req, res) => {
       error: true,
       message: "Internal server error while fetching order analytics",
     });
+  }
+});
+
+
+
+// ==================== AGENT ROUTES ====================
+// Create Agent
+app.post("/haj-umrah/agents", async (req, res) => {
+  try {
+    const {
+      tradeName,
+      tradeLocation,
+      ownerName,
+      contactNo,
+      dob,
+      nid,
+      passport
+    } = req.body;
+
+    if (!tradeName || !tradeLocation || !ownerName || !contactNo) {
+      return res.status(400).send({
+        error: true,
+        message: "tradeName, tradeLocation, ownerName and contactNo are required"
+      });
+    }
+
+    // Basic validations similar to frontend
+    const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+    if (!phoneRegex.test(String(contactNo).trim())) {
+      return res.status(400).send({ error: true, message: "Enter a valid phone number" });
+    }
+    if (nid && !/^[0-9]{8,20}$/.test(String(nid).trim())) {
+      return res.status(400).send({ error: true, message: "NID should be 8-20 digits" });
+    }
+    if (passport && !/^[A-Za-z0-9]{6,12}$/.test(String(passport).trim())) {
+      return res.status(400).send({ error: true, message: "Passport should be 6-12 chars" });
+    }
+    if (dob && !isValidDate(dob)) {
+      return res.status(400).send({ error: true, message: "Invalid date format for dob (YYYY-MM-DD)" });
+    }
+
+    const now = new Date();
+    const doc = {
+      tradeName: String(tradeName).trim(),
+      tradeLocation: String(tradeLocation).trim(),
+      ownerName: String(ownerName).trim(),
+      contactNo: String(contactNo).trim(),
+      dob: dob || null,
+      nid: nid || "",
+      passport: passport || "",
+      isActive: true,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    const result = await agents.insertOne(doc);
+    return res.status(201).send({
+      success: true,
+      message: "Agent created successfully",
+      data: { _id: result.insertedId, ...doc }
+    });
+  } catch (error) {
+    console.error('Create agent error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while creating agent" });
+  }
+});
+
+// List Agents (with pagination and search)
+app.get("/haj-umrah/agents", async (req, res) => {
+  try {
+    const { page = 1, limit = 10, q } = req.query;
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+
+    const filter = { };
+    if (q && String(q).trim()) {
+      const text = String(q).trim();
+      filter.$or = [
+        { tradeName: { $regex: text, $options: 'i' } },
+        { tradeLocation: { $regex: text, $options: 'i' } },
+        { ownerName: { $regex: text, $options: 'i' } },
+        { contactNo: { $regex: text, $options: 'i' } },
+        { nid: { $regex: text, $options: 'i' } },
+        { passport: { $regex: text, $options: 'i' } }
+      ];
+    }
+
+    const total = await agents.countDocuments(filter);
+    const data = await agents
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum)
+      .toArray();
+
+    res.send({
+      success: true,
+      data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('List agents error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while listing agents" });
+  }
+});
+
+// Get single agent by id
+app.get("/haj-umrah/agents/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ error: true, message: "Invalid agent id" });
+    }
+    const agent = await agents.findOne({ _id: new ObjectId(id) });
+    if (!agent) {
+      return res.status(404).send({ error: true, message: "Agent not found" });
+    }
+    res.send({ success: true, data: agent });
+  } catch (error) {
+    console.error('Get agent error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while fetching agent" });
+  }
+});
+
+// Update agent
+app.put("/haj-umrah/agents/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ error: true, message: "Invalid agent id" });
+    }
+
+    const {
+      tradeName,
+      tradeLocation,
+      ownerName,
+      contactNo,
+      dob,
+      nid,
+      passport,
+      isActive
+    } = req.body;
+
+    const update = { $set: { updatedAt: new Date() } };
+    if (tradeName !== undefined) update.$set.tradeName = String(tradeName).trim();
+    if (tradeLocation !== undefined) update.$set.tradeLocation = String(tradeLocation).trim();
+    if (ownerName !== undefined) update.$set.ownerName = String(ownerName).trim();
+    if (contactNo !== undefined) update.$set.contactNo = String(contactNo).trim();
+    if (dob !== undefined) {
+      if (dob && !isValidDate(dob)) {
+        return res.status(400).send({ error: true, message: "Invalid date format for dob (YYYY-MM-DD)" });
+      }
+      update.$set.dob = dob || null;
+    }
+    if (nid !== undefined) update.$set.nid = nid || "";
+    if (passport !== undefined) update.$set.passport = passport || "";
+    if (isActive !== undefined) update.$set.isActive = Boolean(isActive);
+
+    // Validate fields if provided
+    if (update.$set.contactNo) {
+      const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+      if (!phoneRegex.test(update.$set.contactNo)) {
+        return res.status(400).send({ error: true, message: "Enter a valid phone number" });
+      }
+    }
+    if (update.$set.nid && !/^[0-9]{8,20}$/.test(update.$set.nid)) {
+      return res.status(400).send({ error: true, message: "NID should be 8-20 digits" });
+    }
+    if (update.$set.passport && !/^[A-Za-z0-9]{6,12}$/.test(update.$set.passport)) {
+      return res.status(400).send({ error: true, message: "Passport should be 6-12 chars" });
+    }
+
+    const result = await agents.updateOne({ _id: new ObjectId(id) }, update);
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ error: true, message: "Agent not found" });
+    }
+
+    const updated = await agents.findOne({ _id: new ObjectId(id) });
+    res.send({ success: true, message: "Agent updated successfully", data: updated });
+  } catch (error) {
+    console.error('Update agent error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while updating agent" });
+  }
+});
+
+// Delete agent (hard delete)
+app.delete("/haj-umrah/agents/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ error: true, message: "Invalid agent id" });
+    }
+    const result = await agents.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) {
+      return res.status(404).send({ error: true, message: "Agent not found" });
+    }
+    res.send({ success: true, message: "Agent deleted successfully" });
+  } catch (error) {
+    console.error('Delete agent error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while deleting agent" });
   }
 });
 
