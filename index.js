@@ -475,6 +475,7 @@ app.get("/", (req, res) => {
   `);
 });
 
+
 // ==================== AUTH ROUTES ====================
 app.post("/api/auth/login", async (req, res) => {
   try {
@@ -1819,175 +1820,190 @@ app.delete('/api/services/:serviceValue/statuses', async (req, res) => {
   }
 });
 
-
-    
-
 // ==================== CATEGORY ROUTES ====================
-
-// Get all categories
-app.get('/api/categories', async (req, res) => {
-  try {
-    const list = await categories.find().toArray();
-    res.json({ success: true, categories: list });
-  } catch (err) {
-    console.error('Get categories error:', err);
-    res.status(500).json({ success: false, message: 'Failed to fetch categories' });
-  }
+// Normalize a category document for response
+const normalizeCategoryDoc = (doc) => ({
+  id: String(doc._id || doc.id || doc.categoryId || ""),
+  name: doc.name || "",
+  icon: doc.icon || "",
+  description: doc.description || "",
+  subCategories: Array.isArray(doc.subCategories) ? doc.subCategories.map((s) => ({
+    id: String(s._id || s.id || s.subCategoryId || ""),
+    name: s.name || "",
+    icon: s.icon || "",
+    description: s.description || ""
+  })) : []
 });
 
-
-// Create a category
-app.post('/api/categories', async (req, res) => {
+// GET all categories
+app.get("/api/categories", async (req, res) => {
   try {
-    const { name, icon = '', description = '', subCategories = [] } = req.body || {};
-    if (!name || !String(name).trim()) {
-      return res.status(400).json({ success: false, message: 'Name is required' });
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
     }
-
-    const newCategory = {
-      id: `cat-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      name: String(name).trim(),
-      icon: String(icon || ''),
-      description: String(description || ''),
-      subCategories: Array.isArray(subCategories) ? subCategories : []
-    };
-
-    await categories.insertOne(newCategory);
-    res.status(201).json({ success: true, category: newCategory });
+    const list = await categories.find({}).toArray();
+    return res.json(list.map(normalizeCategoryDoc));
   } catch (err) {
-    console.error('Create category error:', err);
-    res.status(500).json({ success: false, message: 'Failed to create category' });
+    console.error("/api/categories GET error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load categories" });
   }
 });
 
- 
-
-// Update a category
-app.put('/api/categories/:categoryId', async (req, res) => {
+// CREATE category
+app.post("/api/categories", async (req, res) => {
   try {
-    const { categoryId } = req.params;
-    const { name, icon, description, subCategories } = req.body || {};
+    const { name, icon = "", description = "", subCategories = [] } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: true, message: "Category name is required" });
+    }
+    const doc = {
+      name: String(name).trim(),
+      icon: String(icon || ""),
+      description: String(description || ""),
+      subCategories: Array.isArray(subCategories) ? subCategories.map((s) => ({
+        id: s.id || s._id || undefined,
+        name: s.name || "",
+        icon: s.icon || "",
+        description: s.description || ""
+      })) : []
+    };
+    const result = await categories.insertOne(doc);
+    const created = await categories.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizeCategoryDoc(created));
+  } catch (err) {
+    console.error("/api/categories POST error:", err);
+    return res.status(500).json({ error: true, message: "Failed to create category" });
+  }
+});
 
+// UPDATE category
+app.put("/api/categories/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, icon = "", description = "", subCategories } = req.body || {};
     const update = {};
     if (typeof name !== 'undefined') update.name = String(name).trim();
-    if (typeof icon !== 'undefined') update.icon = String(icon || '');
-    if (typeof description !== 'undefined') update.description = String(description || '');
-    if (typeof subCategories !== 'undefined') update.subCategories = Array.isArray(subCategories) ? subCategories : [];
-
-    const result = await categories.findOneAndUpdate(
-      { id: categoryId },
-      { $set: update },
-      { returnDocument: 'after' }
-    );
-
-    if (!result || !result.value) {
-      return res.status(404).json({ success: false, message: 'Category not found' });
+    if (typeof icon !== 'undefined') update.icon = String(icon || "");
+    if (typeof description !== 'undefined') update.description = String(description || "");
+    if (typeof subCategories !== 'undefined') {
+      update.subCategories = Array.isArray(subCategories) ? subCategories.map((s) => ({
+        id: s.id || s._id || undefined,
+        name: s.name || "",
+        icon: s.icon || "",
+        description: s.description || ""
+      })) : [];
     }
-
-    res.json({ success: true, category: result.value });
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+    const filter = { _id: new ObjectId(id) };
+    const result = await categories.findOneAndUpdate(filter, { $set: update }, { returnDocument: 'after' });
+    const updatedDoc = result && (result.value || result); // support different driver return shapes
+    if (!updatedDoc) return res.status(404).json({ error: true, message: "Category not found" });
+    return res.json(normalizeCategoryDoc(updatedDoc));
   } catch (err) {
-    console.error('Update category error:', err);
-    res.status(500).json({ success: false, message: 'Failed to update category' });
+    console.error("/api/categories/:id PUT error:", err);
+    return res.status(500).json({ error: true, message: "Failed to update category" });
   }
 });
 
-
-// Delete a category
-app.delete('/api/categories/:categoryId', async (req, res) => {
+// DELETE category
+app.delete("/api/categories/:id", async (req, res) => {
   try {
-    const { categoryId } = req.params;
-    const del = await categories.deleteOne({ id: categoryId });
-    if (!del.deletedCount) {
-      return res.status(404).json({ success: false, message: 'Category not found' });
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
     }
-    res.json({ success: true, message: 'Category deleted' });
+    const filter = { _id: new ObjectId(id) };
+    const result = await categories.deleteOne(filter);
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: true, message: "Category not found" });
+    }
+    return res.json({ success: true });
   } catch (err) {
-    console.error('Delete category error:', err);
-    res.status(500).json({ success: false, message: 'Failed to delete category' });
+    console.error("/api/categories/:id DELETE error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete category" });
   }
 });
 
-// -------------------- Subcategory Routes --------------------
+// ==================== SUBCATEGORY ROUTES ====================
 
-// Add subcategory
-app.post('/api/categories/:categoryId/subcategories', async (req, res) => {
+// CREATE subcategory under a category
+app.post("/api/categories/:id/subcategories", async (req, res) => {
   try {
-    const { categoryId } = req.params;
-    const { name = 'নতুন সাব-ক্যাটাগরি', icon = '📁', description = 'সাব-ক্যাটাগরি বর্ণনা' } = req.body || {};
-
-    const newSub = {
-      id: `sub-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      name: String(name).trim() || 'নতুন সাব-ক্যাটাগরি',
-      icon: String(icon || '📁'),
-      description: String(description || '')
+    const { id } = req.params;
+    const { name, icon = "", description = "" } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: true, message: "Subcategory name is required" });
+    }
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+    const filter = { _id: new ObjectId(id) };
+    const sub = {
+      id: new ObjectId().toString(),
+      name: String(name).trim(),
+      icon: String(icon || ""),
+      description: String(description || "")
     };
-
-    const result = await categories.findOneAndUpdate(
-      { id: categoryId },
-      { $push: { subCategories: newSub } },
-      { returnDocument: 'after' }
-    );
-
-    if (!result || !result.value) {
-      return res.status(404).json({ success: false, message: 'Category not found' });
-    }
-
-    res.status(201).json({ success: true, category: result.value, subCategory: newSub });
+    const result = await categories.updateOne(filter, { $push: { subCategories: sub } });
+    if (result.matchedCount === 0) return res.status(404).json({ error: true, message: "Category not found" });
+    const updated = await categories.findOne(filter);
+    return res.status(201).json(normalizeCategoryDoc(updated));
   } catch (err) {
-    console.error('Add subcategory error:', err);
-    res.status(500).json({ success: false, message: 'Failed to add subcategory' });
+    console.error("POST subcategory error:", err);
+    return res.status(500).json({ error: true, message: "Failed to add subcategory" });
   }
 });
 
-// Update subcategory (partial)
-app.patch('/api/categories/:categoryId/subcategories/:subCategoryId', async (req, res) => {
+// PATCH subcategory field(s)
+app.patch("/api/categories/:id/subcategories/:subId", async (req, res) => {
   try {
-    const { categoryId, subCategoryId } = req.params;
-    const { name, icon, description } = req.body || {};
-
-    const setParts = {};
-    if (typeof name !== 'undefined') setParts['subCategories.$.name'] = String(name).trim();
-    if (typeof icon !== 'undefined') setParts['subCategories.$.icon'] = String(icon || '');
-    if (typeof description !== 'undefined') setParts['subCategories.$.description'] = String(description || '');
-
-    const result = await categories.findOneAndUpdate(
-      { id: categoryId, 'subCategories.id': subCategoryId },
-      { $set: setParts },
-      { returnDocument: 'after' }
-    );
-
-    if (!result || !result.value) {
-      return res.status(404).json({ success: false, message: 'Category or subcategory not found' });
+    const { id, subId } = req.params;
+    const allowed = ["name", "icon", "description"];
+    const updates = Object.fromEntries(Object.entries(req.body || {}).filter(([k]) => allowed.includes(k)));
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: true, message: "No valid fields to update" });
     }
-
-    res.json({ success: true, category: result.value });
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+    const filter = { _id: new ObjectId(id) };
+    const cat = await categories.findOne(filter);
+    if (!cat) return res.status(404).json({ error: true, message: "Category not found" });
+    const nextSubs = (cat.subCategories || []).map((s) => {
+      if (String(s.id || s._id) === String(subId)) {
+        return { ...s, ...updates };
+      }
+      return s;
+    });
+    await categories.updateOne(filter, { $set: { subCategories: nextSubs } });
+    const updated = await categories.findOne(filter);
+    return res.json(normalizeCategoryDoc(updated));
   } catch (err) {
-    console.error('Update subcategory error:', err);
-    res.status(500).json({ success: false, message: 'Failed to update subcategory' });
+    console.error("PATCH subcategory error:", err);
+    return res.status(500).json({ error: true, message: "Failed to update subcategory" });
   }
 });
 
-
-// Delete subcategory
-app.delete('/api/categories/:categoryId/subcategories/:subCategoryId', async (req, res) => {
+// DELETE subcategory
+app.delete("/api/categories/:id/subcategories/:subId", async (req, res) => {
   try {
-    const { categoryId, subCategoryId } = req.params;
-    const result = await categories.findOneAndUpdate(
-      { id: categoryId },
-      { $pull: { subCategories: { id: subCategoryId } } },
-      { returnDocument: 'after' }
-    );
-
-    if (!result || !result.value) {
-      return res.status(404).json({ success: false, message: 'Category not found' });
+    const { id, subId } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
     }
-
-    res.json({ success: true, category: result.value });
+    const filter = { _id: new ObjectId(id) };
+    const result = await categories.updateOne(filter, { $pull: { subCategories: { id: String(subId) } } });
+    if (result.matchedCount === 0) return res.status(404).json({ error: true, message: "Category not found" });
+    return res.json({ success: true });
   } catch (err) {
-    console.error('Delete subcategory error:', err);
-    res.status(500).json({ success: false, message: 'Failed to delete subcategory' });
+    console.error("DELETE subcategory error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete subcategory" });
   }
 });
+
+
 
  
 
