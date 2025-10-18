@@ -321,7 +321,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, transactions, services, sales, vendors, orders, bankAccounts, categories, agents;
+let db, users, branches, counters, customers, customerTypes, transactions, services, sales, vendors, orders, bankAccounts, categories, agents, hrManagement;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -343,6 +343,7 @@ async function initializeDatabase() {
     bankAccounts = db.collection("bankAccounts");
     categories = db.collection("categories");
     agents = db.collection("agents");
+    hrManagement = db.collection("hr_management");
 
     
 
@@ -3824,8 +3825,8 @@ app.delete("/haj-umrah/agents/:id", async (req, res) => {
 // ==================== BANK ACCOUNTS ROUTES ====================
 // Schema (MongoDB):
 // {
-//   bankName, accountNumber, accountType, branchName, accountHolder,
-//   initialBalance, currentBalance, currency, contactNumber,
+//   bankName, accountNumber, accountType, branchName, accountHolder, accountTitle,
+//   initialBalance, currentBalance, currency, contactNumber, logo,
 //   status: 'Active'|'Inactive', createdAt, updatedAt, isDeleted, balanceHistory?
 // }
 
@@ -3838,12 +3839,14 @@ app.post("/bank-accounts", async (req, res) => {
       accountType = "Current",
       branchName,
       accountHolder,
+      accountTitle,
       initialBalance,
       currency = "BDT",
-      contactNumber
+      contactNumber,
+      logo
     } = req.body || {};
 
-    if (!bankName || !accountNumber || !accountType || !branchName || !accountHolder || initialBalance === undefined) {
+    if (!bankName || !accountNumber || !accountType || !branchName || !accountHolder || !accountTitle || initialBalance === undefined) {
       return res.status(400).json({ success: false, error: "Missing required fields" });
     }
 
@@ -3864,10 +3867,12 @@ app.post("/bank-accounts", async (req, res) => {
       accountType,
       branchName,
       accountHolder,
+      accountTitle,
       initialBalance: numericInitial,
       currentBalance: numericInitial,
       currency,
       contactNumber: contactNumber || null,
+      logo: logo || null,
       status: "Active",
       isDeleted: false,
       createdAt: new Date(),
@@ -3990,7 +3995,7 @@ app.delete("/bank-accounts/:id", async (req, res) => {
 app.post("/bank-accounts/:id/adjust-balance", async (req, res) => {
   try {
     const { id } = req.params;
-    const { amount, type, note } = req.body || {};
+    const { amount, type, note, createdBy, branchId } = req.body || {};
 
     const numericAmount = Number(amount);
     if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
@@ -4010,6 +4015,50 @@ app.post("/bank-accounts/:id/adjust-balance", async (req, res) => {
       return res.status(400).json({ success: false, error: "Insufficient balance" });
     }
 
+    // Get branch information for transaction
+    const branch = await branches.findOne({ branchId, isActive: true });
+    if (!branch) {
+      return res.status(400).json({ success: false, error: "Invalid branch ID" });
+    }
+
+    // Generate transaction ID
+    const transactionId = await generateTransactionId(db, branch.branchCode);
+
+    // Create transaction record
+    const transactionRecord = {
+      transactionId,
+      transactionType: type === "deposit" ? "credit" : "debit",
+      customerId: "SYSTEM",
+      customerName: "System",
+      customerPhone: null,
+      customerEmail: null,
+      category: "Bank Balance Adjustment",
+      paymentMethod: "bank-transfer",
+      paymentDetails: {
+        bankName: account.bankName,
+        accountNumber: account.accountNumber,
+        amount: numericAmount,
+        reference: `Balance ${type} - ${note || 'No note provided'}`
+      },
+      customerBankAccount: {
+        bankName: account.bankName,
+        accountNumber: account.accountNumber
+      },
+      notes: note || `Bank account balance ${type}`,
+      date: new Date(),
+      createdBy: createdBy || "SYSTEM",
+      branchId: branch.branchId,
+      branchName: branch.branchName,
+      branchCode: branch.branchCode,
+      status: 'completed',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      isActive: true,
+      bankAccountId: account._id,
+      isBankTransaction: true
+    };
+
+    // Update bank account balance and create transaction in a single operation
     const update = {
       currentBalance: newBalance,
       updatedAt: new Date()
@@ -4017,9 +4066,13 @@ app.post("/bank-accounts/:id/adjust-balance", async (req, res) => {
 
     const result = await bankAccounts.findOneAndUpdate(
       { _id: new ObjectId(id) },
-      { $set: update, $push: { balanceHistory: { amount: numericAmount, type, note: note || null, at: new Date() } } },
+      { $set: update, $push: { balanceHistory: { amount: numericAmount, type, note: note || null, at: new Date(), transactionId } } },
       { returnDocument: "after" }
     );
+
+    // Insert transaction record
+    await transactions.insertOne(transactionRecord);
+
     res.json({ success: true, data: result.value });
   } catch (error) {
     console.error("❌ Error adjusting balance:", error);
@@ -4050,6 +4103,762 @@ app.get("/bank-accounts/stats/overview", async (req, res) => {
     res.status(500).json({ success: false, error: "Failed to get bank stats" });
   }
 });
+
+// Get bank account transaction history
+app.get("/bank-accounts/:id/transactions", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { page = 1, limit = 10, type, startDate, endDate } = req.query;
+
+    // Validate bank account exists
+    const account = await bankAccounts.findOne({ _id: new ObjectId(id), isDeleted: { $ne: true } });
+    if (!account) {
+      return res.status(404).json({ success: false, error: "Bank account not found" });
+    }
+
+    // Build query for transactions
+    const query = {
+      $or: [
+        { bankAccountId: new ObjectId(id) },
+        { 
+          "paymentDetails.bankName": account.bankName,
+          "paymentDetails.accountNumber": account.accountNumber
+        }
+      ],
+      isActive: true
+    };
+
+    // Add filters
+    if (type && ['credit', 'debit'].includes(type)) {
+      query.transactionType = type;
+    }
+
+    if (startDate || endDate) {
+      query.date = {};
+      if (startDate) query.date.$gte = new Date(startDate);
+      if (endDate) query.date.$lte = new Date(endDate);
+    }
+
+    // Calculate pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const totalCount = await transactions.countDocuments(query);
+
+    // Get transactions
+    const data = await transactions
+      .find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .toArray();
+
+    res.json({
+      success: true,
+      data: {
+        transactions: data,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(totalCount / parseInt(limit)),
+          totalCount,
+          hasNext: skip + data.length < totalCount,
+          hasPrev: parseInt(page) > 1
+        }
+      }
+    });
+  } catch (error) {
+    console.error("❌ Error getting bank account transactions:", error);
+    res.status(500).json({ success: false, error: "Failed to get bank account transactions" });
+  }
+});
+
+// Create bank account transaction (debit/credit)
+app.post("/bank-accounts/:id/transactions", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { 
+      transactionType, 
+      amount, 
+      description, 
+      reference, 
+      createdBy, 
+      branchId,
+      notes 
+    } = req.body;
+
+    // Validate required fields
+    if (!transactionType || !amount || !description || !branchId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Transaction type, amount, description, and branch ID are required" 
+      });
+    }
+
+    // Validate transaction type
+    if (!['credit', 'debit'].includes(transactionType)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Transaction type must be 'credit' or 'debit'" 
+      });
+    }
+
+    // Validate amount
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Amount must be a positive number" 
+      });
+    }
+
+    // Validate bank account exists
+    const account = await bankAccounts.findOne({ _id: new ObjectId(id), isDeleted: { $ne: true } });
+    if (!account) {
+      return res.status(404).json({ success: false, error: "Bank account not found" });
+    }
+
+    // Check for sufficient balance for debit transactions
+    if (transactionType === 'debit' && account.currentBalance < numericAmount) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Insufficient balance" 
+      });
+    }
+
+    // Get branch information
+    const branch = await branches.findOne({ branchId, isActive: true });
+    if (!branch) {
+      return res.status(400).json({ success: false, error: "Invalid branch ID" });
+    }
+
+    // Generate transaction ID
+    const transactionId = await generateTransactionId(db, branch.branchCode);
+
+    // Calculate new balance
+    let newBalance = account.currentBalance;
+    if (transactionType === 'credit') {
+      newBalance += numericAmount;
+    } else {
+      newBalance -= numericAmount;
+    }
+
+    // Create transaction record
+    const transactionRecord = {
+      transactionId,
+      transactionType,
+      customerId: "BANK_ACCOUNT",
+      customerName: account.accountHolder,
+      customerPhone: account.contactNumber,
+      customerEmail: null,
+      category: "Bank Transaction",
+      paymentMethod: "bank-transfer",
+      paymentDetails: {
+        bankName: account.bankName,
+        accountNumber: account.accountNumber,
+        amount: numericAmount,
+        reference: reference || transactionId
+      },
+      customerBankAccount: {
+        bankName: account.bankName,
+        accountNumber: account.accountNumber
+      },
+      notes: notes || description,
+      date: new Date(),
+      createdBy: createdBy || "SYSTEM",
+      branchId: branch.branchId,
+      branchName: branch.branchName,
+      branchCode: branch.branchCode,
+      status: 'completed',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      isActive: true,
+      bankAccountId: account._id,
+      isBankTransaction: true,
+      description
+    };
+
+    // Update bank account balance and create transaction
+    const update = {
+      currentBalance: newBalance,
+      updatedAt: new Date()
+    };
+
+    const result = await bankAccounts.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { 
+        $set: update, 
+        $push: { 
+          balanceHistory: { 
+            amount: numericAmount, 
+            type: transactionType === 'credit' ? 'deposit' : 'withdrawal', 
+            note: description, 
+            at: new Date(), 
+            transactionId 
+          } 
+        } 
+      },
+      { returnDocument: "after" }
+    );
+
+    // Insert transaction record
+    const transactionResult = await transactions.insertOne(transactionRecord);
+
+    res.json({ 
+      success: true, 
+      data: {
+        transaction: {
+          _id: transactionResult.insertedId,
+          ...transactionRecord
+        },
+        bankAccount: result.value
+      }
+    });
+  } catch (error) {
+    console.error("❌ Error creating bank account transaction:", error);
+    res.status(500).json({ success: false, error: "Failed to create bank account transaction" });
+  }
+});
+
+// { Office Managment }
+
+// ==================== HR MANAGEMENT ROUTES ====================
+
+// ✅ POST: Create new employee
+app.post("/hr/employers", async (req, res) => {
+  try {
+    const {
+      // Personal Information
+      firstName,
+      lastName,
+      email,
+      phone,
+      address,
+      dateOfBirth,
+      gender,
+      emergencyContact,
+      emergencyPhone,
+      
+      // Employment Information
+      employeeId,
+      position,
+      department,
+      manager,
+      joinDate,
+      employmentType,
+      workLocation,
+      branch,
+      
+      // Salary Information
+      basicSalary,
+      allowances,
+      benefits,
+      bankAccount,
+      bankName,
+      
+      // Documents
+      profilePictureUrl,
+      resumeUrl,
+      nidCopyUrl,
+      otherDocuments = [],
+      
+      status = "active"
+    } = req.body;
+
+    // Validate required fields
+    if (!firstName || !lastName || !email || !phone || !employeeId || !position || !department || !branch || !joinDate || !basicSalary) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing required fields",
+        message: "First name, last name, email, phone, employee ID, position, department, branch, join date, and basic salary are required"
+      });
+    }
+
+    // Check if email already exists
+    const existingEmployee = await hrManagement.findOne({ 
+      email: email.toLowerCase(),
+      isActive: true 
+    });
+
+    if (existingEmployee) {
+      return res.status(400).json({
+        success: false,
+        error: "Email already exists",
+        message: "An employee with this email already exists"
+      });
+    }
+
+    // Check if employee ID already exists
+    const existingEmployeeId = await hrManagement.findOne({ 
+      employeeId: employeeId,
+      isActive: true 
+    });
+
+    if (existingEmployeeId) {
+      return res.status(400).json({
+        success: false,
+        error: "Employee ID already exists",
+        message: "An employee with this ID already exists"
+      });
+    }
+
+    const newEmployee = {
+      // Personal Information
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      name: `${firstName.trim()} ${lastName.trim()}`, // Full name for compatibility
+      email: email.toLowerCase().trim(),
+      phone: phone.trim(),
+      address: address || "",
+      dateOfBirth: dateOfBirth || null,
+      gender: gender || "",
+      emergencyContact: emergencyContact || "",
+      emergencyPhone: emergencyPhone || "",
+      
+      // Employment Information
+      employeeId: employeeId.trim(),
+      position: position.trim(),
+      designation: position.trim(), // For compatibility
+      department: department.trim(),
+      manager: manager || "",
+      joinDate: joinDate,
+      joiningDate: joinDate, // For compatibility
+      employmentType: employmentType || "Full-time",
+      workLocation: workLocation || "",
+      branch: branch,
+      branchId: branch, // For compatibility
+      
+      // Salary Information
+      basicSalary: parseFloat(basicSalary) || 0,
+      salary: parseFloat(basicSalary) || 0, // For compatibility
+      allowances: parseFloat(allowances) || 0,
+      benefits: benefits || "",
+      bankAccount: bankAccount || "",
+      bankName: bankName || "",
+      
+      // Documents
+      profilePictureUrl: profilePictureUrl || "",
+      resumeUrl: resumeUrl || "",
+      nidCopyUrl: nidCopyUrl || "",
+      otherDocuments: otherDocuments || [],
+      
+      status,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await hrManagement.insertOne(newEmployee);
+
+    res.status(201).json({
+      success: true,
+      message: "Employee created successfully",
+      data: {
+        id: result.insertedId,
+        employeeId: newEmployee.employeeId,
+        firstName: newEmployee.firstName,
+        lastName: newEmployee.lastName,
+        name: newEmployee.name,
+        email: newEmployee.email,
+        position: newEmployee.position,
+        department: newEmployee.department,
+        branch: newEmployee.branch
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Create employee error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to create employee"
+    });
+  }
+});
+
+// ✅ GET: Get all employees with filters
+app.get("/hr/employers", async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 10, 
+      search, 
+      department, 
+      status, 
+      branch,
+      position,
+      employmentType
+    } = req.query;
+
+    // Build filter object
+    const filter = { isActive: true };
+
+    if (search) {
+      filter.$or = [
+        { firstName: { $regex: search, $options: 'i' } },
+        { lastName: { $regex: search, $options: 'i' } },
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+        { position: { $regex: search, $options: 'i' } },
+        { designation: { $regex: search, $options: 'i' } },
+        { employeeId: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    if (department) {
+      filter.department = { $regex: department, $options: 'i' };
+    }
+
+    if (status) {
+      filter.status = status;
+    }
+
+    if (branch) {
+      filter.$or = [
+        { branch: branch },
+        { branchId: branch }
+      ];
+    }
+
+    if (position) {
+      filter.$or = [
+        { position: { $regex: position, $options: 'i' } },
+        { designation: { $regex: position, $options: 'i' } }
+      ];
+    }
+
+    if (employmentType) {
+      filter.employmentType = employmentType;
+    }
+
+    // Calculate pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const total = await hrManagement.countDocuments(filter);
+
+    // Get employees with pagination
+    const employees = await hrManagement
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .toArray();
+
+    res.json({
+      success: true,
+      data: employees,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / parseInt(limit)),
+        totalItems: total,
+        itemsPerPage: parseInt(limit)
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Get employees error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to fetch employees"
+    });
+  }
+});
+
+// ✅ GET: Get single employee by ID
+app.get("/hr/employers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const employee = await hrManagement.findOne({ 
+      $or: [
+        { _id: new ObjectId(id) },
+        { employeeId: id },
+        { employerId: id } // For backward compatibility
+      ],
+      isActive: true 
+    });
+
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        error: "Employee not found",
+        message: "No employee found with the provided ID"
+      });
+    }
+
+    res.json({
+      success: true,
+      data: employee
+    });
+
+  } catch (error) {
+    console.error("❌ Get employee error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to fetch employee"
+    });
+  }
+});
+
+// ✅ PUT: Update employee
+app.put("/hr/employers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    // Remove fields that shouldn't be updated directly
+    delete updateData._id;
+    delete updateData.employeeId;
+    delete updateData.employerId;
+    delete updateData.createdAt;
+
+    // Check if employee exists
+    const existingEmployee = await hrManagement.findOne({ 
+      $or: [
+        { _id: new ObjectId(id) },
+        { employeeId: id },
+        { employerId: id } // For backward compatibility
+      ],
+      isActive: true 
+    });
+
+    if (!existingEmployee) {
+      return res.status(404).json({
+        success: false,
+        error: "Employee not found",
+        message: "No employee found with the provided ID"
+      });
+    }
+
+    // Check if email is being updated and if it already exists
+    if (updateData.email && updateData.email !== existingEmployee.email) {
+      const emailExists = await hrManagement.findOne({ 
+        email: updateData.email.toLowerCase(),
+        isActive: true,
+        _id: { $ne: existingEmployee._id }
+      });
+
+      if (emailExists) {
+        return res.status(400).json({
+          success: false,
+          error: "Email already exists",
+          message: "An employee with this email already exists"
+        });
+      }
+    }
+
+    // Prepare update data
+    const updateFields = {
+      ...updateData,
+      updatedAt: new Date()
+    };
+
+    // Clean up the data
+    if (updateFields.firstName) {
+      updateFields.firstName = updateFields.firstName.trim();
+    }
+    if (updateFields.lastName) {
+      updateFields.lastName = updateFields.lastName.trim();
+    }
+    if (updateFields.firstName && updateFields.lastName) {
+      updateFields.name = `${updateFields.firstName} ${updateFields.lastName}`;
+    }
+    if (updateFields.email) {
+      updateFields.email = updateFields.email.toLowerCase().trim();
+    }
+    if (updateFields.phone) {
+      updateFields.phone = updateFields.phone.trim();
+    }
+    if (updateFields.position) {
+      updateFields.position = updateFields.position.trim();
+      updateFields.designation = updateFields.position; // For compatibility
+    }
+    if (updateFields.department) {
+      updateFields.department = updateFields.department.trim();
+    }
+    if (updateFields.basicSalary) {
+      updateFields.basicSalary = parseFloat(updateFields.basicSalary) || 0;
+      updateFields.salary = updateFields.basicSalary; // For compatibility
+    }
+    if (updateFields.allowances) {
+      updateFields.allowances = parseFloat(updateFields.allowances) || 0;
+    }
+
+    const result = await hrManagement.updateOne(
+      { 
+        $or: [
+          { _id: new ObjectId(id) },
+          { employeeId: id },
+          { employerId: id } // For backward compatibility
+        ],
+        isActive: true 
+      },
+      { $set: updateFields }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "Employee not found",
+        message: "No employee found with the provided ID"
+      });
+    }
+
+    // Get updated employee
+    const updatedEmployee = await hrManagement.findOne({ 
+      $or: [
+        { _id: new ObjectId(id) },
+        { employeeId: id },
+        { employerId: id } // For backward compatibility
+      ],
+      isActive: true 
+    });
+
+    res.json({
+      success: true,
+      message: "Employee updated successfully",
+      data: updatedEmployee
+    });
+
+  } catch (error) {
+    console.error("❌ Update employee error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to update employee"
+    });
+  }
+});
+
+// ✅ DELETE: Delete employee (soft delete)
+app.delete("/hr/employers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Check if employee exists
+    const existingEmployee = await hrManagement.findOne({ 
+      $or: [
+        { _id: new ObjectId(id) },
+        { employeeId: id },
+        { employerId: id } // For backward compatibility
+      ],
+      isActive: true 
+    });
+
+    if (!existingEmployee) {
+      return res.status(404).json({
+        success: false,
+        error: "Employee not found",
+        message: "No employee found with the provided ID"
+      });
+    }
+
+    // Soft delete
+    const result = await hrManagement.updateOne(
+      { 
+        $or: [
+          { _id: new ObjectId(id) },
+          { employeeId: id },
+          { employerId: id } // For backward compatibility
+        ],
+        isActive: true 
+      },
+      { 
+        $set: { 
+          isActive: false,
+          deletedAt: new Date(),
+          updatedAt: new Date()
+        } 
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "Employee not found",
+        message: "No employee found with the provided ID"
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Employee deleted successfully"
+    });
+
+  } catch (error) {
+    console.error("❌ Delete employee error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to delete employee"
+    });
+  }
+});
+
+// ✅ GET: Get employee statistics
+app.get("/hr/employers/stats/overview", async (req, res) => {
+  try {
+    const { branch, branchId } = req.query;
+
+    const filter = { isActive: true };
+    if (branch) {
+      filter.$or = [
+        { branch: branch },
+        { branchId: branch }
+      ];
+    } else if (branchId) {
+      filter.$or = [
+        { branch: branchId },
+        { branchId: branchId }
+      ];
+    }
+
+    const totalEmployees = await hrManagement.countDocuments(filter);
+    const activeEmployees = await hrManagement.countDocuments({ ...filter, status: "active" });
+    const inactiveEmployees = await hrManagement.countDocuments({ ...filter, status: "inactive" });
+
+    // Get department-wise count
+    const departmentStats = await hrManagement.aggregate([
+      { $match: filter },
+      { $group: { _id: "$department", count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]).toArray();
+
+    // Get position-wise count
+    const positionStats = await hrManagement.aggregate([
+      { $match: filter },
+      { $group: { _id: "$position", count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]).toArray();
+
+    // Get employment type-wise count
+    const employmentTypeStats = await hrManagement.aggregate([
+      { $match: filter },
+      { $group: { _id: "$employmentType", count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]).toArray();
+
+    res.json({
+      success: true,
+      data: {
+        totalEmployees,
+        activeEmployees,
+        inactiveEmployees,
+        departmentStats,
+        positionStats,
+        employmentTypeStats
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Get employee stats error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to fetch employee statistics"
+    });
+  }
+});
+
 
 // Start server only if not in Vercel environment
 if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
