@@ -2026,7 +2026,11 @@ app.post("/transactions", async (req, res) => {
       notes,
       date,
       createdBy,
-      branchId
+      branchId,
+      // Optional fields from frontend
+      sourceAccount,
+      destinationAccount,
+      employeeReference
     } = req.body;
 
     // Validation
@@ -2099,6 +2103,62 @@ app.post("/transactions", async (req, res) => {
     // Generate unique transaction ID
     const transactionId = await generateTransactionId(db, branch.branchCode);
 
+    // Validate amount once for potential bank balance updates
+    const amountForBank = parseFloat(paymentDetails?.amount);
+
+    // Optionally adjust bank account balances based on provided source/destination accounts
+    // Policy:
+    // - For credit (income): deposit to destinationAccount (if valid internal account)
+    // - For debit (expense): withdraw from sourceAccount (if valid internal account)
+    // Balance history entries will reference the generated transactionId
+    const balanceUpdates = [];
+
+    const isValidObjectId = (id) => {
+      try { return ObjectId.isValid(id); } catch { return false; }
+    };
+
+    if (Number.isFinite(amountForBank) && amountForBank > 0) {
+      // Handle debit -> source (withdrawal)
+      if (transactionType === 'debit' && sourceAccount?.id && isValidObjectId(sourceAccount.id)) {
+        const src = await bankAccounts.findOne({ _id: new ObjectId(sourceAccount.id), isDeleted: { $ne: true } });
+        if (!src) {
+          return res.status(400).json({ error: true, message: "Source bank account not found" });
+        }
+        if (src.currentBalance < amountForBank) {
+          return res.status(400).json({ error: true, message: "Insufficient balance in source account" });
+        }
+
+        const newBalance = src.currentBalance - amountForBank;
+        const updateResult = await bankAccounts.findOneAndUpdate(
+          { _id: src._id },
+          { 
+            $set: { currentBalance: newBalance, updatedAt: new Date() },
+            $push: { balanceHistory: { amount: amountForBank, type: 'withdrawal', note: notes || category, at: new Date(), transactionId } }
+          },
+          { returnDocument: "after" }
+        );
+        balanceUpdates.push({ role: 'source', account: updateResult.value });
+      }
+
+      // Handle credit -> destination (deposit)
+      if (transactionType === 'credit' && destinationAccount?.id && isValidObjectId(destinationAccount.id)) {
+        const dest = await bankAccounts.findOne({ _id: new ObjectId(destinationAccount.id), isDeleted: { $ne: true } });
+        if (!dest) {
+          return res.status(400).json({ error: true, message: "Destination bank account not found" });
+        }
+        const newBalance = (dest.currentBalance || 0) + amountForBank;
+        const updateResult = await bankAccounts.findOneAndUpdate(
+          { _id: dest._id },
+          { 
+            $set: { currentBalance: newBalance, updatedAt: new Date() },
+            $push: { balanceHistory: { amount: amountForBank, type: 'deposit', note: notes || category, at: new Date(), transactionId } }
+          },
+          { returnDocument: "after" }
+        );
+        balanceUpdates.push({ role: 'destination', account: updateResult.value });
+      }
+    }
+
     // Create transaction object
     const newTransaction = {
       transactionId,
@@ -2128,6 +2188,20 @@ app.post("/transactions", async (req, res) => {
       branchId: branch.branchId,
       branchName: branch.branchName,
       branchCode: branch.branchCode,
+      // Store references for UI/audit
+      sourceAccount: sourceAccount?.id ? {
+        id: sourceAccount.id,
+        name: sourceAccount.name || null,
+        bankName: sourceAccount.bankName || null,
+        accountNumber: sourceAccount.accountNumber || null
+      } : null,
+      destinationAccount: destinationAccount?.id ? {
+        id: destinationAccount.id,
+        name: destinationAccount.name || null,
+        bankName: destinationAccount.bankName || null,
+        accountNumber: destinationAccount.accountNumber || null
+      } : null,
+      employeeReference: employeeReference?.id ? employeeReference : null,
       status: 'completed',
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -2154,8 +2228,12 @@ app.post("/transactions", async (req, res) => {
         date: newTransaction.date,
         branchId: newTransaction.branchId,
         branchName: newTransaction.branchName,
+        sourceAccount: newTransaction.sourceAccount || null,
+        destinationAccount: newTransaction.destinationAccount || null,
+        employeeReference: newTransaction.employeeReference || null,
         status: newTransaction.status,
-        createdAt: newTransaction.createdAt
+        createdAt: newTransaction.createdAt,
+        balanceUpdates
       }
     });
 
@@ -4314,6 +4392,249 @@ app.post("/bank-accounts/:id/transactions", async (req, res) => {
   } catch (error) {
     console.error("❌ Error creating bank account transaction:", error);
     res.status(500).json({ success: false, error: "Failed to create bank account transaction" });
+  }
+});
+
+// Bank account to bank account transfer
+app.post("/bank-accounts/transfers", async (req, res) => {
+  try {
+    const {
+      fromAccountId,
+      toAccountId,
+      amount,
+      reference,
+      notes,
+      createdBy,
+      branchId,
+      accountManager
+    } = req.body;
+
+    // Validate required fields
+    if (!fromAccountId || !toAccountId || !amount || !branchId) {
+      return res.status(400).json({
+        success: false,
+        error: "From account ID, to account ID, amount, and branch ID are required"
+      });
+    }
+
+    // Validate amount
+    const numericAmount = Number(amount);
+    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Amount must be a positive number"
+      });
+    }
+
+    // Validate ObjectIds
+    if (!ObjectId.isValid(fromAccountId) || !ObjectId.isValid(toAccountId)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid account ID format"
+      });
+    }
+
+    // Check if same account
+    if (fromAccountId === toAccountId) {
+      return res.status(400).json({
+        success: false,
+        error: "Cannot transfer to the same account"
+      });
+    }
+
+    // Get both accounts
+    const fromAccount = await bankAccounts.findOne({ 
+      _id: new ObjectId(fromAccountId), 
+      isDeleted: { $ne: true } 
+    });
+    const toAccount = await bankAccounts.findOne({ 
+      _id: new ObjectId(toAccountId), 
+      isDeleted: { $ne: true } 
+    });
+
+    if (!fromAccount) {
+      return res.status(404).json({
+        success: false,
+        error: "Source account not found"
+      });
+    }
+
+    if (!toAccount) {
+      return res.status(404).json({
+        success: false,
+        error: "Destination account not found"
+      });
+    }
+
+    // Check sufficient balance
+    if (fromAccount.currentBalance < numericAmount) {
+      return res.status(400).json({
+        success: false,
+        error: "Insufficient balance in source account"
+      });
+    }
+
+    // Get branch information
+    const branch = await branches.findOne({ branchId, isActive: true });
+    if (!branch) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid branch ID"
+      });
+    }
+
+    // Generate transaction ID
+    const transactionId = await generateTransactionId(db, branch.branchCode);
+
+    // Calculate new balances
+    const fromNewBalance = fromAccount.currentBalance - numericAmount;
+    const toNewBalance = toAccount.currentBalance + numericAmount;
+
+    // Create transfer description
+    const transferDescription = `Transfer from ${fromAccount.bankName} (${fromAccount.accountNumber}) to ${toAccount.bankName} (${toAccount.accountNumber})`;
+    const transferNote = notes || `Account to Account Transfer - ${reference || transactionId}`;
+
+    // Create master transaction record
+    const masterTransaction = {
+      transactionId,
+      transactionType: 'transfer',
+      customerId: null,
+      customerName: 'Account Transfer',
+      customerPhone: null,
+      customerEmail: null,
+      category: 'account-transfer',
+      paymentMethod: 'bank-transfer',
+      paymentDetails: {
+        bankName: null,
+        accountNumber: null,
+        amount: numericAmount,
+        reference: reference || transactionId
+      },
+      customerBankAccount: {
+        bankName: null,
+        accountNumber: null
+      },
+      sourceAccount: {
+        id: fromAccount._id,
+        name: fromAccount.accountHolder,
+        bankName: fromAccount.bankName,
+        accountNumber: fromAccount.accountNumber
+      },
+      destinationAccount: {
+        id: toAccount._id,
+        name: toAccount.accountHolder,
+        bankName: toAccount.bankName,
+        accountNumber: toAccount.accountNumber
+      },
+      notes: transferNote,
+      date: new Date(),
+      createdBy: createdBy || 'SYSTEM',
+      branchId: branch.branchId,
+      branchName: branch.branchName,
+      branchCode: branch.branchCode,
+      status: 'completed',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      isActive: true,
+      isTransfer: true,
+      transferDetails: {
+        fromAccountId: fromAccount._id,
+        toAccountId: toAccount._id,
+        transferAmount: numericAmount,
+        transferReference: reference,
+        accountManager: accountManager || null
+      }
+    };
+
+    // Use MongoDB transaction to ensure atomicity
+    const session = db.client.startSession();
+    
+    try {
+      await session.withTransaction(async () => {
+        // Update source account (debit)
+        await bankAccounts.findOneAndUpdate(
+          { _id: fromAccount._id },
+          {
+            $set: { 
+              currentBalance: fromNewBalance, 
+              updatedAt: new Date() 
+            },
+            $push: { 
+              balanceHistory: { 
+                amount: numericAmount, 
+                type: 'withdrawal', 
+                note: `Transfer to ${toAccount.bankName} - ${toAccount.accountNumber}`, 
+                at: new Date(), 
+                transactionId 
+              } 
+            }
+          },
+          { session }
+        );
+
+        // Update destination account (credit)
+        await bankAccounts.findOneAndUpdate(
+          { _id: toAccount._id },
+          {
+            $set: { 
+              currentBalance: toNewBalance, 
+              updatedAt: new Date() 
+            },
+            $push: { 
+              balanceHistory: { 
+                amount: numericAmount, 
+                type: 'deposit', 
+                note: `Transfer from ${fromAccount.bankName} - ${fromAccount.accountNumber}`, 
+                at: new Date(), 
+                transactionId 
+              } 
+            }
+          },
+          { session }
+        );
+
+        // Create master transaction record
+        await transactions.insertOne(masterTransaction, { session });
+      });
+
+      // Get updated accounts for response
+      const updatedFromAccount = await bankAccounts.findOne({ _id: fromAccount._id });
+      const updatedToAccount = await bankAccounts.findOne({ _id: toAccount._id });
+
+      res.json({
+        success: true,
+        message: "Transfer completed successfully",
+        data: {
+          transaction: masterTransaction,
+          fromAccount: {
+            _id: updatedFromAccount._id,
+            name: updatedFromAccount.accountHolder,
+            bankName: updatedFromAccount.bankName,
+            accountNumber: updatedFromAccount.accountNumber,
+            currentBalance: updatedFromAccount.currentBalance
+          },
+          toAccount: {
+            _id: updatedToAccount._id,
+            name: updatedToAccount.accountHolder,
+            bankName: updatedToAccount.bankName,
+            accountNumber: updatedToAccount.accountNumber,
+            currentBalance: updatedToAccount.currentBalance
+          },
+          transferAmount: numericAmount,
+          transactionId
+        }
+      });
+
+    } finally {
+      await session.endSession();
+    }
+
+  } catch (error) {
+    console.error("❌ Error processing bank account transfer:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to process transfer"
+    });
   }
 });
 
