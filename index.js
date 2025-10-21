@@ -321,7 +321,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, transactions, services, sales, vendors, orders, bankAccounts, categories, agents, hrManagement;
+let db, users, branches, counters, customers, customerTypes, transactions, services, sales, vendors, orders, bankAccounts, categories, agents, hrManagement, haji, umrah, agentPackages;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -344,6 +344,9 @@ async function initializeDatabase() {
     categories = db.collection("categories");
     agents = db.collection("agents");
     hrManagement = db.collection("hr_management");
+    haji = db.collection("haji");
+    umrah = db.collection("umrah");
+    agentPackages = db.collection("agent_packages");
 
     
 
@@ -1200,7 +1203,31 @@ app.post("/users", async (req, res) => {
           notes,
           referenceBy,
           referenceCustomerId,
-          postCode
+          postCode,
+          // Newly supported personal fields
+          firstName,
+          lastName,
+          fatherName,
+          motherName,
+          spouseName,
+          occupation,
+          nationality,
+          gender,
+          maritalStatus,
+          // Newly supported passport fields
+          passportType,
+          // Service linkage fields
+          serviceType,
+          serviceStatus,
+          // Payment/financial fields
+          totalAmount,
+          paidAmount,
+          paymentMethod,
+          paymentStatus,
+          // Package information object
+          packageInfo,
+          // Explicit isActive toggle
+          isActive
         } = req.body;
 
         // Validation
@@ -1291,6 +1318,9 @@ app.post("/users", async (req, res) => {
         const newCustomer = {
           customerId,
           name,
+          // Additional name breakdown (optional)
+          firstName: firstName || null,
+          lastName: lastName || null,
           mobile,
           email: email || null,
           address,
@@ -1303,17 +1333,36 @@ app.post("/users", async (req, res) => {
           customerImage: imageUrl, // Just the image URL
           // Passport information fields
           passportNumber: passportNumber || null,
+          passportType: passportType || null,
           issueDate: issueDate || null,
           expiryDate: expiryDate || null,
           dateOfBirth: dateOfBirth || null,
           nidNumber: nidNumber || null,
+          nationality: nationality || null,
+          gender: gender || null,
+          maritalStatus: maritalStatus || null,
+          // Family and personal details
+          fatherName: fatherName || null,
+          motherName: motherName || null,
+          spouseName: spouseName || null,
+          occupation: occupation || null,
           // Additional fields
           notes: notes || null,
           referenceBy: referenceBy || null,
           referenceCustomerId: referenceCustomerId || null,
+          // Service linkage
+          serviceType: serviceType || null,
+          serviceStatus: serviceStatus || null,
+          // Financial fields
+          totalAmount: typeof totalAmount === 'number' ? totalAmount : null,
+          paidAmount: typeof paidAmount === 'number' ? paidAmount : null,
+          paymentMethod: paymentMethod || null,
+          paymentStatus: paymentStatus || null,
+          // Package info (store as provided if object)
+          packageInfo: packageInfo && typeof packageInfo === 'object' ? packageInfo : null,
           createdAt: new Date(),
           updatedAt: new Date(),
-          isActive: true
+          isActive: typeof isActive === 'boolean' ? isActive : true
         };
 
         const result = await customers.insertOne(newCustomer);
@@ -1334,16 +1383,33 @@ app.post("/users", async (req, res) => {
             postCode: newCustomer.postCode,
             whatsappNo: newCustomer.whatsappNo,
             customerType: newCustomer.customerType,
-            customerImage: newCustomer.customerImage,
+          customerImage: newCustomer.customerImage,
+          firstName: newCustomer.firstName,
+          lastName: newCustomer.lastName,
+          fatherName: newCustomer.fatherName,
+          motherName: newCustomer.motherName,
+          spouseName: newCustomer.spouseName,
+          occupation: newCustomer.occupation,
             passportNumber: newCustomer.passportNumber,
+          passportType: newCustomer.passportType,
             issueDate: newCustomer.issueDate,
             expiryDate: newCustomer.expiryDate,
             dateOfBirth: newCustomer.dateOfBirth,
             nidNumber: newCustomer.nidNumber,
+          nationality: newCustomer.nationality,
+          gender: newCustomer.gender,
+          maritalStatus: newCustomer.maritalStatus,
             notes: newCustomer.notes,
             referenceBy: newCustomer.referenceBy,
             referenceCustomerId: newCustomer.referenceCustomerId,
-            customerImage: newCustomer.customerImage,
+          customerImage: newCustomer.customerImage,
+          serviceType: newCustomer.serviceType,
+          serviceStatus: newCustomer.serviceStatus,
+          totalAmount: newCustomer.totalAmount,
+          paidAmount: newCustomer.paidAmount,
+          paymentMethod: newCustomer.paymentMethod,
+          paymentStatus: newCustomer.paymentStatus,
+          packageInfo: newCustomer.packageInfo,
             createdAt: newCustomer.createdAt
           }
         });
@@ -1365,7 +1431,7 @@ app.post("/users", async (req, res) => {
           });
         }
 
-        const { customerType, division, district, upazila, search, passportNumber, nidNumber, expiringSoon } = req.query;
+        const { customerType, division, district, upazila, search, passportNumber, nidNumber, expiringSoon, serviceType, serviceStatus, paymentStatus } = req.query;
         
         let filter = { isActive: true };
         
@@ -1376,6 +1442,9 @@ app.post("/users", async (req, res) => {
         if (upazila) filter.upazila = upazila;
         if (passportNumber) filter.passportNumber = { $regex: passportNumber, $options: 'i' };
         if (nidNumber) filter.nidNumber = { $regex: nidNumber, $options: 'i' };
+        if (serviceType) filter.serviceType = serviceType;
+        if (serviceStatus) filter.serviceStatus = serviceStatus;
+        if (paymentStatus) filter.paymentStatus = paymentStatus;
         
         // Filter customers with expiring passports (within next 30 days)
         if (expiringSoon === 'true') {
@@ -1464,15 +1533,24 @@ app.post("/users", async (req, res) => {
       }
     });
 
-    // Get customer by ID
+    // Get customer by ID (supports customerId or Mongo _id)
     app.get("/customers/:customerId", async (req, res) => {
       try {
         const { customerId } = req.params;
         
-        const customer = await customers.findOne({ 
+        // Try find by customerId first
+        let customer = await customers.findOne({ 
           customerId: customerId,
           isActive: true 
         });
+
+        // If not found and looks like a valid ObjectId, try by _id
+        if (!customer && ObjectId.isValid(customerId)) {
+          customer = await customers.findOne({ 
+            _id: new ObjectId(customerId),
+            isActive: true
+          });
+        }
 
         if (!customer) {
           return res.status(404).send({ 
@@ -1495,12 +1573,26 @@ app.post("/users", async (req, res) => {
     app.patch("/customers/:customerId", async (req, res) => {
       try {
         const { customerId } = req.params;
-        const updateData = req.body;
+        const updateData = { ...req.body };
         
         // Remove fields that shouldn't be updated
         delete updateData.customerId;
         delete updateData.createdAt;
         updateData.updatedAt = new Date();
+
+        // Normalize customerImage if provided (like create route)
+        if (Object.prototype.hasOwnProperty.call(updateData, 'customerImage')) {
+          let imageUrl = null;
+          const incoming = updateData.customerImage;
+          if (typeof incoming === 'string') {
+            imageUrl = incoming;
+          } else if (incoming && typeof incoming === 'object' && incoming.cloudinaryUrl) {
+            imageUrl = incoming.cloudinaryUrl;
+          } else if (incoming && typeof incoming === 'object' && incoming.downloadURL) {
+            imageUrl = incoming.downloadURL;
+          }
+          updateData.customerImage = imageUrl;
+        }
 
         // Check if mobile is being updated and if it already exists
         if (updateData.mobile) {
@@ -1548,6 +1640,31 @@ app.post("/users", async (req, res) => {
           });
         }
 
+        // Validate payment fields if provided
+        if (Object.prototype.hasOwnProperty.call(updateData, 'totalAmount')) {
+          if (updateData.totalAmount !== null && updateData.totalAmount !== undefined && typeof updateData.totalAmount !== 'number') {
+            return res.status(400).send({ error: true, message: "totalAmount must be a number" });
+          }
+        }
+        if (Object.prototype.hasOwnProperty.call(updateData, 'paidAmount')) {
+          if (updateData.paidAmount !== null && updateData.paidAmount !== undefined && typeof updateData.paidAmount !== 'number') {
+            return res.status(400).send({ error: true, message: "paidAmount must be a number" });
+          }
+        }
+        if (typeof updateData.totalAmount === 'number' && typeof updateData.paidAmount === 'number') {
+          if (updateData.paidAmount > updateData.totalAmount) {
+            return res.status(400).send({ error: true, message: "paidAmount cannot exceed totalAmount" });
+          }
+        }
+
+        // Validate enums if provided
+        if (updateData.paymentStatus && !['pending', 'partial', 'paid'].includes(updateData.paymentStatus)) {
+          return res.status(400).send({ error: true, message: "Invalid paymentStatus value" });
+        }
+        if (updateData.serviceStatus && !['pending', 'confirmed', 'cancelled', 'in_progress', 'completed'].includes(updateData.serviceStatus)) {
+          return res.status(400).send({ error: true, message: "Invalid serviceStatus value" });
+        }
+
         const result = await customers.updateOne(
           { customerId: customerId, isActive: true },
           { $set: updateData }
@@ -1560,10 +1677,12 @@ app.post("/users", async (req, res) => {
           });
         }
 
+        // Return updated customer
+        const updatedCustomer = await customers.findOne({ customerId, isActive: true });
         res.send({
           success: true,
           message: "Customer updated successfully",
-          modifiedCount: result.modifiedCount
+          customer: updatedCustomer
         });
       } catch (error) {
         console.error('Update customer error:', error);
@@ -3900,11 +4019,677 @@ app.delete("/haj-umrah/agents/:id", async (req, res) => {
   }
 });
 
+// ==================== HAJI ROUTES ====================
+// Create Haji (customerType: 'haj')
+app.post("/haj-umrah/haji", async (req, res) => {
+  try {
+    const data = req.body || {};
+
+    if (!data.name || !String(data.name).trim()) {
+      return res.status(400).json({ error: true, message: "Name is required" });
+    }
+    if (!data.mobile || !String(data.mobile).trim()) {
+      return res.status(400).json({ error: true, message: "Mobile is required" });
+    }
+
+    if (data.email) {
+      const emailRegex = /^\S+@\S+\.\S+$/;
+      if (!emailRegex.test(String(data.email).trim())) {
+        return res.status(400).json({ error: true, message: "Invalid email address" });
+      }
+    }
+
+    const dateFields = ["issueDate", "expiryDate", "dateOfBirth", "departureDate", "returnDate"];
+    for (const field of dateFields) {
+      if (data[field]) {
+        if (!isValidDate(data[field])) {
+          return res.status(400).json({ error: true, message: `Invalid date format for ${field} (YYYY-MM-DD)` });
+        }
+      }
+    }
+
+    const now = new Date();
+    const doc = {
+      name: String(data.name).trim(),
+      firstName: data.firstName || (String(data.name).trim().split(' ')[0] || ''),
+      lastName: data.lastName || (String(data.name).trim().split(' ').slice(1).join(' ') || ''),
+
+      mobile: String(data.mobile).trim(),
+      whatsappNo: data.whatsappNo || null,
+      email: data.email || null,
+
+      address: data.address || null,
+      division: data.division || null,
+      district: data.district || null,
+      upazila: data.upazila || null,
+      postCode: data.postCode || null,
+
+      passportNumber: data.passportNumber || data.passport || null,
+      passportType: data.passportType || 'ordinary',
+      issueDate: data.issueDate || null,
+      expiryDate: data.expiryDate || null,
+      dateOfBirth: data.dateOfBirth || null,
+      nidNumber: data.nidNumber || data.nid || null,
+      passportFirstName: data.passportFirstName || data.firstName || (String(data.name).trim().split(' ')[0] || ''),
+      passportLastName: data.passportLastName || data.lastName || (String(data.name).trim().split(' ').slice(1).join(' ') || ''),
+      nationality: data.nationality || 'Bangladeshi',
+      gender: data.gender || 'male',
+
+      fatherName: data.fatherName || null,
+      motherName: data.motherName || null,
+      spouseName: data.spouseName || null,
+      maritalStatus: data.maritalStatus || 'single',
+
+      occupation: data.occupation || null,
+      customerImage: data.customerImage || null,
+      notes: data.notes || null,
+      isActive: data.isActive !== undefined ? Boolean(data.isActive) : true,
+
+      referenceBy: data.referenceBy || null,
+
+      serviceType: 'hajj',
+      serviceStatus: data.serviceStatus || (data.paymentStatus === 'paid' ? 'confirmed' : 'pending'),
+
+      totalAmount: Number(data.totalAmount || 0),
+      paidAmount: Number(data.paidAmount || 0),
+      paymentMethod: data.paymentMethod || 'cash',
+      paymentStatus: data.paymentStatus || 'pending',
+
+      packageInfo: {
+        packageId: data.packageId || null,
+        packageName: (data.packageInfo && data.packageInfo.packageName) || data.packageName || null,
+        packageType: 'hajj',
+        agentId: data.agentId || null,
+        agent: (data.packageInfo && data.packageInfo.agent) || data.agent || null,
+        agentContact: (data.packageInfo && data.packageInfo.agentContact) || data.agentContact || null,
+        departureDate: data.departureDate || (data.packageInfo && data.packageInfo.departureDate) || null,
+        returnDate: data.returnDate || (data.packageInfo && data.packageInfo.returnDate) || null,
+        previousHajj: Boolean(data.previousHajj || (data.packageInfo && data.packageInfo.previousHajj)),
+        previousUmrah: Boolean(data.previousUmrah || (data.packageInfo && data.packageInfo.previousUmrah)),
+        specialRequirements: data.specialRequirements || (data.packageInfo && data.packageInfo.specialRequirements) || null
+      },
+
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null
+    };
+
+    const result = await haji.insertOne(doc);
+    return res.status(201).json({ success: true, data: { _id: result.insertedId, ...doc } });
+  } catch (error) {
+    console.error('Create haji error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while creating haji" });
+  }
+});
+
+// List Haji (pagination + search)
+app.get("/haj-umrah/haji", async (req, res) => {
+  try {
+    const { page = 1, limit = 10, q, serviceStatus, paymentStatus, isActive } = req.query || {};
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+
+    const filter = {};
+    if (q && String(q).trim()) {
+      const text = String(q).trim();
+      filter.$or = [
+        { name: { $regex: text, $options: 'i' } },
+        { mobile: { $regex: text, $options: 'i' } },
+        { email: { $regex: text, $options: 'i' } },
+        { customerId: { $regex: text, $options: 'i' } },
+        { passportNumber: { $regex: text, $options: 'i' } }
+      ];
+    }
+    if (serviceStatus) filter.serviceStatus = serviceStatus;
+    if (paymentStatus) filter.paymentStatus = paymentStatus;
+    if (isActive !== undefined) filter.isActive = String(isActive) === 'true';
+
+    const total = await haji.countDocuments(filter);
+    const data = await haji
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum)
+      .toArray();
+
+    res.json({
+      success: true,
+      data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('List haji error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while listing haji" });
+  }
+});
+
+// Get Haji by id or customerId
+app.get("/haj-umrah/haji/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid Haji ID" });
+    }
+
+    const doc = await haji.findOne({ _id: new ObjectId(id) });
+    
+    if (!doc) {
+      return res.status(404).json({ error: true, message: "Haji not found" });
+    }
+    
+    res.json({ success: true, data: doc });
+  } catch (error) {
+    console.error('Get haji error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while fetching haji" });
+  }
+});
+
+// Update Haji by id (ObjectId)
+app.put("/haj-umrah/haji/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body || {};
+
+    // Remove fields that shouldn't be updated
+    delete updates._id;
+    delete updates.createdAt;
+
+    if (updates.email) {
+      const emailRegex = /^\S+@\S+\.\S+$/;
+      if (!emailRegex.test(String(updates.email).trim())) {
+        return res.status(400).json({ error: true, message: "Invalid email address" });
+      }
+    }
+    const dateFields = ["issueDate", "expiryDate", "dateOfBirth", "departureDate", "returnDate"];
+    for (const field of dateFields) {
+      if (updates[field] && !isValidDate(updates[field])) {
+        return res.status(400).json({ error: true, message: `Invalid date format for ${field} (YYYY-MM-DD)` });
+      }
+    }
+
+    updates.updatedAt = new Date();
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid Haji ID" });
+    }
+
+    const result = await haji.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: updates },
+      { returnDocument: 'after' }
+    );
+
+    if (!result || !result.value) {
+      return res.status(404).json({ error: true, message: "Haji not found" });
+    }
+
+    res.json({ success: true, message: "Haji updated successfully", data: result.value });
+  } catch (error) {
+    console.error('Update haji error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while updating haji" });
+  }
+});
+
+// Delete Haji (soft delete)
+app.delete("/haj-umrah/haji/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid Haji ID" });
+    }
+    
+    const filter = { _id: new ObjectId(id) };
+
+    const result = await haji.findOneAndUpdate(
+      filter,
+      { $set: { isActive: false, deletedAt: new Date(), updatedAt: new Date() } },
+      { returnDocument: 'after' }
+    );
+
+    if (!result || !result.value) {
+      return res.status(404).json({ error: true, message: "Haji not found" });
+    }
+
+    res.json({ success: true, message: "Haji deleted successfully", data: result.value });
+  } catch (error) {
+    console.error('Delete haji error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while deleting haji" });
+  }
+});
+
+// ==================== UMRAH ROUTES ====================
+// Create Umrah (customerType: 'umrah')
+app.post("/haj-umrah/umrah", async (req, res) => {
+  try {
+    const data = req.body || {};
+
+    if (!data.name || !String(data.name).trim()) {
+      return res.status(400).json({ error: true, message: "Name is required" });
+    }
+    if (!data.mobile || !String(data.mobile).trim()) {
+      return res.status(400).json({ error: true, message: "Mobile is required" });
+    }
+
+    if (data.email) {
+      const emailRegex = /^\S+@\S+\.\S+$/;
+      if (!emailRegex.test(String(data.email).trim())) {
+        return res.status(400).json({ error: true, message: "Invalid email address" });
+      }
+    }
+
+    const dateFields = ["issueDate", "expiryDate", "dateOfBirth", "departureDate", "returnDate"];
+    for (const field of dateFields) {
+      if (data[field]) {
+        if (!isValidDate(data[field])) {
+          return res.status(400).json({ error: true, message: `Invalid date format for ${field} (YYYY-MM-DD)` });
+        }
+      }
+    }
+
+    const now = new Date();
+    const doc = {
+      name: String(data.name).trim(),
+      firstName: data.firstName || (String(data.name).trim().split(' ')[0] || ''),
+      lastName: data.lastName || (String(data.name).trim().split(' ').slice(1).join(' ') || ''),
+
+      mobile: String(data.mobile).trim(),
+      whatsappNo: data.whatsappNo || null,
+      email: data.email || null,
+
+      address: data.address || null,
+      division: data.division || null,
+      district: data.district || null,
+      upazila: data.upazila || null,
+      postCode: data.postCode || null,
+
+      passportNumber: data.passportNumber || data.passport || null,
+      passportType: data.passportType || 'ordinary',
+      issueDate: data.issueDate || null,
+      expiryDate: data.expiryDate || null,
+      dateOfBirth: data.dateOfBirth || null,
+      nidNumber: data.nidNumber || data.nid || null,
+      passportFirstName: data.passportFirstName || data.firstName || (String(data.name).trim().split(' ')[0] || ''),
+      passportLastName: data.passportLastName || data.lastName || (String(data.name).trim().split(' ').slice(1).join(' ') || ''),
+      nationality: data.nationality || 'Bangladeshi',
+      gender: data.gender || 'male',
+
+      fatherName: data.fatherName || null,
+      motherName: data.motherName || null,
+      spouseName: data.spouseName || null,
+      maritalStatus: data.maritalStatus || 'single',
+
+      occupation: data.occupation || null,
+      customerImage: data.customerImage || null,
+      notes: data.notes || null,
+      isActive: data.isActive !== undefined ? Boolean(data.isActive) : true,
+
+      referenceBy: data.referenceBy || null,
+
+      serviceType: 'umrah',
+      serviceStatus: data.serviceStatus || (data.paymentStatus === 'paid' ? 'confirmed' : 'pending'),
+
+      totalAmount: Number(data.totalAmount || 0),
+      paidAmount: Number(data.paidAmount || 0),
+      paymentMethod: data.paymentMethod || 'cash',
+      paymentStatus: data.paymentStatus || 'pending',
+
+      packageInfo: {
+        packageId: data.packageId || null,
+        packageName: (data.packageInfo && data.packageInfo.packageName) || data.packageName || null,
+        packageType: 'umrah',
+        agentId: data.agentId || null,
+        agent: (data.packageInfo && data.packageInfo.agent) || data.agent || null,
+        agentContact: (data.packageInfo && data.packageInfo.agentContact) || data.agentContact || null,
+        departureDate: data.departureDate || (data.packageInfo && data.packageInfo.departureDate) || null,
+        returnDate: data.returnDate || (data.packageInfo && data.packageInfo.returnDate) || null,
+        previousHajj: Boolean(data.previousHajj || (data.packageInfo && data.packageInfo.previousHajj)),
+        previousUmrah: Boolean(data.previousUmrah || (data.packageInfo && data.packageInfo.previousUmrah)),
+        specialRequirements: data.specialRequirements || (data.packageInfo && data.packageInfo.specialRequirements) || null
+      },
+
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null
+    };
+
+    const result = await umrah.insertOne(doc);
+    return res.status(201).json({ success: true, data: { _id: result.insertedId, ...doc } });
+  } catch (error) {
+    console.error('Create umrah error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while creating umrah" });
+  }
+});
+
+// List Umrah (pagination + search)
+app.get("/haj-umrah/umrah", async (req, res) => {
+  try {
+    const { page = 1, limit = 10, q, serviceStatus, paymentStatus, isActive } = req.query || {};
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+
+    const filter = {};
+    if (q && String(q).trim()) {
+      const text = String(q).trim();
+      filter.$or = [
+        { name: { $regex: text, $options: 'i' } },
+        { mobile: { $regex: text, $options: 'i' } },
+        { email: { $regex: text, $options: 'i' } },
+        { customerId: { $regex: text, $options: 'i' } },
+        { passportNumber: { $regex: text, $options: 'i' } }
+      ];
+    }
+    if (serviceStatus) filter.serviceStatus = serviceStatus;
+    if (paymentStatus) filter.paymentStatus = paymentStatus;
+    if (isActive !== undefined) filter.isActive = String(isActive) === 'true';
+
+    const total = await umrah.countDocuments(filter);
+    const data = await umrah
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum)
+      .toArray();
+
+    res.json({
+      success: true,
+      data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('List umrah error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while listing umrah" });
+  }
+});
+
+// Get Umrah by id or customerId
+app.get("/haj-umrah/umrah/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid Umrah ID" });
+    }
+
+    const doc = await umrah.findOne({ _id: new ObjectId(id) });
+    
+    if (!doc) {
+      return res.status(404).json({ error: true, message: "Umrah not found" });
+    }
+    
+    res.json({ success: true, data: doc });
+  } catch (error) {
+    console.error('Get umrah error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while fetching umrah" });
+  }
+});
+
+// Update Umrah by id (ObjectId)
+app.put("/haj-umrah/umrah/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = req.body || {};
+
+    // Remove fields that shouldn't be updated
+    delete updates._id;
+    delete updates.createdAt;
+
+    if (updates.email) {
+      const emailRegex = /^\S+@\S+\.\S+$/;
+      if (!emailRegex.test(String(updates.email).trim())) {
+        return res.status(400).json({ error: true, message: "Invalid email address" });
+      }
+    }
+    const dateFields = ["issueDate", "expiryDate", "dateOfBirth", "departureDate", "returnDate"];
+    for (const field of dateFields) {
+      if (updates[field] && !isValidDate(updates[field])) {
+        return res.status(400).json({ error: true, message: `Invalid date format for ${field} (YYYY-MM-DD)` });
+      }
+    }
+
+    updates.updatedAt = new Date();
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid Umrah ID" });
+    }
+
+    const result = await umrah.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: updates },
+      { returnDocument: 'after' }
+    );
+
+    if (!result || !result.value) {
+      return res.status(404).json({ error: true, message: "Umrah not found" });
+    }
+
+    res.json({ success: true, message: "Umrah updated successfully", data: result.value });
+  } catch (error) {
+    console.error('Update umrah error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while updating umrah" });
+  }
+});
+
+// Delete Umrah (soft delete)
+app.delete("/haj-umrah/umrah/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid Umrah ID" });
+    }
+    
+    const filter = { _id: new ObjectId(id) };
+
+    const result = await umrah.findOneAndUpdate(
+      filter,
+      { $set: { isActive: false, deletedAt: new Date(), updatedAt: new Date() } },
+      { returnDocument: 'after' }
+    );
+
+    if (!result || !result.value) {
+      return res.status(404).json({ error: true, message: "Umrah not found" });
+    }
+
+    res.json({ success: true, message: "Umrah deleted successfully", data: result.value });
+  } catch (error) {
+    console.error('Delete umrah error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while deleting umrah" });
+  }
+});
+
+// ==================== AGENT PACKAGES ROUTES ====================
+// Create package
+app.post("/haj-umrah/agent-packages", async (req, res) => {
+  try {
+    const data = req.body || {};
+
+    // Required
+    if (!data.packageName || !String(data.packageName).trim()) {
+      return res.status(400).json({ error: true, message: "packageName is required" });
+    }
+    if (!data.packageYear) {
+      return res.status(400).json({ error: true, message: "packageYear is required" });
+    }
+
+    // Normalize
+    const now = new Date();
+    const doc = {
+      packageName: String(data.packageName).trim(),
+      packageYear: String(data.packageYear).trim(),
+      packageType: data.packageType || 'Regular',
+      customPackageType: data.customPackageType || '',
+      sarToBdtRate: Number(data.sarToBdtRate || 0),
+      notes: data.notes || '',
+
+      // Complex cost and passenger structures
+      costs: data.costs || {},
+      discount: Number(data.discount || 0),
+      bangladeshAirfarePassengers: data.bangladeshAirfarePassengers || [],
+      bangladeshBusPassengers: data.bangladeshBusPassengers || [],
+      bangladeshTrainingOtherPassengers: data.bangladeshTrainingOtherPassengers || [],
+      saudiVisaPassengers: data.saudiVisaPassengers || [],
+      saudiMakkahHotelPassengers: data.saudiMakkahHotelPassengers || [],
+      saudiMadinaHotelPassengers: data.saudiMadinaHotelPassengers || [],
+      saudiMakkahFoodPassengers: data.saudiMakkahFoodPassengers || [],
+      saudiMadinaFoodPassengers: data.saudiMadinaFoodPassengers || [],
+      saudiMakkahZiyaraPassengers: data.saudiMakkahZiyaraPassengers || [],
+      saudiMadinaZiyaraPassengers: data.saudiMadinaZiyaraPassengers || [],
+      saudiTransportPassengers: data.saudiTransportPassengers || [],
+      saudiOthersPassengers: data.saudiOthersPassengers || [],
+
+      totals: data.totals || null,
+      attachments: data.attachments || [],
+
+      status: data.status || 'Draft',
+      isActive: data.isActive !== undefined ? Boolean(data.isActive) : true,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null
+    };
+
+    const result = await agentPackages.insertOne(doc);
+    return res.status(201).json({ success: true, data: { _id: result.insertedId, ...doc } });
+  } catch (error) {
+    console.error('Create agent package error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while creating agent package" });
+  }
+});
+
+// List packages with pagination and search
+app.get("/haj-umrah/agent-packages", async (req, res) => {
+  try {
+    const { page = 1, limit = 10, q, year, type, customType, status, isActive } = req.query || {};
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+
+    const filter = {};
+    if (q && String(q).trim()) {
+      const text = String(q).trim();
+      filter.$or = [
+        { packageName: { $regex: text, $options: 'i' } },
+        { notes: { $regex: text, $options: 'i' } }
+      ];
+    }
+    if (year) filter.packageYear = String(year);
+    if (type) filter.packageType = String(type);
+    if (customType) filter.customPackageType = String(customType);
+    if (status) filter.status = String(status);
+    if (isActive !== undefined) filter.isActive = String(isActive) === 'true';
+
+    const total = await agentPackages.countDocuments(filter);
+    const data = await agentPackages
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum)
+      .toArray();
+
+    res.json({
+      success: true,
+      data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('List agent packages error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while listing agent packages" });
+  }
+});
+
+// Get single package by _id
+app.get("/haj-umrah/agent-packages/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid package id" });
+    }
+    const doc = await agentPackages.findOne({ _id: new ObjectId(id) });
+    if (!doc) {
+      return res.status(404).json({ error: true, message: "Package not found" });
+    }
+    res.json({ success: true, data: doc });
+  } catch (error) {
+    console.error('Get agent package error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while fetching agent package" });
+  }
+});
+
+// Update package by _id
+app.put("/haj-umrah/agent-packages/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid package id" });
+    }
+    const updates = req.body || {};
+
+    // Basic normalization
+    if (updates.packageName !== undefined) updates.packageName = String(updates.packageName).trim();
+    if (updates.packageYear !== undefined) updates.packageYear = String(updates.packageYear).trim();
+    if (updates.sarToBdtRate !== undefined) updates.sarToBdtRate = Number(updates.sarToBdtRate || 0);
+    if (updates.discount !== undefined) updates.discount = Number(updates.discount || 0);
+    updates.updatedAt = new Date();
+
+    const result = await agentPackages.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: updates },
+      { returnDocument: 'after' }
+    );
+    if (!result || !result.value) {
+      return res.status(404).json({ error: true, message: "Package not found" });
+    }
+    res.json({ success: true, message: "Package updated successfully", data: result.value });
+  } catch (error) {
+    console.error('Update agent package error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while updating agent package" });
+  }
+});
+
+// Delete package (soft delete)
+app.delete("/haj-umrah/agent-packages/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid package id" });
+    }
+
+    const result = await agentPackages.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: { isActive: false, deletedAt: new Date(), updatedAt: new Date() } },
+      { returnDocument: 'after' }
+    );
+
+    if (!result || !result.value) {
+      return res.status(404).json({ error: true, message: "Package not found" });
+    }
+    res.json({ success: true, message: "Package deleted successfully", data: result.value });
+  } catch (error) {
+    console.error('Delete agent package error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while deleting agent package" });
+  }
+});
+
 // ==================== BANK ACCOUNTS ROUTES ====================
 // Schema (MongoDB):
 // {
-//   bankName, accountNumber, accountType, branchName, accountHolder, accountTitle,
-//   initialBalance, currentBalance, currency, contactNumber, logo,
+//   bankName, accountNumber, accountType, accountCategory, branchName, accountHolder, accountTitle,
+//   initialBalance, currentBalance, currency, contactNumber, logo, createdBy, branchId,
 //   status: 'Active'|'Inactive', createdAt, updatedAt, isDeleted, balanceHistory?
 // }
 
@@ -3915,22 +4700,37 @@ app.post("/bank-accounts", async (req, res) => {
       bankName,
       accountNumber,
       accountType = "Current",
+      accountCategory = "bank", // New field with default value
       branchName,
       accountHolder,
       accountTitle,
       initialBalance,
       currency = "BDT",
       contactNumber,
-      logo
+      logo,
+      createdBy, // New field
+      branchId // New field
     } = req.body || {};
 
-    if (!bankName || !accountNumber || !accountType || !branchName || !accountHolder || !accountTitle || initialBalance === undefined) {
+    // Updated validation to include new required fields
+    if (!bankName || !accountNumber || !accountType || !accountCategory || !branchName || !accountHolder || !accountTitle || initialBalance === undefined) {
       return res.status(400).json({ success: false, error: "Missing required fields" });
     }
 
     const numericInitial = Number(initialBalance);
     if (!Number.isFinite(numericInitial) || numericInitial < 0) {
       return res.status(400).json({ success: false, error: "Invalid initialBalance" });
+    }
+
+    // Validate account category
+    const validCategories = ['cash', 'bank', 'mobile_banking', 'check', 'others'];
+    if (!validCategories.includes(accountCategory)) {
+      return res.status(400).json({ success: false, error: "Invalid account category" });
+    }
+
+    // Validate contact number format if provided
+    if (contactNumber && !/^[\+]?[0-9\s\-\(\)]+$/.test(contactNumber)) {
+      return res.status(400).json({ success: false, error: "Invalid contact number format" });
     }
 
     // Ensure unique accountNumber per currency
@@ -3943,6 +4743,7 @@ app.post("/bank-accounts", async (req, res) => {
       bankName,
       accountNumber,
       accountType,
+      accountCategory, // New field
       branchName,
       accountHolder,
       accountTitle,
@@ -3951,6 +4752,8 @@ app.post("/bank-accounts", async (req, res) => {
       currency,
       contactNumber: contactNumber || null,
       logo: logo || null,
+      createdBy: createdBy || null, // New field
+      branchId: branchId || null, // New field
       status: "Active",
       isDeleted: false,
       createdAt: new Date(),
@@ -3969,17 +4772,19 @@ app.post("/bank-accounts", async (req, res) => {
 // Get all bank accounts with optional query filters
 app.get("/bank-accounts", async (req, res) => {
   try {
-    const { status, accountType, currency, search } = req.query || {};
+    const { status, accountType, accountCategory, currency, search } = req.query || {};
     const query = { isDeleted: { $ne: true } };
     if (status) query.status = status;
     if (accountType) query.accountType = accountType;
+    if (accountCategory) query.accountCategory = accountCategory;
     if (currency) query.currency = currency;
     if (search) {
       query.$or = [
         { bankName: { $regex: search, $options: "i" } },
         { accountNumber: { $regex: search, $options: "i" } },
         { branchName: { $regex: search, $options: "i" } },
-        { accountHolder: { $regex: search, $options: "i" } }
+        { accountHolder: { $regex: search, $options: "i" } },
+        { accountTitle: { $regex: search, $options: "i" } }
       ];
     }
     const data = await bankAccounts.find(query).sort({ createdAt: -1 }).toArray();
@@ -4004,7 +4809,7 @@ app.get("/bank-accounts/:id", async (req, res) => {
 });
 
 // Update bank account
-app.patch("/bank-accounts/:id", async (req, res) => {
+app.put("/bank-accounts/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const update = { ...req.body };
@@ -4015,6 +4820,19 @@ app.patch("/bank-accounts/:id", async (req, res) => {
         return res.status(400).json({ success: false, error: "Invalid initialBalance" });
       }
       update.initialBalance = numeric;
+    }
+
+    // Validate account category if provided
+    if (update.accountCategory) {
+      const validCategories = ['cash', 'bank', 'mobile_banking', 'check', 'others'];
+      if (!validCategories.includes(update.accountCategory)) {
+        return res.status(400).json({ success: false, error: "Invalid account category" });
+      }
+    }
+
+    // Validate contact number format if provided
+    if (update.contactNumber && !/^[\+]?[0-9\s\-\(\)]+$/.test(update.contactNumber)) {
+      return res.status(400).json({ success: false, error: "Invalid contact number format" });
     }
 
     if (update.accountNumber || update.currency) {
@@ -4169,16 +4987,68 @@ app.get("/bank-accounts/stats/overview", async (req, res) => {
           totalAccounts: { $sum: 1 },
           totalBalance: { $sum: "$currentBalance" },
           totalInitialBalance: { $sum: "$initialBalance" },
-          activeAccounts: { $sum: { $cond: [{ $eq: ["$status", "Active"] }, 1, 0] } }
+          activeAccounts: { $sum: { $cond: [{ $eq: ["$status", "Active"] }, 1, 0] } },
+          bankAccounts: { $sum: { $cond: [{ $eq: ["$accountCategory", "bank"] }, 1, 0] } },
+          cashAccounts: { $sum: { $cond: [{ $eq: ["$accountCategory", "cash"] }, 1, 0] } },
+          mobileBankingAccounts: { $sum: { $cond: [{ $eq: ["$accountCategory", "mobile_banking"] }, 1, 0] } },
+          checkAccounts: { $sum: { $cond: [{ $eq: ["$accountCategory", "check"] }, 1, 0] } },
+          otherAccounts: { $sum: { $cond: [{ $eq: ["$accountCategory", "others"] }, 1, 0] } }
         }
       }
     ];
     const stats = await bankAccounts.aggregate(pipeline).toArray();
-    const data = stats[0] || { totalAccounts: 0, totalBalance: 0, totalInitialBalance: 0, activeAccounts: 0 };
+    const data = stats[0] || { 
+      totalAccounts: 0, 
+      totalBalance: 0, 
+      totalInitialBalance: 0, 
+      activeAccounts: 0,
+      bankAccounts: 0,
+      cashAccounts: 0,
+      mobileBankingAccounts: 0,
+      checkAccounts: 0,
+      otherAccounts: 0
+    };
     res.json({ success: true, data });
   } catch (error) {
     console.error("❌ Error getting bank stats:", error);
     res.status(500).json({ success: false, error: "Failed to get bank stats" });
+  }
+});
+
+// Get bank accounts by category
+app.get("/bank-accounts/category/:category", async (req, res) => {
+  try {
+    const { category } = req.params;
+    const { status, currency, search } = req.query || {};
+    
+    // Validate category
+    const validCategories = ['cash', 'bank', 'mobile_banking', 'check', 'others'];
+    if (!validCategories.includes(category)) {
+      return res.status(400).json({ success: false, error: "Invalid account category" });
+    }
+    
+    const query = { 
+      isDeleted: { $ne: true },
+      accountCategory: category
+    };
+    
+    if (status) query.status = status;
+    if (currency) query.currency = currency;
+    if (search) {
+      query.$or = [
+        { bankName: { $regex: search, $options: "i" } },
+        { accountNumber: { $regex: search, $options: "i" } },
+        { branchName: { $regex: search, $options: "i" } },
+        { accountHolder: { $regex: search, $options: "i" } },
+        { accountTitle: { $regex: search, $options: "i" } }
+      ];
+    }
+    
+    const data = await bankAccounts.find(query).sort({ createdAt: -1 }).toArray();
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error("❌ Error fetching bank accounts by category:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch bank accounts by category" });
   }
 });
 
