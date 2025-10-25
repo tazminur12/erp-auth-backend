@@ -6,6 +6,7 @@ const http = require("http");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { MongoClient, ObjectId, ServerApiVersion } = require("mongodb");
+// const { body, validationResult } = require('express-validator');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -2129,7 +2130,519 @@ app.delete("/api/categories/:id/subcategories/:subId", async (req, res) => {
 
 
 
- 
+//  // Credit/Debit Transaction এর জন্য Backend Code (index.js এ যোগ করুন)
+
+// // Credit Transaction (Money coming into account)
+// app.post('/transactions/credit', [
+//   body('accountId').isMongoId(),
+//   body('amount').isNumeric().isFloat({ min: 0.01 }),
+//   body('customerId').isMongoId(),
+//   body('category').notEmpty(),
+//   body('paymentMethod').isIn(['cash', 'bank-transfer', 'cheque', 'mobile-banking', 'others']),
+//   body('createdBy').notEmpty(),
+//   body('branchId').notEmpty()
+// ], async (req, res) => {
+//   const session = await client.startSession();
+  
+//   try {
+//     session.startTransaction();
+    
+//     // Validate input
+//     const errors = validationResult(req);
+//     if (!errors.isEmpty()) {
+//       return res.status(400).json({
+//         success: false,
+//         message: 'Validation failed',
+//         details: errors.array()
+//       });
+//     }
+
+//     const {
+//       accountId,
+//       amount,
+//       customerId,
+//       category,
+//       paymentMethod,
+//       paymentDetails,
+//       customerBankAccount,
+//       notes,
+//       createdBy,
+//       branchId,
+//       employeeReference
+//     } = req.body;
+
+//     // Get account details
+//     const account = await Account.findById(accountId).session(session);
+//     if (!account) {
+//       throw new Error('Account not found');
+//     }
+
+//     if (!account.isActive) {
+//       throw new Error('Account is inactive');
+//     }
+
+//     // Generate transaction ID
+//     const transactionId = `CRD-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+//     // Update account balance (Credit = Money coming in)
+//     await Account.findByIdAndUpdate(
+//       accountId,
+//       { 
+//         $inc: { 
+//           balance: amount,
+//           transactionCount: 1
+//         },
+//         $set: { lastTransactionDate: new Date() }
+//       },
+//       { session }
+//     );
+
+//     // Create accounting entries for Credit Transaction
+//     const accountingEntries = [
+//       {
+//         accountId: accountId,
+//         accountName: account.accountName,
+//         debit: 0,
+//         credit: amount,
+//         description: `Credit entry for ${category} - Customer payment received`
+//       },
+//       {
+//         accountId: accountId, // Same account for both entries in credit
+//         accountName: account.accountName,
+//         debit: amount,
+//         credit: 0,
+//         description: `Debit entry for ${category} - Revenue recognition`
+//       }
+//     ];
+
+//     // Create transaction record
+//     const transaction = new Transaction({
+//       transactionId,
+//       transactionType: 'credit',
+//       debitAccount: {
+//         id: accountId,
+//         name: account.accountName,
+//         bankName: account.bankName,
+//         accountNumber: account.accountNumber
+//       },
+//       creditAccount: {
+//         id: accountId,
+//         name: account.accountName,
+//         bankName: account.bankName,
+//         accountNumber: account.accountNumber
+//       },
+//       amount,
+//       customerId,
+//       category,
+//       paymentMethod,
+//       paymentDetails: paymentDetails || {},
+//       customerBankAccount: customerBankAccount || {},
+//       notes,
+//       createdBy,
+//       branchId,
+//       employeeReference,
+//       accountingEntries,
+//       status: 'completed',
+//       balanceUpdates: {
+//         debitAccountBalance: account.balance + amount,
+//         creditAccountBalance: account.balance + amount
+//       }
+//     });
+
+//     await transaction.save({ session });
+
+//     // Create audit trail
+//     await createAuditTrail({
+//       transactionId: transaction._id,
+//       action: 'created',
+//       performedBy: createdBy,
+//       details: {
+//         transactionType: 'credit',
+//         amount,
+//         account: account.accountName,
+//         category,
+//         customerId
+//       },
+//       session
+//     });
+
+//     await session.commitTransaction();
+    
+//     res.status(201).json({
+//       success: true,
+//       message: 'Credit transaction completed successfully',
+//       transaction: transaction
+//     });
+
+//   } catch (error) {
+//     await session.abortTransaction();
+    
+//     res.status(400).json({
+//       success: false,
+//       message: error.message || 'Credit transaction failed',
+//       error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+//     });
+//   } finally {
+//     await session.endSession();
+//   }
+// });
+
+// // Debit Transaction (Money going out of account)
+// app.post('/transactions/debit', [
+//   body('accountId').isMongoId(),
+//   body('amount').isNumeric().isFloat({ min: 0.01 }),
+//   body('customerId').isMongoId(),
+//   body('category').notEmpty(),
+//   body('paymentMethod').isIn(['cash', 'bank-transfer', 'cheque', 'mobile-banking', 'others']),
+//   body('createdBy').notEmpty(),
+//   body('branchId').notEmpty()
+// ], async (req, res) => {
+//   const session = await client.startSession();
+  
+//   try {
+//     session.startTransaction();
+    
+//     // Validate input
+//     const errors = validationResult(req);
+//     if (!errors.isEmpty()) {
+//       return res.status(400).json({
+//         success: false,
+//         message: 'Validation failed',
+//         details: errors.array()
+//       });
+//     }
+
+//     const {
+//       accountId,
+//       amount,
+//       customerId,
+//       category,
+//       paymentMethod,
+//       paymentDetails,
+//       customerBankAccount,
+//       notes,
+//       createdBy,
+//       branchId,
+//       employeeReference
+//     } = req.body;
+
+//     // Get account details
+//     const account = await Account.findById(accountId).session(session);
+//     if (!account) {
+//       throw new Error('Account not found');
+//     }
+
+//     if (!account.isActive) {
+//       throw new Error('Account is inactive');
+//     }
+
+//     // Validate sufficient balance
+//     if (account.balance < amount) {
+//       throw new Error('Insufficient balance for debit transaction');
+//     }
+
+//     // Generate transaction ID
+//     const transactionId = `DBT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    
+//     // Update account balance (Debit = Money going out)
+//     await Account.findByIdAndUpdate(
+//       accountId,
+//       { 
+//         $inc: { 
+//           balance: -amount,
+//           transactionCount: 1
+//         },
+//         $set: { lastTransactionDate: new Date() }
+//       },
+//       { session }
+//     );
+
+//     // Create accounting entries for Debit Transaction
+//     const accountingEntries = [
+//       {
+//         accountId: accountId,
+//         accountName: account.accountName,
+//         debit: amount,
+//         credit: 0,
+//         description: `Debit entry for ${category} - Payment made to customer`
+//       },
+//       {
+//         accountId: accountId, // Same account for both entries in debit
+//         accountName: account.accountName,
+//         debit: 0,
+//         credit: amount,
+//         description: `Credit entry for ${category} - Expense recognition`
+//       }
+//     ];
+
+//     // Create transaction record
+//     const transaction = new Transaction({
+//       transactionId,
+//       transactionType: 'debit',
+//       debitAccount: {
+//         id: accountId,
+//         name: account.accountName,
+//         bankName: account.bankName,
+//         accountNumber: account.accountNumber
+//       },
+//       creditAccount: {
+//         id: accountId,
+//         name: account.accountName,
+//         bankName: account.bankName,
+//         accountNumber: account.accountNumber
+//       },
+//       amount,
+//       customerId,
+//       category,
+//       paymentMethod,
+//       paymentDetails: paymentDetails || {},
+//       customerBankAccount: customerBankAccount || {},
+//       notes,
+//       createdBy,
+//       branchId,
+//       employeeReference,
+//       accountingEntries,
+//       status: 'completed',
+//       balanceUpdates: {
+//         debitAccountBalance: account.balance - amount,
+//         creditAccountBalance: account.balance - amount
+//       }
+//     });
+
+//     await transaction.save({ session });
+
+//     // Create audit trail
+//     await createAuditTrail({
+//       transactionId: transaction._id,
+//       action: 'created',
+//       performedBy: createdBy,
+//       details: {
+//         transactionType: 'debit',
+//         amount,
+//         account: account.accountName,
+//         category,
+//         customerId
+//       },
+//       session
+//     });
+
+//     await session.commitTransaction();
+    
+//     res.status(201).json({
+//       success: true,
+//       message: 'Debit transaction completed successfully',
+//       transaction: transaction
+//     });
+
+//   } catch (error) {
+//     await session.abortTransaction();
+    
+//     res.status(400).json({
+//       success: false,
+//       message: error.message || 'Debit transaction failed',
+//       error: process.env.NODE_ENV === 'development' ? error.stack : undefined
+//     });
+//   } finally {
+//     await session.endSession();
+//   }
+// });
+
+// // Get transaction by type with filters
+// app.get('/transactions/type/:type', async (req, res) => {
+//   try {
+//     const { type } = req.params;
+//     const {
+//       page = 1,
+//       limit = 10,
+//       category,
+//       paymentMethod,
+//       dateFrom,
+//       dateTo,
+//       search
+//     } = req.query;
+
+//     if (!['credit', 'debit', 'account_to_account', 'transfer'].includes(type)) {
+//       return res.status(400).json({
+//         success: false,
+//         message: 'Invalid transaction type'
+//       });
+//     }
+
+//     const filters = { transactionType: type };
+    
+//     if (category) filters.category = category;
+//     if (paymentMethod) filters.paymentMethod = paymentMethod;
+    
+//     if (dateFrom || dateTo) {
+//       filters.createdAt = {};
+//       if (dateFrom) filters.createdAt.$gte = new Date(dateFrom);
+//       if (dateTo) filters.createdAt.$lte = new Date(dateTo);
+//     }
+
+//     if (search) {
+//       filters.$or = [
+//         { 'debitAccount.name': { $regex: search, $options: 'i' } },
+//         { 'creditAccount.name': { $regex: search, $options: 'i' } },
+//         { notes: { $regex: search, $options: 'i' } },
+//         { category: { $regex: search, $options: 'i' } }
+//       ];
+//     }
+
+//     const transactions = await Transaction.find(filters)
+//       .populate('debitAccount.id', 'accountName bankName accountNumber')
+//       .populate('creditAccount.id', 'accountName bankName accountNumber')
+//       .populate('customerId', 'name phone email')
+//       .sort({ createdAt: -1 })
+//       .limit(limit * 1)
+//       .skip((page - 1) * limit);
+
+//     const totalCount = await Transaction.countDocuments(filters);
+//     const totalPages = Math.ceil(totalCount / limit);
+
+//     res.json({
+//       success: true,
+//       transactions,
+//       totalCount,
+//       totalPages,
+//       currentPage: parseInt(page),
+//       transactionType: type
+//     });
+
+//   } catch (error) {
+//     res.status(500).json({
+//       success: false,
+//       message: 'Failed to fetch transactions',
+//       error: error.message
+//     });
+//   }
+// });
+
+// // Get account balance after transaction
+// app.get('/accounts/:id/balance', async (req, res) => {
+//   try {
+//     const account = await Account.findById(req.params.id);
+    
+//     if (!account) {
+//       return res.status(404).json({
+//         success: false,
+//         message: 'Account not found'
+//       });
+//     }
+
+//     res.json({
+//       success: true,
+//       account: {
+//         id: account._id,
+//         name: account.accountName,
+//         bankName: account.bankName,
+//         accountNumber: account.accountNumber,
+//         balance: account.balance,
+//         currency: account.currency
+//       }
+//     });
+
+//   } catch (error) {
+//     res.status(500).json({
+//       success: false,
+//       message: 'Failed to fetch account balance',
+//       error: error.message
+//     });
+//   }
+// });
+
+// // Bulk create transactions (for multiple credits/debits)
+// app.post('/transactions/bulk', async (req, res) => {
+//   const session = await mongoose.startSession();
+  
+//   try {
+//     session.startTransaction();
+    
+//     const { transactions, createdBy, branchId } = req.body;
+    
+//     if (!Array.isArray(transactions) || transactions.length === 0) {
+//       throw new Error('Transactions array is required');
+//     }
+
+//     const results = [];
+    
+//     for (const txn of transactions) {
+//       const { transactionType, accountId, amount, customerId, category, notes } = txn;
+      
+//       // Get account
+//       const account = await Account.findById(accountId).session(session);
+//       if (!account) {
+//         throw new Error(`Account not found: ${accountId}`);
+//       }
+
+//       // Validate balance for debit
+//       if (transactionType === 'debit' && account.balance < amount) {
+//         throw new Error(`Insufficient balance in account: ${account.accountName}`);
+//       }
+
+//       // Update account balance
+//       const balanceChange = transactionType === 'credit' ? amount : -amount;
+//       await Account.findByIdAndUpdate(
+//         accountId,
+//         { 
+//           $inc: { 
+//             balance: balanceChange,
+//             transactionCount: 1
+//           },
+//           $set: { lastTransactionDate: new Date() }
+//         },
+//         { session }
+//       );
+
+//       // Create transaction
+//       const transactionId = `${transactionType.toUpperCase()}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
+//       const transaction = new Transaction({
+//         transactionId,
+//         transactionType,
+//         debitAccount: {
+//           id: accountId,
+//           name: account.accountName,
+//           bankName: account.bankName,
+//           accountNumber: account.accountNumber
+//         },
+//         creditAccount: {
+//           id: accountId,
+//           name: account.accountName,
+//           bankName: account.bankName,
+//           accountNumber: account.accountNumber
+//         },
+//         amount,
+//         customerId,
+//         category,
+//         notes,
+//         createdBy,
+//         branchId,
+//         status: 'completed'
+//       });
+
+//       await transaction.save({ session });
+//       results.push(transaction);
+//     }
+
+//     await session.commitTransaction();
+    
+//     res.status(201).json({
+//       success: true,
+//       message: `${results.length} transactions created successfully`,
+//       transactions: results
+//     });
+
+//   } catch (error) {
+//     await session.abortTransaction();
+    
+//     res.status(400).json({
+//       success: false,
+//       message: error.message || 'Bulk transaction failed'
+//     });
+//   } finally {
+//     session.endSession();
+//   }
+// });
 
 // ==================== TRANSACTION ROUTES ====================
 
@@ -2147,34 +2660,64 @@ app.post("/transactions", async (req, res) => {
       date,
       createdBy,
       branchId,
+      // Debit and Credit Account fields
+      debitAccount,
+      creditAccount,
       // Optional fields from frontend
       sourceAccount,
       destinationAccount,
       employeeReference
     } = req.body;
 
-    // Validation
-    if (!transactionType || !customerId || !category || !paymentMethod || !paymentDetails || !date) {
+    // Enhanced validation with detailed error messages
+    const validationErrors = [];
+    
+    if (!transactionType) validationErrors.push("Transaction type is required");
+    if (!customerId) validationErrors.push("Customer ID is required");
+    if (!category) validationErrors.push("Category is required");
+    if (!paymentMethod) validationErrors.push("Payment method is required");
+    if (!paymentDetails) validationErrors.push("Payment details are required");
+    if (!date) validationErrors.push("Date is required");
+    if (!branchId) validationErrors.push("Branch ID is required");
+    if (!createdBy) validationErrors.push("Created by user ID is required");
+
+    if (validationErrors.length > 0) {
       return res.status(400).json({
         error: true,
-        message: "Transaction type, customer ID, category, payment method, payment details, and date are required"
+        message: "Validation failed",
+        details: validationErrors
       });
     }
 
-    // Validate transaction type
-    if (!['credit', 'debit'].includes(transactionType)) {
+    // Validate transaction type - Enhanced for 3-section support
+    if (!['credit', 'debit', 'account_to_account', 'transfer'].includes(transactionType)) {
       return res.status(400).json({
         error: true,
-        message: "Transaction type must be 'credit' or 'debit'"
+        message: "Transaction type must be 'credit', 'debit', 'account_to_account', or 'transfer'"
+      });
+    }
+    
+    // Normalize transaction type: 'transfer' -> 'account_to_account'
+    let normalizedTransactionType = transactionType;
+    if (transactionType === 'transfer') {
+      normalizedTransactionType = 'account_to_account';
+    }
+
+    // Validate Debit and Credit Accounts for Double Entry
+    if (!debitAccount?.id || !creditAccount?.id) {
+      return res.status(400).json({
+        error: true,
+        message: "Both debit and credit accounts are required for double entry bookkeeping"
       });
     }
 
-    // Validate and normalize payment method (frontend ids)
+    // Validate and normalize payment method
     const validPaymentMethods = ['cash', 'bank-transfer', 'cheque', 'mobile-banking', 'others', 'bank'];
     if (!validPaymentMethods.includes(paymentMethod)) {
       return res.status(400).json({
         error: true,
-        message: "Invalid payment method"
+        message: "Invalid payment method",
+        validMethods: validPaymentMethods
       });
     }
 
@@ -2189,16 +2732,26 @@ app.post("/transactions", async (req, res) => {
       });
     }
 
-    // Validate amount
+    // Validate amount with better error handling
     const parsedAmount = parseFloat(paymentDetails?.amount);
-    if (!parsedAmount || parsedAmount <= 0) {
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
       return res.status(400).json({
         error: true,
-        message: "Amount must be greater than 0"
+        message: "Amount must be a valid positive number",
+        received: paymentDetails?.amount
       });
     }
 
-    // Check if customer exists
+    // Validate amount precision (max 2 decimal places)
+    const decimalPlaces = (parsedAmount.toString().split('.')[1] || '').length;
+    if (decimalPlaces > 2) {
+      return res.status(400).json({
+        error: true,
+        message: "Amount can have maximum 2 decimal places"
+      });
+    }
+
+    // Check if customer exists with better error handling
     const customer = await customers.findOne({ 
       customerId: customerId,
       isActive: true 
@@ -2207,167 +2760,334 @@ app.post("/transactions", async (req, res) => {
     if (!customer) {
       return res.status(404).json({
         error: true,
-        message: "Customer not found"
+        message: "Customer not found",
+        customerId: customerId
       });
     }
 
-    // Get branch information
+    // Get branch information with better error handling
     const branch = await branches.findOne({ branchId, isActive: true });
     if (!branch) {
       return res.status(400).json({
         error: true,
-        message: "Invalid branch ID"
+        message: "Branch not found or inactive",
+        branchId: branchId
       });
+    }
+
+    // Validate user exists (if createdBy is provided)
+    if (createdBy) {
+      const user = await users.findOne({ 
+        _id: new ObjectId(createdBy), 
+        isActive: true 
+      });
+      if (!user) {
+        return res.status(400).json({
+          error: true,
+          message: "User not found or inactive",
+          createdBy: createdBy
+        });
+      }
     }
 
     // Generate unique transaction ID
     const transactionId = await generateTransactionId(db, branch.branchCode);
 
-    // Validate amount once for potential bank balance updates
-    const amountForBank = parseFloat(paymentDetails?.amount);
-
-    // Optionally adjust bank account balances based on provided source/destination accounts
-    // Policy:
-    // - For credit (income): deposit to destinationAccount (if valid internal account)
-    // - For debit (expense): withdraw from sourceAccount (if valid internal account)
-    // Balance history entries will reference the generated transactionId
-    const balanceUpdates = [];
-
+    // Validate ObjectId function
     const isValidObjectId = (id) => {
       try { return ObjectId.isValid(id); } catch { return false; }
     };
 
-    if (Number.isFinite(amountForBank) && amountForBank > 0) {
-      // Handle debit -> source (withdrawal)
-      if (transactionType === 'debit' && sourceAccount?.id && isValidObjectId(sourceAccount.id)) {
-        const src = await bankAccounts.findOne({ _id: new ObjectId(sourceAccount.id), isDeleted: { $ne: true } });
-        if (!src) {
-          return res.status(400).json({ error: true, message: "Source bank account not found" });
-        }
-        if (src.currentBalance < amountForBank) {
-          return res.status(400).json({ error: true, message: "Insufficient balance in source account" });
-        }
+    // Double Entry Bookkeeping Implementation with transaction safety
+    const balanceUpdates = [];
+    const accountingEntries = [];
+    let session = null;
 
-        const newBalance = src.currentBalance - amountForBank;
-        const updateResult = await bankAccounts.findOneAndUpdate(
-          { _id: src._id },
-          { 
-            $set: { currentBalance: newBalance, updatedAt: new Date() },
-            $push: { balanceHistory: { amount: amountForBank, type: 'withdrawal', note: notes || category, at: new Date(), transactionId } }
-          },
-          { returnDocument: "after" }
-        );
-        balanceUpdates.push({ role: 'source', account: updateResult.value });
+    try {
+      // Start a MongoDB session for transaction safety
+      session = db.client.startSession();
+      await session.startTransaction();
+
+      // Get Debit Account with better error handling
+      const debitAcc = await bankAccounts.findOne({ 
+        _id: new ObjectId(debitAccount.id), 
+        isDeleted: { $ne: true } 
+      }, { session });
+
+      if (!debitAcc) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          error: true, 
+          message: "Debit account not found or deleted",
+          accountId: debitAccount.id
+        });
       }
 
-      // Handle credit -> destination (deposit)
-      if (transactionType === 'credit' && destinationAccount?.id && isValidObjectId(destinationAccount.id)) {
-        const dest = await bankAccounts.findOne({ _id: new ObjectId(destinationAccount.id), isDeleted: { $ne: true } });
-        if (!dest) {
-          return res.status(400).json({ error: true, message: "Destination bank account not found" });
-        }
-        const newBalance = (dest.currentBalance || 0) + amountForBank;
-        const updateResult = await bankAccounts.findOneAndUpdate(
-          { _id: dest._id },
-          { 
-            $set: { currentBalance: newBalance, updatedAt: new Date() },
-            $push: { balanceHistory: { amount: amountForBank, type: 'deposit', note: notes || category, at: new Date(), transactionId } }
+      // Get Credit Account with better error handling
+      const creditAcc = await bankAccounts.findOne({ 
+        _id: new ObjectId(creditAccount.id), 
+        isDeleted: { $ne: true } 
+      }, { session });
+
+      if (!creditAcc) {
+        await session.abortTransaction();
+        return res.status(400).json({ 
+          error: true, 
+          message: "Credit account not found or deleted",
+          accountId: creditAccount.id
+        });
+      }
+
+      // Check if debit and credit accounts are different
+      if (debitAccount.id === creditAccount.id) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          error: true,
+          message: "Debit and credit accounts cannot be the same"
+        });
+      }
+
+      // Validate sufficient balance in debit account
+      if (debitAcc.currentBalance < parsedAmount) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          error: true,
+          message: `Insufficient balance in debit account`,
+          details: {
+            available: debitAcc.currentBalance,
+            required: parsedAmount,
+            shortfall: parsedAmount - debitAcc.currentBalance
+          }
+        });
+      }
+
+      // Process Debit Entry (Money going out)
+      const newDebitBalance = debitAcc.currentBalance - parsedAmount;
+      const debitUpdateResult = await bankAccounts.findOneAndUpdate(
+        { _id: debitAcc._id },
+        { 
+          $set: { 
+            currentBalance: newDebitBalance, 
+            updatedAt: new Date() 
           },
-          { returnDocument: "after" }
-        );
-        balanceUpdates.push({ role: 'destination', account: updateResult.value });
+          $push: { 
+            balanceHistory: { 
+              amount: parsedAmount, 
+              type: 'debit', 
+              note: `Debit: ${notes || category}`, 
+              at: new Date(), 
+              transactionId,
+              reference: `TXN-${transactionId}`
+            } 
+          }
+        },
+        { returnDocument: "after", session }
+      );
+
+      balanceUpdates.push({ 
+        role: 'debit', 
+        account: debitUpdateResult.value,
+        previousBalance: debitAcc.currentBalance,
+        newBalance: newDebitBalance,
+        change: -parsedAmount
+      });
+
+      // Process Credit Entry (Money coming in)
+      const newCreditBalance = (creditAcc.currentBalance || 0) + parsedAmount;
+      const creditUpdateResult = await bankAccounts.findOneAndUpdate(
+        { _id: creditAcc._id },
+        { 
+          $set: { 
+            currentBalance: newCreditBalance, 
+            updatedAt: new Date() 
+          },
+          $push: { 
+            balanceHistory: { 
+              amount: parsedAmount, 
+              type: 'credit', 
+              note: `Credit: ${notes || category}`, 
+              at: new Date(), 
+              transactionId,
+              reference: `TXN-${transactionId}`
+            } 
+          }
+        },
+        { returnDocument: "after", session }
+      );
+
+      balanceUpdates.push({ 
+        role: 'credit', 
+        account: creditUpdateResult.value,
+        previousBalance: creditAcc.currentBalance || 0,
+        newBalance: newCreditBalance,
+        change: +parsedAmount
+      });
+
+      // Create accounting entries for audit trail
+      accountingEntries.push({
+        accountId: debitAccount.id,
+        accountName: debitAcc.accountName,
+        amount: parsedAmount,
+        type: 'debit',
+        description: `Debit: ${notes || category}`,
+        transactionId,
+        date: new Date(date)
+      });
+
+      accountingEntries.push({
+        accountId: creditAccount.id,
+        accountName: creditAcc.accountName,
+        amount: parsedAmount,
+        type: 'credit',
+        description: `Credit: ${notes || category}`,
+        transactionId,
+        date: new Date(date)
+      });
+
+      // Create transaction object with proper double entry structure
+      const newTransaction = {
+        transactionId,
+        transactionType: normalizedTransactionType,
+        customerId: customer.customerId,
+        customerName: customer.name,
+        customerPhone: customer.mobile,
+        customerEmail: customer.email,
+        category,
+        paymentMethod: normalizedPaymentMethod,
+        paymentDetails: {
+          bankName: paymentDetails?.bankName || null,
+          accountNumber: paymentDetails?.accountNumber || null,
+          chequeNumber: paymentDetails?.chequeNumber || null,
+          mobileProvider: paymentDetails?.mobileProvider || null,
+          transactionId: paymentDetails?.transactionId || null,
+          amount: parsedAmount,
+          reference: paymentDetails?.reference || null
+        },
+        customerBankAccount: {
+          bankName: customerBankAccount?.bankName || null,
+          accountNumber: customerBankAccount?.accountNumber || null
+        },
+        // Double Entry Accounts
+        debitAccount: {
+          id: debitAccount.id,
+          name: debitAcc.accountName,
+          bankName: debitAcc.bankName,
+          accountNumber: debitAcc.accountNumber,
+          previousBalance: debitAcc.currentBalance,
+          newBalance: newDebitBalance
+        },
+        creditAccount: {
+          id: creditAccount.id,
+          name: creditAcc.accountName,
+          bankName: creditAcc.bankName,
+          accountNumber: creditAcc.accountNumber,
+          previousBalance: creditAcc.currentBalance || 0,
+          newBalance: newCreditBalance
+        },
+        // Accounting Entries
+        accountingEntries,
+        notes: notes || null,
+        date: new Date(date),
+        createdBy: createdBy || null,
+        branchId: branch.branchId,
+        branchName: branch.branchName,
+        branchCode: branch.branchCode,
+        // Legacy fields for backward compatibility
+        sourceAccount: sourceAccount?.id ? {
+          id: sourceAccount.id,
+          name: sourceAccount.name || null,
+          bankName: sourceAccount.bankName || null,
+          accountNumber: sourceAccount.accountNumber || null
+        } : null,
+        destinationAccount: destinationAccount?.id ? {
+          id: destinationAccount.id,
+          name: destinationAccount.name || null,
+          bankName: destinationAccount.bankName || null,
+          accountNumber: destinationAccount.accountNumber || null
+        } : null,
+        employeeReference: employeeReference?.id ? employeeReference : null,
+        status: 'completed',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        isActive: true
+      };
+
+      const result = await transactions.insertOne(newTransaction, { session });
+
+      // Commit the transaction
+      await session.commitTransaction();
+
+      res.status(201).json({
+        success: true,
+        message: "Transaction created successfully with double entry bookkeeping",
+        transaction: {
+          _id: result.insertedId,
+          transactionId: newTransaction.transactionId,
+          transactionType: newTransaction.transactionType,
+          customerId: newTransaction.customerId,
+          customerName: newTransaction.customerName,
+          customerPhone: newTransaction.customerPhone,
+          customerEmail: newTransaction.customerEmail,
+          category: newTransaction.category,
+          paymentMethod: newTransaction.paymentMethod,
+          paymentDetails: newTransaction.paymentDetails,
+          // Double Entry Information
+          debitAccount: newTransaction.debitAccount,
+          creditAccount: newTransaction.creditAccount,
+          accountingEntries: newTransaction.accountingEntries,
+          notes: newTransaction.notes,
+          date: newTransaction.date,
+          branchId: newTransaction.branchId,
+          branchName: newTransaction.branchName,
+          status: newTransaction.status,
+          createdAt: newTransaction.createdAt,
+          balanceUpdates
+        }
+      });
+
+    } catch (transactionError) {
+      // Rollback transaction on error
+      if (session) {
+        await session.abortTransaction();
+      }
+      throw transactionError;
+    } finally {
+      // End session
+      if (session) {
+        await session.endSession();
       }
     }
 
-    // Create transaction object
-    const newTransaction = {
-      transactionId,
-      transactionType,
-      customerId: customer.customerId,
-      customerName: customer.name,
-      customerPhone: customer.mobile,
-      customerEmail: customer.email,
-      category,
-      paymentMethod: normalizedPaymentMethod,
-      paymentDetails: {
-        bankName: paymentDetails?.bankName || null,
-        accountNumber: paymentDetails?.accountNumber || null,
-        chequeNumber: paymentDetails?.chequeNumber || null,
-        mobileProvider: paymentDetails?.mobileProvider || null,
-        transactionId: paymentDetails?.transactionId || null,
-        amount: parsedAmount,
-        reference: paymentDetails?.reference || null
-      },
-      customerBankAccount: {
-        bankName: customerBankAccount?.bankName || null,
-        accountNumber: customerBankAccount?.accountNumber || null
-      },
-      notes: notes || null,
-      date: new Date(date),
-      createdBy: createdBy || null,
-      branchId: branch.branchId,
-      branchName: branch.branchName,
-      branchCode: branch.branchCode,
-      // Store references for UI/audit
-      sourceAccount: sourceAccount?.id ? {
-        id: sourceAccount.id,
-        name: sourceAccount.name || null,
-        bankName: sourceAccount.bankName || null,
-        accountNumber: sourceAccount.accountNumber || null
-      } : null,
-      destinationAccount: destinationAccount?.id ? {
-        id: destinationAccount.id,
-        name: destinationAccount.name || null,
-        bankName: destinationAccount.bankName || null,
-        accountNumber: destinationAccount.accountNumber || null
-      } : null,
-      employeeReference: employeeReference?.id ? employeeReference : null,
-      status: 'completed',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      isActive: true
-    };
-
-    const result = await transactions.insertOne(newTransaction);
-
-    res.status(201).json({
-      success: true,
-      message: "Transaction created successfully",
-      transaction: {
-        _id: result.insertedId,
-        transactionId: newTransaction.transactionId,
-        transactionType: newTransaction.transactionType,
-        customerId: newTransaction.customerId,
-        customerName: newTransaction.customerName,
-        customerPhone: newTransaction.customerPhone,
-        customerEmail: newTransaction.customerEmail,
-        category: newTransaction.category,
-        paymentMethod: newTransaction.paymentMethod,
-        paymentDetails: newTransaction.paymentDetails,
-        notes: newTransaction.notes,
-        date: newTransaction.date,
-        branchId: newTransaction.branchId,
-        branchName: newTransaction.branchName,
-        sourceAccount: newTransaction.sourceAccount || null,
-        destinationAccount: newTransaction.destinationAccount || null,
-        employeeReference: newTransaction.employeeReference || null,
-        status: newTransaction.status,
-        createdAt: newTransaction.createdAt,
-        balanceUpdates
-      }
-    });
-
   } catch (error) {
     console.error('Create transaction error:', error);
+    
+    // Handle specific error types
+    if (error.code === 11000) {
+      return res.status(400).json({
+        error: true,
+        message: "Transaction ID already exists",
+        code: "DUPLICATE_TRANSACTION_ID"
+      });
+    }
+    
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        error: true,
+        message: "Validation error",
+        details: error.message
+      });
+    }
+
     res.status(500).json({ 
       error: true, 
-      message: "Internal server error while creating transaction" 
+      message: "Internal server error while creating transaction",
+      ...(process.env.NODE_ENV === 'development' && { details: error.message })
     });
   }
 });
     
 
-    // Get all transactions with filters
+    // Get all transactions with enhanced filters and pagination
     app.get("/transactions", async (req, res) => {
       try {
         const { 
@@ -2380,128 +3100,304 @@ app.post("/transactions", async (req, res) => {
           dateTo, 
           search,
           status,
+          sortBy = 'createdAt',
+          sortOrder = 'desc',
           page = 1,
-          limit = 20
+          limit = 20,
+          includeInactive = false
         } = req.query;
+        
+        // Validate pagination parameters
+        const pageNum = Math.max(1, parseInt(page));
+        const limitNum = Math.min(100, Math.max(1, parseInt(limit))); // Max 100 items per page
         
         let filter = { isActive: true };
         
-        // Apply filters
-        if (transactionType) filter.transactionType = transactionType;
-        if (category) filter.category = category;
+        // Include inactive transactions if requested
+        if (includeInactive === 'true') {
+          delete filter.isActive;
+        }
+        
+        // Apply filters with validation
+        if (transactionType) {
+          if (!['credit', 'debit', 'account_to_account', 'transfer'].includes(transactionType)) {
+            return res.status(400).json({
+              error: true,
+              message: "Invalid transaction type",
+              validTypes: ['credit', 'debit', 'account_to_account', 'transfer']
+            });
+          }
+          // Normalize transaction type: 'transfer' -> 'account_to_account'
+          const normalizedType = transactionType === 'transfer' ? 'account_to_account' : transactionType;
+          filter.transactionType = normalizedType;
+        }
+        
+        if (category) filter.category = { $regex: category, $options: 'i' };
         if (paymentMethod) filter.paymentMethod = paymentMethod;
         if (branchId) filter.branchId = branchId;
         if (customerId) filter.customerId = customerId;
         if (status) filter.status = status;
         
-        // Date range filter
+        // Enhanced date range filter
         if (dateFrom || dateTo) {
           filter.date = {};
-          if (dateFrom) filter.date.$gte = new Date(dateFrom);
+          if (dateFrom) {
+            const startDate = new Date(dateFrom);
+            if (isNaN(startDate.getTime())) {
+              return res.status(400).json({
+                error: true,
+                message: "Invalid dateFrom format. Use YYYY-MM-DD"
+              });
+            }
+            filter.date.$gte = startDate;
+          }
           if (dateTo) {
             const endDate = new Date(dateTo);
+            if (isNaN(endDate.getTime())) {
+              return res.status(400).json({
+                error: true,
+                message: "Invalid dateTo format. Use YYYY-MM-DD"
+              });
+            }
             endDate.setHours(23, 59, 59, 999);
             filter.date.$lte = endDate;
           }
         }
         
-        // Search filter
+        // Enhanced search filter
         if (search) {
+          const searchRegex = { $regex: search, $options: 'i' };
           filter.$or = [
-            { transactionId: { $regex: search, $options: 'i' } },
-            { customerName: { $regex: search, $options: 'i' } },
-            { customerPhone: { $regex: search, $options: 'i' } },
-            { customerEmail: { $regex: search, $options: 'i' } },
-            { notes: { $regex: search, $options: 'i' } }
+            { transactionId: searchRegex },
+            { customerName: searchRegex },
+            { customerPhone: searchRegex },
+            { customerEmail: searchRegex },
+            { notes: searchRegex },
+            { category: searchRegex },
+            { 'debitAccount.name': searchRegex },
+            { 'creditAccount.name': searchRegex }
           ];
         }
 
+        // Validate sort parameters
+        const validSortFields = ['createdAt', 'date', 'amount', 'customerName', 'transactionType'];
+        const sortField = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
+        const sortDirection = sortOrder === 'asc' ? 1 : -1;
+        
         // Calculate pagination
-        const skip = (parseInt(page) - 1) * parseInt(limit);
+        const skip = (pageNum - 1) * limitNum;
         
         // Get total count
         const totalCount = await transactions.countDocuments(filter);
         
-        // Get transactions with pagination
+        // Get transactions with pagination and sorting
         const allTransactions = await transactions.find(filter)
-          .sort({ createdAt: -1 })
+          .sort({ [sortField]: sortDirection })
           .skip(skip)
-          .limit(parseInt(limit))
+          .limit(limitNum)
           .toArray();
+
+        // Calculate pagination metadata
+        const totalPages = Math.ceil(totalCount / limitNum);
+        const hasNextPage = pageNum < totalPages;
+        const hasPrevPage = pageNum > 1;
 
         res.json({
           success: true,
-          count: allTransactions.length,
-          totalCount,
-          currentPage: parseInt(page),
-          totalPages: Math.ceil(totalCount / parseInt(limit)),
-          transactions: allTransactions
+          data: {
+            transactions: allTransactions,
+            pagination: {
+              currentPage: pageNum,
+              totalPages,
+              totalCount,
+              limit: limitNum,
+              hasNextPage,
+              hasPrevPage,
+              nextPage: hasNextPage ? pageNum + 1 : null,
+              prevPage: hasPrevPage ? pageNum - 1 : null
+            },
+            filters: {
+              transactionType,
+              category,
+              paymentMethod,
+              branchId,
+              customerId,
+              dateFrom,
+              dateTo,
+              search,
+              status,
+              sortBy: sortField,
+              sortOrder
+            }
+          }
         });
       } catch (error) {
         console.error('Get transactions error:', error);
         res.status(500).json({ 
           error: true, 
-          message: "Internal server error while fetching transactions" 
+          message: "Internal server error while fetching transactions",
+          ...(process.env.NODE_ENV === 'development' && { details: error.message })
         });
       }
     });
 
-    // Get transaction by ID
+    // Get transaction by ID with enhanced details
     app.get("/transactions/:transactionId", async (req, res) => {
       try {
         const { transactionId } = req.params;
+        const { includeInactive = false } = req.query;
         
-        const transaction = await transactions.findOne({ 
-          transactionId: transactionId,
-          isActive: true 
-        });
+        // Validate transaction ID format
+        if (!transactionId || transactionId.trim() === '') {
+          return res.status(400).json({
+            error: true,
+            message: "Transaction ID is required"
+          });
+        }
+
+        // Build filter
+        const filter = { transactionId: transactionId.trim() };
+        if (includeInactive !== 'true') {
+          filter.isActive = true;
+        }
+        
+        const transaction = await transactions.findOne(filter);
 
         if (!transaction) {
           return res.status(404).json({ 
             error: true, 
-            message: "Transaction not found" 
+            message: "Transaction not found",
+            transactionId: transactionId
+          });
+        }
+
+        // Get related customer details if available
+        let customerDetails = null;
+        if (transaction.customerId) {
+          customerDetails = await customers.findOne({
+            customerId: transaction.customerId,
+            isActive: true
+          });
+        }
+
+        // Get branch details if available
+        let branchDetails = null;
+        if (transaction.branchId) {
+          branchDetails = await branches.findOne({
+            branchId: transaction.branchId,
+            isActive: true
+          });
+        }
+
+        // Get creator details if available
+        let creatorDetails = null;
+        if (transaction.createdBy) {
+          creatorDetails = await users.findOne({
+            _id: new ObjectId(transaction.createdBy),
+            isActive: true
           });
         }
 
         res.json({
           success: true,
-          transaction: transaction
+          data: {
+            transaction: {
+              ...transaction,
+              // Add related details
+              relatedData: {
+                customer: customerDetails ? {
+                  name: customerDetails.name,
+                  email: customerDetails.email,
+                  mobile: customerDetails.mobile,
+                  address: customerDetails.address
+                } : null,
+                branch: branchDetails ? {
+                  branchName: branchDetails.branchName,
+                  branchCode: branchDetails.branchCode,
+                  address: branchDetails.address
+                } : null,
+                creator: creatorDetails ? {
+                  name: creatorDetails.name,
+                  email: creatorDetails.email,
+                  role: creatorDetails.role
+                } : null
+              }
+            }
+          }
         });
       } catch (error) {
         console.error('Get transaction error:', error);
         res.status(500).json({ 
           error: true, 
-          message: "Internal server error while fetching transaction" 
+          message: "Internal server error while fetching transaction",
+          ...(process.env.NODE_ENV === 'development' && { details: error.message })
         });
       }
     });
 
-    // Update transaction
+    // Update transaction with enhanced validation and balance management
     app.patch("/transactions/:transactionId", async (req, res) => {
+      let session = null;
       try {
         const { transactionId } = req.params;
         const updateData = req.body;
         
-        // Remove fields that shouldn't be updated
-        delete updateData.transactionId;
-        delete updateData.createdAt;
-        updateData.updatedAt = new Date();
-
-        // Validate transaction type if being updated
-        if (updateData.transactionType && !['credit', 'debit'].includes(updateData.transactionType)) {
+        // Validate transaction ID
+        if (!transactionId || transactionId.trim() === '') {
           return res.status(400).json({
             error: true,
-            message: "Transaction type must be 'credit' or 'debit'"
+            message: "Transaction ID is required"
           });
+        }
+
+        // Get existing transaction
+        const existingTransaction = await transactions.findOne({
+          transactionId: transactionId.trim(),
+          isActive: true
+        });
+
+        if (!existingTransaction) {
+          return res.status(404).json({
+            error: true,
+            message: "Transaction not found",
+            transactionId: transactionId
+          });
+        }
+
+        // Start transaction session for data consistency
+        session = db.client.startSession();
+        await session.startTransaction();
+
+        // Fields that cannot be updated
+        const restrictedFields = [
+          'transactionId', 'createdAt', '_id', 'accountingEntries',
+          'debitAccount', 'creditAccount', 'balanceUpdates'
+        ];
+        
+        // Remove restricted fields
+        restrictedFields.forEach(field => delete updateData[field]);
+        
+        // Validate transaction type if being updated
+        if (updateData.transactionType) {
+          if (!['income', 'expense', 'transfer'].includes(updateData.transactionType)) {
+            await session.abortTransaction();
+            return res.status(400).json({
+              error: true,
+              message: "Transaction type must be 'income', 'expense', or 'transfer'",
+              validTypes: ['income', 'expense', 'transfer']
+            });
+          }
         }
 
         // Validate payment method if being updated
         if (updateData.paymentMethod) {
           const validPaymentMethods = ['cash', 'bank-transfer', 'cheque', 'mobile-banking', 'others', 'bank'];
           if (!validPaymentMethods.includes(updateData.paymentMethod)) {
+            await session.abortTransaction();
             return res.status(400).json({
               error: true,
-              message: "Invalid payment method"
+              message: "Invalid payment method",
+              validMethods: validPaymentMethods
             });
           }
           // Normalize legacy 'bank' to 'bank-transfer'
@@ -2512,65 +3408,322 @@ app.post("/transactions", async (req, res) => {
 
         // Validate date if being updated
         if (updateData.date && !isValidDate(updateData.date)) {
+          await session.abortTransaction();
           return res.status(400).json({
             error: true,
             message: "Invalid date format. Please use YYYY-MM-DD format"
           });
         }
 
+        // Validate amount if being updated
+        if (updateData.paymentDetails?.amount) {
+          const parsedAmount = parseFloat(updateData.paymentDetails.amount);
+          if (isNaN(parsedAmount) || parsedAmount <= 0) {
+            await session.abortTransaction();
+            return res.status(400).json({
+              error: true,
+              message: "Amount must be a valid positive number"
+            });
+          }
+          
+          // Check if amount changed and handle balance updates
+          const oldAmount = existingTransaction.paymentDetails?.amount || 0;
+          if (parsedAmount !== oldAmount) {
+            // This is a complex operation that requires balance reversal and re-calculation
+            // For now, we'll prevent amount changes to maintain data integrity
+            await session.abortTransaction();
+            return res.status(400).json({
+              error: true,
+              message: "Amount changes are not allowed. Please create a new transaction or reverse this one.",
+              code: "AMOUNT_CHANGE_NOT_ALLOWED"
+            });
+          }
+        }
+
+        // Validate customer if being updated
+        if (updateData.customerId) {
+          const customer = await customers.findOne({
+            customerId: updateData.customerId,
+            isActive: true
+          }, { session });
+          
+          if (!customer) {
+            await session.abortTransaction();
+            return res.status(400).json({
+              error: true,
+              message: "Customer not found",
+              customerId: updateData.customerId
+            });
+          }
+          
+          // Update customer details in transaction
+          updateData.customerName = customer.name;
+          updateData.customerPhone = customer.mobile;
+          updateData.customerEmail = customer.email;
+        }
+
+        // Validate branch if being updated
+        if (updateData.branchId) {
+          const branch = await branches.findOne({
+            branchId: updateData.branchId,
+            isActive: true
+          }, { session });
+          
+          if (!branch) {
+            await session.abortTransaction();
+            return res.status(400).json({
+              error: true,
+              message: "Branch not found",
+              branchId: updateData.branchId
+            });
+          }
+          
+          // Update branch details in transaction
+          updateData.branchName = branch.branchName;
+          updateData.branchCode = branch.branchCode;
+        }
+
+        // Add update timestamp
+        updateData.updatedAt = new Date();
+
+        // Update transaction
         const result = await transactions.updateOne(
-          { transactionId: transactionId, isActive: true },
-          { $set: updateData }
+          { transactionId: transactionId.trim(), isActive: true },
+          { $set: updateData },
+          { session }
         );
 
         if (result.matchedCount === 0) {
-          return res.status(404).json({ 
-            error: true, 
-            message: "Transaction not found" 
+          await session.abortTransaction();
+          return res.status(404).json({
+            error: true,
+            message: "Transaction not found"
           });
         }
+
+        // Get updated transaction
+        const updatedTransaction = await transactions.findOne({
+          transactionId: transactionId.trim(),
+          isActive: true
+        }, { session });
+
+        // Commit transaction
+        await session.commitTransaction();
 
         res.json({
           success: true,
           message: "Transaction updated successfully",
-          modifiedCount: result.modifiedCount
+          data: {
+            transaction: updatedTransaction,
+            modifiedCount: result.modifiedCount
+          }
         });
+
       } catch (error) {
+        // Rollback transaction on error
+        if (session) {
+          await session.abortTransaction();
+        }
+        
         console.error('Update transaction error:', error);
-        res.status(500).json({ 
-          error: true, 
-          message: "Internal server error while updating transaction" 
+        res.status(500).json({
+          error: true,
+          message: "Internal server error while updating transaction",
+          ...(process.env.NODE_ENV === 'development' && { details: error.message })
         });
+      } finally {
+        // End session
+        if (session) {
+          await session.endSession();
+        }
       }
     });
 
-    // Delete transaction (soft delete)
+    // Delete transaction with balance reversal and audit trail
     app.delete("/transactions/:transactionId", async (req, res) => {
+      let session = null;
       try {
         const { transactionId } = req.params;
+        const { reason, deletedBy } = req.body;
         
-        const result = await transactions.updateOne(
-          { transactionId: transactionId, isActive: true },
-          { $set: { isActive: false, updatedAt: new Date() } }
-        );
-
-        if (result.matchedCount === 0) {
-          return res.status(404).json({ 
-            error: true, 
-            message: "Transaction not found" 
+        // Validate transaction ID
+        if (!transactionId || transactionId.trim() === '') {
+          return res.status(400).json({
+            error: true,
+            message: "Transaction ID is required"
           });
         }
 
-        res.json({
-          success: true,
-          message: "Transaction deleted successfully"
+        // Validate deletion reason
+        if (!reason || reason.trim() === '') {
+          return res.status(400).json({
+            error: true,
+            message: "Deletion reason is required"
+          });
+        }
+
+        // Get existing transaction
+        const existingTransaction = await transactions.findOne({
+          transactionId: transactionId.trim(),
+          isActive: true
         });
+
+        if (!existingTransaction) {
+          return res.status(404).json({
+            error: true,
+            message: "Transaction not found",
+            transactionId: transactionId
+          });
+        }
+
+        // Start transaction session for data consistency
+        session = db.client.startSession();
+        await session.startTransaction();
+
+        try {
+          // Reverse the balance changes
+          const amount = existingTransaction.paymentDetails?.amount || 0;
+          
+          if (amount > 0 && existingTransaction.debitAccount?.id && existingTransaction.creditAccount?.id) {
+            // Get current account balances
+            const debitAcc = await bankAccounts.findOne({
+              _id: new ObjectId(existingTransaction.debitAccount.id),
+              isDeleted: { $ne: true }
+            }, { session });
+
+            const creditAcc = await bankAccounts.findOne({
+              _id: new ObjectId(existingTransaction.creditAccount.id),
+              isDeleted: { $ne: true }
+            }, { session });
+
+            if (debitAcc && creditAcc) {
+              // Reverse debit (add back to debit account)
+              const newDebitBalance = debitAcc.currentBalance + amount;
+              await bankAccounts.updateOne(
+                { _id: debitAcc._id },
+                {
+                  $set: { 
+                    currentBalance: newDebitBalance, 
+                    updatedAt: new Date() 
+                  },
+                  $push: { 
+                    balanceHistory: { 
+                      amount: amount, 
+                      type: 'credit', 
+                      note: `Reversal: ${existingTransaction.notes || existingTransaction.category}`, 
+                      at: new Date(), 
+                      transactionId: `REV-${existingTransaction.transactionId}`,
+                      reference: `REV-TXN-${existingTransaction.transactionId}`,
+                      reason: reason
+                    } 
+                  }
+                },
+                { session }
+              );
+
+              // Reverse credit (subtract from credit account)
+              const newCreditBalance = creditAcc.currentBalance - amount;
+              await bankAccounts.updateOne(
+                { _id: creditAcc._id },
+                {
+                  $set: { 
+                    currentBalance: newCreditBalance, 
+                    updatedAt: new Date() 
+                  },
+                  $push: { 
+                    balanceHistory: { 
+                      amount: amount, 
+                      type: 'debit', 
+                      note: `Reversal: ${existingTransaction.notes || existingTransaction.category}`, 
+                      at: new Date(), 
+                      transactionId: `REV-${existingTransaction.transactionId}`,
+                      reference: `REV-TXN-${existingTransaction.transactionId}`,
+                      reason: reason
+                    } 
+                  }
+                },
+                { session }
+              );
+            }
+          }
+
+          // Soft delete the transaction
+          const result = await transactions.updateOne(
+            { transactionId: transactionId.trim(), isActive: true },
+            { 
+              $set: { 
+                isActive: false, 
+                updatedAt: new Date(),
+                deletedAt: new Date(),
+                deletedBy: deletedBy || null,
+                deletionReason: reason,
+                status: 'deleted'
+              } 
+            },
+            { session }
+          );
+
+          if (result.matchedCount === 0) {
+            await session.abortTransaction();
+            return res.status(404).json({
+              error: true,
+              message: "Transaction not found"
+            });
+          }
+
+          // Create audit log entry
+          const auditLog = {
+            action: 'DELETE_TRANSACTION',
+            transactionId: existingTransaction.transactionId,
+            originalTransaction: {
+              transactionType: existingTransaction.transactionType,
+              amount: existingTransaction.paymentDetails?.amount,
+              customerId: existingTransaction.customerId,
+              category: existingTransaction.category,
+              debitAccount: existingTransaction.debitAccount?.id,
+              creditAccount: existingTransaction.creditAccount?.id
+            },
+            reason: reason,
+            deletedBy: deletedBy || null,
+            deletedAt: new Date(),
+            createdAt: new Date()
+          };
+
+          // Insert audit log (assuming you have an auditLogs collection)
+          // await auditLogs.insertOne(auditLog, { session });
+
+          // Commit transaction
+          await session.commitTransaction();
+
+          res.json({
+            success: true,
+            message: "Transaction deleted successfully with balance reversal",
+            data: {
+              transactionId: existingTransaction.transactionId,
+              amount: existingTransaction.paymentDetails?.amount,
+              reason: reason,
+              deletedAt: new Date(),
+              balanceReversed: amount > 0
+            }
+          });
+
+        } catch (transactionError) {
+          await session.abortTransaction();
+          throw transactionError;
+        }
+
       } catch (error) {
         console.error('Delete transaction error:', error);
-        res.status(500).json({ 
-          error: true, 
-          message: "Internal server error while deleting transaction" 
+        res.status(500).json({
+          error: true,
+          message: "Internal server error while deleting transaction",
+          ...(process.env.NODE_ENV === 'development' && { details: error.message })
         });
+      } finally {
+        // End session
+        if (session) {
+          await session.endSession();
+        }
       }
     });
 
@@ -3282,6 +4435,351 @@ app.get("/vendors/stats/data", async (req, res) => {
   }
 });
 
+// ==================== ENHANCED TRANSACTION ROUTES ====================
+
+// Create Credit Transaction
+app.post("/transactions/credit", async (req, res) => {
+  try {
+    const transactionData = {
+      ...req.body,
+      transactionType: 'credit'
+    };
+    
+    // Forward to main transaction endpoint
+    req.body = transactionData;
+    return app._router.handle(req, res, () => {
+      // This will be handled by the main /transactions endpoint
+    });
+  } catch (error) {
+    console.error('Create credit transaction error:', error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while creating credit transaction"
+    });
+  }
+});
+
+// Create Debit Transaction
+app.post("/transactions/debit", async (req, res) => {
+  try {
+    const transactionData = {
+      ...req.body,
+      transactionType: 'debit'
+    };
+    
+    // Forward to main transaction endpoint
+    req.body = transactionData;
+    return app._router.handle(req, res, () => {
+      // This will be handled by the main /transactions endpoint
+    });
+  } catch (error) {
+    console.error('Create debit transaction error:', error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while creating debit transaction"
+    });
+  }
+});
+
+// Create Account-to-Account Transfer
+app.post("/transactions/account-to-account", async (req, res) => {
+  try {
+    const transactionData = {
+      ...req.body,
+      transactionType: 'account_to_account'
+    };
+    
+    // Forward to main transaction endpoint
+    req.body = transactionData;
+    return app._router.handle(req, res, () => {
+      // This will be handled by the main /transactions endpoint
+    });
+  } catch (error) {
+    console.error('Create account-to-account transaction error:', error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while creating account-to-account transaction"
+    });
+  }
+});
+
+// Get transactions by category (Haj, Umrah, Air, Agent, Vendor)
+app.get("/transactions/category/:category", async (req, res) => {
+  try {
+    const { category } = req.params;
+    const { 
+      transactionType, 
+      paymentMethod, 
+      branchId, 
+      customerId, 
+      dateFrom, 
+      dateTo, 
+      search,
+      status,
+      sortBy = 'createdAt',
+      sortOrder = 'desc',
+      page = 1,
+      limit = 20
+    } = req.query;
+    
+    // Validate category
+    const validCategories = ['haj', 'umrah', 'air', 'agent', 'vendor'];
+    if (!validCategories.includes(category.toLowerCase())) {
+      return res.status(400).json({
+        error: true,
+        message: "Invalid category. Must be one of: haj, umrah, air, agent, vendor"
+      });
+    }
+
+    // Validate pagination parameters
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    
+    let filter = { 
+      isActive: true,
+      category: { $regex: category, $options: 'i' }
+    };
+    
+    // Apply additional filters
+    if (transactionType) {
+      if (!['credit', 'debit', 'account_to_account', 'transfer'].includes(transactionType)) {
+        return res.status(400).json({
+          error: true,
+          message: "Invalid transaction type",
+          validTypes: ['credit', 'debit', 'account_to_account', 'transfer']
+        });
+      }
+      // Normalize transaction type: 'transfer' -> 'account_to_account'
+      const normalizedType = transactionType === 'transfer' ? 'account_to_account' : transactionType;
+      filter.transactionType = normalizedType;
+    }
+    
+    if (paymentMethod) filter.paymentMethod = paymentMethod;
+    if (branchId) filter.branchId = branchId;
+    if (customerId) filter.customerId = customerId;
+    if (status) filter.status = status;
+    
+    // Date range filter
+    if (dateFrom || dateTo) {
+      filter.date = {};
+      if (dateFrom) {
+        const startDate = new Date(dateFrom);
+        if (isNaN(startDate.getTime())) {
+          return res.status(400).json({
+            error: true,
+            message: "Invalid dateFrom format. Use YYYY-MM-DD"
+          });
+        }
+        filter.date.$gte = startDate;
+      }
+      if (dateTo) {
+        const endDate = new Date(dateTo);
+        if (isNaN(endDate.getTime())) {
+          return res.status(400).json({
+            error: true,
+            message: "Invalid dateTo format. Use YYYY-MM-DD"
+          });
+        }
+        endDate.setHours(23, 59, 59, 999);
+        filter.date.$lte = endDate;
+      }
+    }
+    
+    // Search filter
+    if (search) {
+      const searchRegex = { $regex: search, $options: 'i' };
+      filter.$or = [
+        { transactionId: searchRegex },
+        { customerName: searchRegex },
+        { customerPhone: searchRegex },
+        { customerEmail: searchRegex },
+        { notes: searchRegex },
+        { 'debitAccount.name': searchRegex },
+        { 'creditAccount.name': searchRegex }
+      ];
+    }
+
+    // Validate sort parameters
+    const validSortFields = ['createdAt', 'date', 'amount', 'customerName', 'transactionType'];
+    const sortField = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
+    const sortDirection = sortOrder === 'asc' ? 1 : -1;
+    
+    // Calculate pagination
+    const skip = (pageNum - 1) * limitNum;
+    
+    // Get total count
+    const totalCount = await transactions.countDocuments(filter);
+    
+    // Get transactions with pagination and sorting
+    const categoryTransactions = await transactions.find(filter)
+      .sort({ [sortField]: sortDirection })
+      .skip(skip)
+      .limit(limitNum)
+      .toArray();
+
+    // Calculate pagination metadata
+    const totalPages = Math.ceil(totalCount / limitNum);
+    const hasNextPage = pageNum < totalPages;
+    const hasPrevPage = pageNum > 1;
+
+    res.json({
+      success: true,
+      data: {
+        transactions: categoryTransactions,
+        category: category.toLowerCase(),
+        pagination: {
+          currentPage: pageNum,
+          totalPages,
+          totalCount,
+          limit: limitNum,
+          hasNextPage,
+          hasPrevPage,
+          nextPage: hasNextPage ? pageNum + 1 : null,
+          prevPage: hasPrevPage ? pageNum - 1 : null
+        },
+        filters: {
+          category: category.toLowerCase(),
+          transactionType,
+          paymentMethod,
+          branchId,
+          customerId,
+          dateFrom,
+          dateTo,
+          search,
+          status,
+          sortBy: sortField,
+          sortOrder
+        }
+      }
+    });
+  } catch (error) {
+    console.error(`Get ${category} transactions error:`, error);
+    res.status(500).json({
+      error: true,
+      message: `Internal server error while fetching ${category} transactions`
+    });
+  }
+});
+
+// Get transaction statistics by category
+app.get("/transactions/stats/category/:category", async (req, res) => {
+  try {
+    const { category } = req.params;
+    const { dateFrom, dateTo } = req.query;
+    
+    // Validate category
+    const validCategories = ['haj', 'umrah', 'air', 'agent', 'vendor'];
+    if (!validCategories.includes(category.toLowerCase())) {
+      return res.status(400).json({
+        error: true,
+        message: "Invalid category. Must be one of: haj, umrah, air, agent, vendor"
+      });
+    }
+
+    let filter = { 
+      isActive: true,
+      category: { $regex: category, $options: 'i' }
+    };
+
+    // Date range filter
+    if (dateFrom || dateTo) {
+      filter.date = {};
+      if (dateFrom) {
+        const startDate = new Date(dateFrom);
+        if (isNaN(startDate.getTime())) {
+          return res.status(400).json({
+            error: true,
+            message: "Invalid dateFrom format. Use YYYY-MM-DD"
+          });
+        }
+        filter.date.$gte = startDate;
+      }
+      if (dateTo) {
+        const endDate = new Date(dateTo);
+        if (isNaN(endDate.getTime())) {
+          return res.status(400).json({
+            error: true,
+            message: "Invalid dateTo format. Use YYYY-MM-DD"
+          });
+        }
+        endDate.setHours(23, 59, 59, 999);
+        filter.date.$lte = endDate;
+      }
+    }
+
+    // Get transaction counts by type
+    const creditCount = await transactions.countDocuments({
+      ...filter,
+      transactionType: 'credit'
+    });
+    
+    const debitCount = await transactions.countDocuments({
+      ...filter,
+      transactionType: 'debit'
+    });
+    
+    const accountToAccountCount = await transactions.countDocuments({
+      ...filter,
+      transactionType: 'account_to_account'
+    });
+
+    // Get total amounts by transaction type
+    const creditAmount = await transactions.aggregate([
+      { $match: { ...filter, transactionType: 'credit' } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]).toArray();
+
+    const debitAmount = await transactions.aggregate([
+      { $match: { ...filter, transactionType: 'debit' } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]).toArray();
+
+    const accountToAccountAmount = await transactions.aggregate([
+      { $match: { ...filter, transactionType: 'account_to_account' } },
+      { $group: { _id: null, total: { $sum: '$amount' } } }
+    ]).toArray();
+
+    // Get recent transactions
+    const recentTransactions = await transactions.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
+
+    res.json({
+      success: true,
+      stats: {
+        category: category.toLowerCase(),
+        counts: {
+          credit: creditCount,
+          debit: debitCount,
+          accountToAccount: accountToAccountCount,
+          total: creditCount + debitCount + accountToAccountCount
+        },
+        amounts: {
+          credit: creditAmount[0]?.total || 0,
+          debit: debitAmount[0]?.total || 0,
+          accountToAccount: accountToAccountAmount[0]?.total || 0,
+          total: (creditAmount[0]?.total || 0) + (debitAmount[0]?.total || 0) + (accountToAccountAmount[0]?.total || 0)
+        },
+        recentTransactions: recentTransactions.map(t => ({
+          transactionId: t.transactionId,
+          customerName: t.customerName,
+          amount: t.amount,
+          transactionType: t.transactionType,
+          date: t.date,
+          status: t.status
+        }))
+      }
+    });
+  } catch (error) {
+    console.error(`Get ${category} transaction stats error:`, error);
+    res.status(500).json({
+      error: true,
+      message: `Internal server error while fetching ${category} transaction statistics`
+    });
+  }
+});
+
 // ==================== ORDER ROUTES ====================
 
 // ✅ POST: Create new order
@@ -3819,7 +5317,7 @@ app.get("/orders/analytics", async (req, res) => {
 
 // ==================== AGENT ROUTES ====================
 // Create Agent
-app.post("/haj-umrah/agents", async (req, res) => {
+app.post("api/haj-umrah/agents", async (req, res) => {
   try {
     const {
       tradeName,
@@ -3880,7 +5378,7 @@ app.post("/haj-umrah/agents", async (req, res) => {
 });
 
 // List Agents (with pagination and search)
-app.get("/haj-umrah/agents", async (req, res) => {
+app.get("api/haj-umrah/agents", async (req, res) => {
   try {
     const { page = 1, limit = 10, q } = req.query;
     const pageNum = Math.max(parseInt(page) || 1, 1);
@@ -3924,7 +5422,7 @@ app.get("/haj-umrah/agents", async (req, res) => {
 });
 
 // Get single agent by id
-app.get("/haj-umrah/agents/:id", async (req, res) => {
+app.get("api/haj-umrah/agents/:id", async (req, res) => {
   try {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
@@ -3942,7 +5440,7 @@ app.get("/haj-umrah/agents/:id", async (req, res) => {
 });
 
 // Update agent
-app.put("/haj-umrah/agents/:id", async (req, res) => {
+app.put("api/haj-umrah/agents/:id", async (req, res) => {
   try {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
@@ -3957,7 +5455,10 @@ app.put("/haj-umrah/agents/:id", async (req, res) => {
       dob,
       nid,
       passport,
-      isActive
+      isActive,
+      totalDue,
+      hajDue,
+      umrahDue
     } = req.body;
 
     const update = { $set: { updatedAt: new Date() } };
@@ -3974,6 +5475,9 @@ app.put("/haj-umrah/agents/:id", async (req, res) => {
     if (nid !== undefined) update.$set.nid = nid || "";
     if (passport !== undefined) update.$set.passport = passport || "";
     if (isActive !== undefined) update.$set.isActive = Boolean(isActive);
+    if (totalDue !== undefined) update.$set.totalDue = parseFloat(totalDue) || 0;
+    if (hajDue !== undefined) update.$set.hajDue = parseFloat(hajDue) || 0;
+    if (umrahDue !== undefined) update.$set.umrahDue = parseFloat(umrahDue) || 0;
 
     // Validate fields if provided
     if (update.$set.contactNo) {
@@ -4003,7 +5507,7 @@ app.put("/haj-umrah/agents/:id", async (req, res) => {
 });
 
 // Delete agent (hard delete)
-app.delete("/haj-umrah/agents/:id", async (req, res) => {
+app.delete("api/haj-umrah/agents/:id", async (req, res) => {
   try {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
@@ -4226,11 +5730,12 @@ app.put("/haj-umrah/haji/:id", async (req, res) => {
       { returnDocument: 'after' }
     );
 
-    if (!result || !result.value) {
+    // ✅ FIXED: Changed from result.value to result
+    if (!result) {
       return res.status(404).json({ error: true, message: "Haji not found" });
     }
 
-    res.json({ success: true, message: "Haji updated successfully", data: result.value });
+    res.json({ success: true, message: "Haji updated successfully", data: result });
   } catch (error) {
     console.error('Update haji error:', error);
     res.status(500).json({ error: true, message: "Internal server error while updating haji" });
@@ -4511,178 +6016,631 @@ app.delete("/haj-umrah/umrah/:id", async (req, res) => {
 });
 
 // ==================== AGENT PACKAGES ROUTES ====================
-// Create package
-app.post("/haj-umrah/agent-packages", async (req, res) => {
+// Create new agent package
+app.post('/api/haj-umrah/agent-packages', async (req, res) => {
   try {
-    const data = req.body || {};
-
-    // Required
-    if (!data.packageName || !String(data.packageName).trim()) {
-      return res.status(400).json({ error: true, message: "packageName is required" });
+    const {
+      packageName,
+      packageType,
+      customPackageType,
+      packageYear,
+      totalPrice,
+      duration,
+      status = 'Draft',
+      isActive = true,
+      agentId,
+      notes,
+      assignedCustomers = [],
+      costs,
+      bangladeshAirfarePassengers = [],
+      bangladeshBusPassengers = [],
+      bangladeshTrainingOtherPassengers = [],
+      bangladeshVisaPassengers = [],
+      saudiVisaPassengers = [],
+      saudiMakkahHotelPassengers = [],
+      saudiMadinaHotelPassengers = [],
+      saudiMakkahFoodPassengers = [],
+      saudiMadinaFoodPassengers = [],
+      saudiMakkahZiyaraPassengers = [],
+      saudiMadinaZiyaraPassengers = [],
+      saudiTransportPassengers = [],
+      saudiCampFeePassengers = [],
+      saudiAlMashayerPassengers = [],
+      saudiOthersPassengers = [],
+      totals,
+      sarToBdtRate
+    } = req.body;
+    
+    // Validation
+    if (!packageName || !packageYear || !agentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Package name, year, and agent ID are required'
+      });
     }
-    if (!data.packageYear) {
-      return res.status(400).json({ error: true, message: "packageYear is required" });
+    
+    // Check if agent exists
+    const agent = await agents.findOne({ _id: new ObjectId(agentId) });
+    if (!agent) {
+      return res.status(404).json({
+        success: false,
+        message: 'Agent not found'
+      });
     }
-
-    // Normalize
-    const now = new Date();
-    const doc = {
-      packageName: String(data.packageName).trim(),
-      packageYear: String(data.packageYear).trim(),
-      packageType: data.packageType || 'Regular',
-      customPackageType: data.customPackageType || '',
-      sarToBdtRate: Number(data.sarToBdtRate || 0),
-      notes: data.notes || '',
-
-      // Complex cost and passenger structures
-      costs: data.costs || {},
-      discount: Number(data.discount || 0),
-      bangladeshAirfarePassengers: data.bangladeshAirfarePassengers || [],
-      bangladeshBusPassengers: data.bangladeshBusPassengers || [],
-      bangladeshTrainingOtherPassengers: data.bangladeshTrainingOtherPassengers || [],
-      saudiVisaPassengers: data.saudiVisaPassengers || [],
-      saudiMakkahHotelPassengers: data.saudiMakkahHotelPassengers || [],
-      saudiMadinaHotelPassengers: data.saudiMadinaHotelPassengers || [],
-      saudiMakkahFoodPassengers: data.saudiMakkahFoodPassengers || [],
-      saudiMadinaFoodPassengers: data.saudiMadinaFoodPassengers || [],
-      saudiMakkahZiyaraPassengers: data.saudiMakkahZiyaraPassengers || [],
-      saudiMadinaZiyaraPassengers: data.saudiMadinaZiyaraPassengers || [],
-      saudiTransportPassengers: data.saudiTransportPassengers || [],
-      saudiOthersPassengers: data.saudiOthersPassengers || [],
-
-      totals: data.totals || null,
-      attachments: data.attachments || [],
-
-      status: data.status || 'Draft',
-      isActive: data.isActive !== undefined ? Boolean(data.isActive) : true,
-      createdAt: now,
-      updatedAt: now,
-      deletedAt: null
+    
+    // Get the grand total from the payload
+    const packageTotal = totals?.grandTotal || totalPrice || 0;
+    
+    // Determine package type for due calculation
+    const finalPackageType = (customPackageType || packageType || 'Regular').toLowerCase();
+    const isHajjPackage = finalPackageType.includes('haj') || finalPackageType.includes('hajj');
+    const isUmrahPackage = finalPackageType.includes('umrah');
+    
+    console.log('Package Type Detection:', { 
+      customPackageType, 
+      packageType, 
+      finalPackageType, 
+      isHajjPackage, 
+      isUmrahPackage 
+    });
+    
+    // Create package document
+    const packageDoc = {
+      packageName: String(packageName),
+      packageType: packageType || 'Regular',
+      customPackageType: customPackageType || '',
+      packageYear: String(packageYear),
+      totalPrice: packageTotal,
+      duration: duration || 0,
+      status: status || 'Draft',
+      isActive: isActive !== false,
+      agentId: new ObjectId(agentId),
+      notes: notes || '',
+      assignedCustomers: assignedCustomers || [],
+      // Store all cost details
+      costs: costs || {},
+      totals: totals || {},
+      sarToBdtRate: sarToBdtRate || 1,
+      // Store passenger arrays
+      bangladeshAirfarePassengers: bangladeshAirfarePassengers || [],
+      bangladeshBusPassengers: bangladeshBusPassengers || [],
+      bangladeshTrainingOtherPassengers: bangladeshTrainingOtherPassengers || [],
+      bangladeshVisaPassengers: bangladeshVisaPassengers || [],
+      saudiVisaPassengers: saudiVisaPassengers || [],
+      saudiMakkahHotelPassengers: saudiMakkahHotelPassengers || [],
+      saudiMadinaHotelPassengers: saudiMadinaHotelPassengers || [],
+      saudiMakkahFoodPassengers: saudiMakkahFoodPassengers || [],
+      saudiMadinaFoodPassengers: saudiMadinaFoodPassengers || [],
+      saudiMakkahZiyaraPassengers: saudiMakkahZiyaraPassengers || [],
+      saudiMadinaZiyaraPassengers: saudiMadinaZiyaraPassengers || [],
+      saudiTransportPassengers: saudiTransportPassengers || [],
+      saudiCampFeePassengers: saudiCampFeePassengers || [],
+      saudiAlMashayerPassengers: saudiAlMashayerPassengers || [],
+      saudiOthersPassengers: saudiOthersPassengers || [],
+      createdAt: new Date(),
+      updatedAt: new Date()
     };
-
-    const result = await agentPackages.insertOne(doc);
-    return res.status(201).json({ success: true, data: { _id: result.insertedId, ...doc } });
+    
+    // Recalculate all due amounts from all existing packages first
+    const existingPackages = await agentPackages.find({ agentId: new ObjectId(agentId) }).toArray();
+    
+    const result = await agentPackages.insertOne(packageDoc);
+    
+    // Now calculate from all packages (including the one we just added)
+    const allPackages = [...existingPackages, packageDoc];
+    
+    let calculatedTotal = 0;
+    let calculatedHajj = 0;
+    let calculatedUmrah = 0;
+    
+    // Calculate totals from all packages
+    for (const pkg of allPackages) {
+      const pkgType = (pkg.customPackageType || pkg.packageType || 'Regular').toLowerCase();
+      const pkgTotal = pkg.totalPrice || 0;
+      const isPkgHajj = pkgType.includes('haj');
+      const isPkgUmrah = pkgType.includes('umrah');
+      
+      calculatedTotal += pkgTotal;
+      if (isPkgHajj) calculatedHajj += pkgTotal;
+      if (isPkgUmrah) calculatedUmrah += pkgTotal;
+    }
+    
+    console.log('Recalculated Due Amounts:', { 
+      total: calculatedTotal, 
+      haj: calculatedHajj, 
+      umrah: calculatedUmrah 
+    });
+    
+    await agents.updateOne(
+      { _id: new ObjectId(agentId) },
+      {
+        $set: {
+          totalDue: calculatedTotal,
+          hajDue: calculatedHajj,
+          umrahDue: calculatedUmrah,
+          updatedAt: new Date()
+        }
+      }
+    );
+    
+    // Fetch the created package with agent details
+    const createdPackage = await agentPackages.findOne({ _id: result.insertedId });
+    const updatedAgent = await agents.findOne({ _id: new ObjectId(agentId) });
+    
+    res.status(201).json({
+      success: true,
+      message: 'Package created successfully',
+      data: {
+        ...createdPackage,
+        agent: updatedAgent
+      }
+    });
   } catch (error) {
-    console.error('Create agent package error:', error);
-    res.status(500).json({ error: true, message: "Internal server error while creating agent package" });
+    console.error('Create package error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create package',
+      error: error.message
+    });
   }
 });
-
-// List packages with pagination and search
-app.get("/haj-umrah/agent-packages", async (req, res) => {
+// GET /api/haj-umrah/agent-packages
+// Get all agent packages with filters
+app.get('/api/haj-umrah/agent-packages', async (req, res) => {
   try {
-    const { page = 1, limit = 10, q, year, type, customType, status, isActive } = req.query || {};
-    const pageNum = Math.max(parseInt(page) || 1, 1);
-    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
-
+    const { agentId, year, type, limit = 10, page = 1 } = req.query;
+    
     const filter = {};
-    if (q && String(q).trim()) {
-      const text = String(q).trim();
-      filter.$or = [
-        { packageName: { $regex: text, $options: 'i' } },
-        { notes: { $regex: text, $options: 'i' } }
-      ];
-    }
+    if (agentId) filter.agentId = new ObjectId(agentId);
     if (year) filter.packageYear = String(year);
-    if (type) filter.packageType = String(type);
-    if (customType) filter.customPackageType = String(customType);
-    if (status) filter.status = String(status);
-    if (isActive !== undefined) filter.isActive = String(isActive) === 'true';
-
-    const total = await agentPackages.countDocuments(filter);
-    const data = await agentPackages
+    if (type) filter.packageType = type;
+    
+    const limitNum = parseInt(limit);
+    const pageNum = parseInt(page);
+    
+    const packages = await agentPackages
       .find(filter)
       .sort({ createdAt: -1 })
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
       .toArray();
-
+    
+    // Populate agent information
+    const packagesWithAgents = await Promise.all(
+      packages.map(async (pkg) => {
+        if (pkg.agentId) {
+          const agent = await agents.findOne({ _id: pkg.agentId });
+          return { ...pkg, agent };
+        }
+        return pkg;
+      })
+    );
+    
+    const total = await agentPackages.countDocuments(filter);
+    
     res.json({
       success: true,
-      data,
+      data: packagesWithAgents,
       pagination: {
+        total,
         page: pageNum,
         limit: limitNum,
-        total,
-        totalPages: Math.ceil(total / limitNum)
+        pages: Math.ceil(total / limitNum)
       }
     });
   } catch (error) {
-    console.error('List agent packages error:', error);
-    res.status(500).json({ error: true, message: "Internal server error while listing agent packages" });
+    console.error('Get packages error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch agent packages',
+      error: error.message
+    });
   }
 });
 
-// Get single package by _id
-app.get("/haj-umrah/agent-packages/:id", async (req, res) => {
+// GET /api/haj-umrah/agent-packages/:id
+// Get single agent package
+app.get('/api/haj-umrah/agent-packages/:id', async (req, res) => {
   try {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: true, message: "Invalid package id" });
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid package ID'
+      });
     }
-    const doc = await agentPackages.findOne({ _id: new ObjectId(id) });
-    if (!doc) {
-      return res.status(404).json({ error: true, message: "Package not found" });
+    
+    const package = await agentPackages.findOne({ _id: new ObjectId(id) });
+    
+    if (!package) {
+      return res.status(404).json({
+        success: false,
+        message: 'Package not found'
+      });
     }
-    res.json({ success: true, data: doc });
+    
+    // Populate agent information
+    if (package.agentId) {
+      const agent = await agents.findOne({ _id: package.agentId });
+      package.agent = agent;
+    }
+    
+    res.json({
+      success: true,
+      data: package
+    });
   } catch (error) {
-    console.error('Get agent package error:', error);
-    res.status(500).json({ error: true, message: "Internal server error while fetching agent package" });
+    console.error('Get package error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch package',
+      error: error.message
+    });
   }
 });
 
-// Update package by _id
-app.put("/haj-umrah/agent-packages/:id", async (req, res) => {
+
+// PUT /api/haj-umrah/agent-packages/:id
+// Update agent package
+app.put('/api/haj-umrah/agent-packages/:id', async (req, res) => {
   try {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: true, message: "Invalid package id" });
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid package ID'
+      });
     }
-    const updates = req.body || {};
-
-    // Basic normalization
-    if (updates.packageName !== undefined) updates.packageName = String(updates.packageName).trim();
-    if (updates.packageYear !== undefined) updates.packageYear = String(updates.packageYear).trim();
-    if (updates.sarToBdtRate !== undefined) updates.sarToBdtRate = Number(updates.sarToBdtRate || 0);
-    if (updates.discount !== undefined) updates.discount = Number(updates.discount || 0);
-    updates.updatedAt = new Date();
-
-    const result = await agentPackages.findOneAndUpdate(
+    
+    const updateData = {
+      ...req.body,
+      updatedAt: new Date()
+    };
+    
+    const result = await agentPackages.updateOne(
       { _id: new ObjectId(id) },
-      { $set: updates },
-      { returnDocument: 'after' }
+      { $set: updateData }
     );
-    if (!result || !result.value) {
-      return res.status(404).json({ error: true, message: "Package not found" });
+    
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Package not found'
+      });
     }
-    res.json({ success: true, message: "Package updated successfully", data: result.value });
+    
+    const updatedPackage = await agentPackages.findOne({ _id: new ObjectId(id) });
+    
+    // Populate agent information
+    if (updatedPackage.agentId) {
+      const agent = await agents.findOne({ _id: updatedPackage.agentId });
+      updatedPackage.agent = agent;
+    }
+    
+    res.json({
+      success: true,
+      message: 'Package updated successfully',
+      data: updatedPackage
+    });
   } catch (error) {
-    console.error('Update agent package error:', error);
-    res.status(500).json({ error: true, message: "Internal server error while updating agent package" });
+    console.error('Update package error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update package',
+      error: error.message
+    });
   }
 });
 
-// Delete package (soft delete)
-app.delete("/haj-umrah/agent-packages/:id", async (req, res) => {
+// DELETE /api/haj-umrah/agent-packages/:id
+// Delete agent package
+app.delete('/api/haj-umrah/agent-packages/:id', async (req, res) => {
   try {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: true, message: "Invalid package id" });
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid package ID'
+      });
     }
-
-    const result = await agentPackages.findOneAndUpdate(
-      { _id: new ObjectId(id) },
-      { $set: { isActive: false, deletedAt: new Date(), updatedAt: new Date() } },
-      { returnDocument: 'after' }
-    );
-
-    if (!result || !result.value) {
-      return res.status(404).json({ error: true, message: "Package not found" });
+    
+    const result = await agentPackages.deleteOne({ _id: new ObjectId(id) });
+    
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Package not found'
+      });
     }
-    res.json({ success: true, message: "Package deleted successfully", data: result.value });
+    
+    res.json({
+      success: true,
+      message: 'Package deleted successfully'
+    });
   } catch (error) {
-    console.error('Delete agent package error:', error);
-    res.status(500).json({ error: true, message: "Internal server error while deleting agent package" });
+    console.error('Delete package error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete package',
+      error: error.message
+    });
+  }
+});
+
+// POST /api/haj-umrah/agent-packages/:id/assign-customers
+// Assign customers/pilgrims to package
+app.post('/api/haj-umrah/agent-packages/:id/assign-customers', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { customerIds, pilgrimData } = req.body;
+    
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid package ID'
+      });
+    }
+    
+    // Check if package exists
+    const package = await agentPackages.findOne({ _id: new ObjectId(id) });
+    if (!package) {
+      return res.status(404).json({
+        success: false,
+        message: 'Package not found'
+      });
+    }
+    
+    const existingCustomers = package.assignedCustomers || [];
+    
+    // Handle array of customer IDs
+    if (customerIds && Array.isArray(customerIds)) {
+      const existingIds = existingCustomers.map(c => c._id?.toString() || c.toString());
+      const newIds = customerIds
+        .map(id => new ObjectId(id))
+        .filter(id => !existingIds.includes(id.toString()));
+      
+      const updatedCustomers = [...existingCustomers, ...newIds];
+      
+      await agentPackages.updateOne(
+        { _id: new ObjectId(id) },
+        { 
+          $set: { 
+            assignedCustomers: updatedCustomers,
+            updatedAt: new Date()
+          } 
+        }
+      );
+      
+      return res.json({
+        success: true,
+        message: `${newIds.length} customers assigned successfully`
+      });
+    }
+    
+    // Handle pilgrim data object (for haji/umrah)
+    if (pilgrimData) {
+      const newPilgrim = {
+        _id: new ObjectId(),
+        ...pilgrimData,
+        assignedAt: new Date()
+      };
+      
+      const updatedCustomers = [...existingCustomers, newPilgrim];
+      
+      await agentPackages.updateOne(
+        { _id: new ObjectId(id) },
+        { 
+          $set: { 
+            assignedCustomers: updatedCustomers,
+            updatedAt: new Date()
+          } 
+        }
+      );
+      
+      return res.json({
+        success: true,
+        message: 'Pilgrim assigned successfully',
+        data: newPilgrim
+      });
+    }
+    
+    res.status(400).json({
+      success: false,
+      message: 'Either customerIds array or pilgrimData object is required'
+    });
+  } catch (error) {
+    console.error('Assign customer error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to assign customers',
+      error: error.message
+    });
+  }
+});
+
+// DELETE /api/haj-umrah/agent-packages/:id/remove-customer/:customerId
+// Remove customer from package
+app.delete('/api/haj-umrah/agent-packages/:id/remove-customer/:customerId', async (req, res) => {
+  try {
+    const { id, customerId } = req.params;
+    
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid package ID'
+      });
+    }
+    
+    const package = await agentPackages.findOne({ _id: new ObjectId(id) });
+    if (!package) {
+      return res.status(404).json({
+        success: false,
+        message: 'Package not found'
+      });
+    }
+    
+    const updatedCustomers = (package.assignedCustomers || []).filter(
+      c => c._id?.toString() !== customerId && c.toString() !== customerId
+    );
+    
+    await agentPackages.updateOne(
+      { _id: new ObjectId(id) },
+      { 
+        $set: { 
+          assignedCustomers: updatedCustomers,
+          updatedAt: new Date()
+        } 
+      }
+    );
+    
+    res.json({
+      success: true,
+      message: 'Customer removed from package'
+    });
+  } catch (error) {
+    console.error('Remove customer error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to remove customer',
+      error: error.message
+    });
+  }
+});
+
+
+// GET /api/haj-umrah/agents
+// Get all agents
+app.get('/api/haj-umrah/agents', async (req, res) => {
+  try {
+    const { page = 1, limit = 100, search = '' } = req.query;
+    
+    const filter = {};
+    if (search) {
+      filter.$or = [
+        { tradeName: { $regex: search, $options: 'i' } },
+        { ownerName: { $regex: search, $options: 'i' } },
+        { contactNo: { $regex: search, $options: 'i' } }
+      ];
+    }
+    
+    const limitNum = parseInt(limit);
+    const pageNum = parseInt(page);
+    
+    const agentsList = await agents
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum)
+      .toArray();
+    
+    const total = await agents.countDocuments(filter);
+    
+    res.json({
+      success: true,
+      data: agentsList,
+      pagination: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Get agents error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch agents',
+      error: error.message
+    });
+  }
+});
+
+// GET /api/haj-umrah/agents/:id
+// Get single agent with packages
+app.get('/api/haj-umrah/agents/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid agent ID'
+      });
+    }
+    
+    const agent = await agents.findOne({ _id: new ObjectId(id) });
+    
+    if (!agent) {
+      return res.status(404).json({
+        success: false,
+        message: 'Agent not found'
+      });
+    }
+    
+    // Initialize due amounts if missing (migration for old agents)
+    if (agent.totalDue === undefined || agent.hajDue === undefined || agent.umrahDue === undefined) {
+      console.log('🔄 Migrating agent to add due amounts:', agent._id);
+      const updateDoc = {};
+      if (agent.totalDue === undefined) updateDoc.totalDue = 0;
+      if (agent.hajDue === undefined) updateDoc.hajDue = 0;
+      if (agent.umrahDue === undefined) updateDoc.umrahDue = 0;
+      updateDoc.updatedAt = new Date();
+      
+      await agents.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updateDoc }
+      );
+      
+      Object.assign(agent, updateDoc);
+      console.log('✅ Agent migrated successfully');
+    }
+    
+    // Get all packages for this agent only
+    const packages = await agentPackages
+      .find({ agentId: new ObjectId(id) })
+      .sort({ createdAt: -1 })
+      .toArray();
+    
+    // Format response with agent info and their packages
+    const response = {
+      ...agent,
+      packages: packages.map(pkg => ({
+        _id: pkg._id,
+        packageName: pkg.packageName,
+        packageType: pkg.packageType,
+        customPackageType: pkg.customPackageType,
+        packageYear: pkg.packageYear,
+        totalPrice: pkg.totalPrice,
+        status: pkg.status,
+        isActive: pkg.isActive,
+        createdAt: pkg.createdAt,
+        updatedAt: pkg.updatedAt,
+        // Include basic cost info if needed
+        totals: pkg.totals ? {
+          grandTotal: pkg.totals.grandTotal,
+          subtotal: pkg.totals.subtotal
+        } : null
+      })),
+      packageCount: packages.length,
+      summary: {
+        totalDue: agent.totalDue || 0,
+        hajDue: agent.hajDue || 0,
+        umrahDue: agent.umrahDue || 0,
+        totalPackages: packages.length,
+        activePackages: packages.filter(p => p.isActive !== false).length
+      }
+    };
+    
+    res.json({
+      success: true,
+      data: response
+    });
+  } catch (error) {
+    console.error('Get agent error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch agent',
+      error: error.message
+    });
   }
 });
 
@@ -4813,6 +6771,12 @@ app.get("/bank-accounts/:id", async (req, res) => {
 app.put("/bank-accounts/:id", async (req, res) => {
   try {
     const { id } = req.params;
+    
+    // Validate ObjectId
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, error: "Invalid bank account ID format" });
+    }
+    
     const update = { ...req.body };
 
     if (update.initialBalance !== undefined) {
@@ -4859,10 +6823,12 @@ app.put("/bank-accounts/:id", async (req, res) => {
       { $set: update },
       { returnDocument: "after" }
     );
-    if (!result || !result.value) {
+    
+    // ✅ FIXED: Changed from result.value to result
+    if (!result) {
       return res.status(404).json({ success: false, error: "Bank account not found" });
     }
-    res.json({ success: true, data: result.value });
+    res.json({ success: true, data: result });
   } catch (error) {
     console.error("❌ Error updating bank account:", error);
     res.status(500).json({ success: false, error: "Failed to update bank account" });
@@ -4873,15 +6839,23 @@ app.put("/bank-accounts/:id", async (req, res) => {
 app.delete("/bank-accounts/:id", async (req, res) => {
   try {
     const { id } = req.params;
+    
+    // Validate ObjectId
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, error: "Invalid bank account ID format" });
+    }
+    
     const result = await bankAccounts.findOneAndUpdate(
       { _id: new ObjectId(id), isDeleted: { $ne: true } },
       { $set: { isDeleted: true, status: "Inactive", updatedAt: new Date() } },
       { returnDocument: "after" }
     );
-    if (!result || !result.value) {
+    
+    // ✅ FIXED: Changed from result.value to result
+    if (!result) {
       return res.status(404).json({ success: false, error: "Bank account not found" });
     }
-    res.json({ success: true, data: result.value });
+    res.json({ success: true, data: result });
   } catch (error) {
     console.error("❌ Error deleting bank account:", error);
     res.status(500).json({ success: false, error: "Failed to delete bank account" });
@@ -5119,7 +7093,7 @@ app.get("/bank-accounts/:id/transactions", async (req, res) => {
   }
 });
 
-// Create bank account transaction (debit/credit)
+// // Create bank account transaction (debit/credit)
 app.post("/bank-accounts/:id/transactions", async (req, res) => {
   try {
     const { id } = req.params;
@@ -5759,12 +7733,16 @@ app.get("/hr/employers/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
+    const orFilters = [
+      { employeeId: id },
+      { employerId: id } // For backward compatibility
+    ];
+    if (ObjectId.isValid(id)) {
+      orFilters.unshift({ _id: new ObjectId(id) });
+    }
+
     const employee = await hrManagement.findOne({ 
-      $or: [
-        { _id: new ObjectId(id) },
-        { employeeId: id },
-        { employerId: id } // For backward compatibility
-      ],
+      $or: orFilters,
       isActive: true 
     });
 
