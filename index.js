@@ -323,7 +323,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, transactions, services, sales, vendors, orders, bankAccounts, categories, agents, hrManagement, haji, umrah, agentPackages;
+let db, users, branches, counters, customers, customerTypes, services, sales, vendors, orders, bankAccounts, categories, agents, hrManagement, haji, umrah, agentPackages, packages, transactions;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -337,7 +337,6 @@ async function initializeDatabase() {
     counters = db.collection("counters");
     customers = db.collection("customers");
     customerTypes = db.collection("customerTypes");
-    transactions = db.collection("transactions");
     services = db.collection("services");
     sales = db.collection("sales");
     vendors = db.collection("vendors");
@@ -349,6 +348,8 @@ async function initializeDatabase() {
     haji = db.collection("haji");
     umrah = db.collection("umrah");
     agentPackages = db.collection("agent_packages");
+    packages = db.collection("packages");
+    transactions = db.collection("transactions");
 
     
 
@@ -2130,1789 +2131,6 @@ app.delete("/api/categories/:id/subcategories/:subId", async (req, res) => {
 
 
 
-//  // Credit/Debit Transaction এর জন্য Backend Code (index.js এ যোগ করুন)
-
-// // Credit Transaction (Money coming into account)
-// app.post('/transactions/credit', [
-//   body('accountId').isMongoId(),
-//   body('amount').isNumeric().isFloat({ min: 0.01 }),
-//   body('customerId').isMongoId(),
-//   body('category').notEmpty(),
-//   body('paymentMethod').isIn(['cash', 'bank-transfer', 'cheque', 'mobile-banking', 'others']),
-//   body('createdBy').notEmpty(),
-//   body('branchId').notEmpty()
-// ], async (req, res) => {
-//   const session = await client.startSession();
-  
-//   try {
-//     session.startTransaction();
-    
-//     // Validate input
-//     const errors = validationResult(req);
-//     if (!errors.isEmpty()) {
-//       return res.status(400).json({
-//         success: false,
-//         message: 'Validation failed',
-//         details: errors.array()
-//       });
-//     }
-
-//     const {
-//       accountId,
-//       amount,
-//       customerId,
-//       category,
-//       paymentMethod,
-//       paymentDetails,
-//       customerBankAccount,
-//       notes,
-//       createdBy,
-//       branchId,
-//       employeeReference
-//     } = req.body;
-
-//     // Get account details
-//     const account = await Account.findById(accountId).session(session);
-//     if (!account) {
-//       throw new Error('Account not found');
-//     }
-
-//     if (!account.isActive) {
-//       throw new Error('Account is inactive');
-//     }
-
-//     // Generate transaction ID
-//     const transactionId = `CRD-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
-//     // Update account balance (Credit = Money coming in)
-//     await Account.findByIdAndUpdate(
-//       accountId,
-//       { 
-//         $inc: { 
-//           balance: amount,
-//           transactionCount: 1
-//         },
-//         $set: { lastTransactionDate: new Date() }
-//       },
-//       { session }
-//     );
-
-//     // Create accounting entries for Credit Transaction
-//     const accountingEntries = [
-//       {
-//         accountId: accountId,
-//         accountName: account.accountName,
-//         debit: 0,
-//         credit: amount,
-//         description: `Credit entry for ${category} - Customer payment received`
-//       },
-//       {
-//         accountId: accountId, // Same account for both entries in credit
-//         accountName: account.accountName,
-//         debit: amount,
-//         credit: 0,
-//         description: `Debit entry for ${category} - Revenue recognition`
-//       }
-//     ];
-
-//     // Create transaction record
-//     const transaction = new Transaction({
-//       transactionId,
-//       transactionType: 'credit',
-//       debitAccount: {
-//         id: accountId,
-//         name: account.accountName,
-//         bankName: account.bankName,
-//         accountNumber: account.accountNumber
-//       },
-//       creditAccount: {
-//         id: accountId,
-//         name: account.accountName,
-//         bankName: account.bankName,
-//         accountNumber: account.accountNumber
-//       },
-//       amount,
-//       customerId,
-//       category,
-//       paymentMethod,
-//       paymentDetails: paymentDetails || {},
-//       customerBankAccount: customerBankAccount || {},
-//       notes,
-//       createdBy,
-//       branchId,
-//       employeeReference,
-//       accountingEntries,
-//       status: 'completed',
-//       balanceUpdates: {
-//         debitAccountBalance: account.balance + amount,
-//         creditAccountBalance: account.balance + amount
-//       }
-//     });
-
-//     await transaction.save({ session });
-
-//     // Create audit trail
-//     await createAuditTrail({
-//       transactionId: transaction._id,
-//       action: 'created',
-//       performedBy: createdBy,
-//       details: {
-//         transactionType: 'credit',
-//         amount,
-//         account: account.accountName,
-//         category,
-//         customerId
-//       },
-//       session
-//     });
-
-//     await session.commitTransaction();
-    
-//     res.status(201).json({
-//       success: true,
-//       message: 'Credit transaction completed successfully',
-//       transaction: transaction
-//     });
-
-//   } catch (error) {
-//     await session.abortTransaction();
-    
-//     res.status(400).json({
-//       success: false,
-//       message: error.message || 'Credit transaction failed',
-//       error: process.env.NODE_ENV === 'development' ? error.stack : undefined
-//     });
-//   } finally {
-//     await session.endSession();
-//   }
-// });
-
-// // Debit Transaction (Money going out of account)
-// app.post('/transactions/debit', [
-//   body('accountId').isMongoId(),
-//   body('amount').isNumeric().isFloat({ min: 0.01 }),
-//   body('customerId').isMongoId(),
-//   body('category').notEmpty(),
-//   body('paymentMethod').isIn(['cash', 'bank-transfer', 'cheque', 'mobile-banking', 'others']),
-//   body('createdBy').notEmpty(),
-//   body('branchId').notEmpty()
-// ], async (req, res) => {
-//   const session = await client.startSession();
-  
-//   try {
-//     session.startTransaction();
-    
-//     // Validate input
-//     const errors = validationResult(req);
-//     if (!errors.isEmpty()) {
-//       return res.status(400).json({
-//         success: false,
-//         message: 'Validation failed',
-//         details: errors.array()
-//       });
-//     }
-
-//     const {
-//       accountId,
-//       amount,
-//       customerId,
-//       category,
-//       paymentMethod,
-//       paymentDetails,
-//       customerBankAccount,
-//       notes,
-//       createdBy,
-//       branchId,
-//       employeeReference
-//     } = req.body;
-
-//     // Get account details
-//     const account = await Account.findById(accountId).session(session);
-//     if (!account) {
-//       throw new Error('Account not found');
-//     }
-
-//     if (!account.isActive) {
-//       throw new Error('Account is inactive');
-//     }
-
-//     // Validate sufficient balance
-//     if (account.balance < amount) {
-//       throw new Error('Insufficient balance for debit transaction');
-//     }
-
-//     // Generate transaction ID
-//     const transactionId = `DBT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
-//     // Update account balance (Debit = Money going out)
-//     await Account.findByIdAndUpdate(
-//       accountId,
-//       { 
-//         $inc: { 
-//           balance: -amount,
-//           transactionCount: 1
-//         },
-//         $set: { lastTransactionDate: new Date() }
-//       },
-//       { session }
-//     );
-
-//     // Create accounting entries for Debit Transaction
-//     const accountingEntries = [
-//       {
-//         accountId: accountId,
-//         accountName: account.accountName,
-//         debit: amount,
-//         credit: 0,
-//         description: `Debit entry for ${category} - Payment made to customer`
-//       },
-//       {
-//         accountId: accountId, // Same account for both entries in debit
-//         accountName: account.accountName,
-//         debit: 0,
-//         credit: amount,
-//         description: `Credit entry for ${category} - Expense recognition`
-//       }
-//     ];
-
-//     // Create transaction record
-//     const transaction = new Transaction({
-//       transactionId,
-//       transactionType: 'debit',
-//       debitAccount: {
-//         id: accountId,
-//         name: account.accountName,
-//         bankName: account.bankName,
-//         accountNumber: account.accountNumber
-//       },
-//       creditAccount: {
-//         id: accountId,
-//         name: account.accountName,
-//         bankName: account.bankName,
-//         accountNumber: account.accountNumber
-//       },
-//       amount,
-//       customerId,
-//       category,
-//       paymentMethod,
-//       paymentDetails: paymentDetails || {},
-//       customerBankAccount: customerBankAccount || {},
-//       notes,
-//       createdBy,
-//       branchId,
-//       employeeReference,
-//       accountingEntries,
-//       status: 'completed',
-//       balanceUpdates: {
-//         debitAccountBalance: account.balance - amount,
-//         creditAccountBalance: account.balance - amount
-//       }
-//     });
-
-//     await transaction.save({ session });
-
-//     // Create audit trail
-//     await createAuditTrail({
-//       transactionId: transaction._id,
-//       action: 'created',
-//       performedBy: createdBy,
-//       details: {
-//         transactionType: 'debit',
-//         amount,
-//         account: account.accountName,
-//         category,
-//         customerId
-//       },
-//       session
-//     });
-
-//     await session.commitTransaction();
-    
-//     res.status(201).json({
-//       success: true,
-//       message: 'Debit transaction completed successfully',
-//       transaction: transaction
-//     });
-
-//   } catch (error) {
-//     await session.abortTransaction();
-    
-//     res.status(400).json({
-//       success: false,
-//       message: error.message || 'Debit transaction failed',
-//       error: process.env.NODE_ENV === 'development' ? error.stack : undefined
-//     });
-//   } finally {
-//     await session.endSession();
-//   }
-// });
-
-// // Get transaction by type with filters
-// app.get('/transactions/type/:type', async (req, res) => {
-//   try {
-//     const { type } = req.params;
-//     const {
-//       page = 1,
-//       limit = 10,
-//       category,
-//       paymentMethod,
-//       dateFrom,
-//       dateTo,
-//       search
-//     } = req.query;
-
-//     if (!['credit', 'debit', 'account_to_account', 'transfer'].includes(type)) {
-//       return res.status(400).json({
-//         success: false,
-//         message: 'Invalid transaction type'
-//       });
-//     }
-
-//     const filters = { transactionType: type };
-    
-//     if (category) filters.category = category;
-//     if (paymentMethod) filters.paymentMethod = paymentMethod;
-    
-//     if (dateFrom || dateTo) {
-//       filters.createdAt = {};
-//       if (dateFrom) filters.createdAt.$gte = new Date(dateFrom);
-//       if (dateTo) filters.createdAt.$lte = new Date(dateTo);
-//     }
-
-//     if (search) {
-//       filters.$or = [
-//         { 'debitAccount.name': { $regex: search, $options: 'i' } },
-//         { 'creditAccount.name': { $regex: search, $options: 'i' } },
-//         { notes: { $regex: search, $options: 'i' } },
-//         { category: { $regex: search, $options: 'i' } }
-//       ];
-//     }
-
-//     const transactions = await Transaction.find(filters)
-//       .populate('debitAccount.id', 'accountName bankName accountNumber')
-//       .populate('creditAccount.id', 'accountName bankName accountNumber')
-//       .populate('customerId', 'name phone email')
-//       .sort({ createdAt: -1 })
-//       .limit(limit * 1)
-//       .skip((page - 1) * limit);
-
-//     const totalCount = await Transaction.countDocuments(filters);
-//     const totalPages = Math.ceil(totalCount / limit);
-
-//     res.json({
-//       success: true,
-//       transactions,
-//       totalCount,
-//       totalPages,
-//       currentPage: parseInt(page),
-//       transactionType: type
-//     });
-
-//   } catch (error) {
-//     res.status(500).json({
-//       success: false,
-//       message: 'Failed to fetch transactions',
-//       error: error.message
-//     });
-//   }
-// });
-
-// // Get account balance after transaction
-// app.get('/accounts/:id/balance', async (req, res) => {
-//   try {
-//     const account = await Account.findById(req.params.id);
-    
-//     if (!account) {
-//       return res.status(404).json({
-//         success: false,
-//         message: 'Account not found'
-//       });
-//     }
-
-//     res.json({
-//       success: true,
-//       account: {
-//         id: account._id,
-//         name: account.accountName,
-//         bankName: account.bankName,
-//         accountNumber: account.accountNumber,
-//         balance: account.balance,
-//         currency: account.currency
-//       }
-//     });
-
-//   } catch (error) {
-//     res.status(500).json({
-//       success: false,
-//       message: 'Failed to fetch account balance',
-//       error: error.message
-//     });
-//   }
-// });
-
-// // Bulk create transactions (for multiple credits/debits)
-// app.post('/transactions/bulk', async (req, res) => {
-//   const session = await mongoose.startSession();
-  
-//   try {
-//     session.startTransaction();
-    
-//     const { transactions, createdBy, branchId } = req.body;
-    
-//     if (!Array.isArray(transactions) || transactions.length === 0) {
-//       throw new Error('Transactions array is required');
-//     }
-
-//     const results = [];
-    
-//     for (const txn of transactions) {
-//       const { transactionType, accountId, amount, customerId, category, notes } = txn;
-      
-//       // Get account
-//       const account = await Account.findById(accountId).session(session);
-//       if (!account) {
-//         throw new Error(`Account not found: ${accountId}`);
-//       }
-
-//       // Validate balance for debit
-//       if (transactionType === 'debit' && account.balance < amount) {
-//         throw new Error(`Insufficient balance in account: ${account.accountName}`);
-//       }
-
-//       // Update account balance
-//       const balanceChange = transactionType === 'credit' ? amount : -amount;
-//       await Account.findByIdAndUpdate(
-//         accountId,
-//         { 
-//           $inc: { 
-//             balance: balanceChange,
-//             transactionCount: 1
-//           },
-//           $set: { lastTransactionDate: new Date() }
-//         },
-//         { session }
-//       );
-
-//       // Create transaction
-//       const transactionId = `${transactionType.toUpperCase()}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      
-//       const transaction = new Transaction({
-//         transactionId,
-//         transactionType,
-//         debitAccount: {
-//           id: accountId,
-//           name: account.accountName,
-//           bankName: account.bankName,
-//           accountNumber: account.accountNumber
-//         },
-//         creditAccount: {
-//           id: accountId,
-//           name: account.accountName,
-//           bankName: account.bankName,
-//           accountNumber: account.accountNumber
-//         },
-//         amount,
-//         customerId,
-//         category,
-//         notes,
-//         createdBy,
-//         branchId,
-//         status: 'completed'
-//       });
-
-//       await transaction.save({ session });
-//       results.push(transaction);
-//     }
-
-//     await session.commitTransaction();
-    
-//     res.status(201).json({
-//       success: true,
-//       message: `${results.length} transactions created successfully`,
-//       transactions: results
-//     });
-
-//   } catch (error) {
-//     await session.abortTransaction();
-    
-//     res.status(400).json({
-//       success: false,
-//       message: error.message || 'Bulk transaction failed'
-//     });
-//   } finally {
-//     session.endSession();
-//   }
-// });
-
-// ==================== TRANSACTION ROUTES ====================
-
-// Create new transaction
-app.post("/transactions", async (req, res) => {
-  try {
-    const {
-      transactionType,
-      customerId,
-      category,
-      paymentMethod,
-      paymentDetails,
-      customerBankAccount,
-      notes,
-      date,
-      createdBy,
-      branchId,
-      // Debit and Credit Account fields
-      debitAccount,
-      creditAccount,
-      // Optional fields from frontend
-      sourceAccount,
-      destinationAccount,
-      employeeReference
-    } = req.body;
-
-    // Enhanced validation with detailed error messages
-    const validationErrors = [];
-    
-    if (!transactionType) validationErrors.push("Transaction type is required");
-    if (!customerId) validationErrors.push("Customer ID is required");
-    if (!category) validationErrors.push("Category is required");
-    if (!paymentMethod) validationErrors.push("Payment method is required");
-    if (!paymentDetails) validationErrors.push("Payment details are required");
-    if (!date) validationErrors.push("Date is required");
-    if (!branchId) validationErrors.push("Branch ID is required");
-    if (!createdBy) validationErrors.push("Created by user ID is required");
-
-    if (validationErrors.length > 0) {
-      return res.status(400).json({
-        error: true,
-        message: "Validation failed",
-        details: validationErrors
-      });
-    }
-
-    // Validate transaction type - Enhanced for 3-section support
-    if (!['credit', 'debit', 'account_to_account', 'transfer'].includes(transactionType)) {
-      return res.status(400).json({
-        error: true,
-        message: "Transaction type must be 'credit', 'debit', 'account_to_account', or 'transfer'"
-      });
-    }
-    
-    // Normalize transaction type: 'transfer' -> 'account_to_account'
-    let normalizedTransactionType = transactionType;
-    if (transactionType === 'transfer') {
-      normalizedTransactionType = 'account_to_account';
-    }
-
-    // Validate Debit and Credit Accounts for Double Entry
-    if (!debitAccount?.id || !creditAccount?.id) {
-      return res.status(400).json({
-        error: true,
-        message: "Both debit and credit accounts are required for double entry bookkeeping"
-      });
-    }
-
-    // Validate and normalize payment method
-    const validPaymentMethods = ['cash', 'bank-transfer', 'cheque', 'mobile-banking', 'others', 'bank'];
-    if (!validPaymentMethods.includes(paymentMethod)) {
-      return res.status(400).json({
-        error: true,
-        message: "Invalid payment method",
-        validMethods: validPaymentMethods
-      });
-    }
-
-    // Normalize to canonical storage values
-    const normalizedPaymentMethod = paymentMethod === 'bank' ? 'bank-transfer' : paymentMethod;
-
-    // Validate date format
-    if (!isValidDate(date)) {
-      return res.status(400).json({
-        error: true,
-        message: "Invalid date format. Please use YYYY-MM-DD format"
-      });
-    }
-
-    // Validate amount with better error handling
-    const parsedAmount = parseFloat(paymentDetails?.amount);
-    if (isNaN(parsedAmount) || parsedAmount <= 0) {
-      return res.status(400).json({
-        error: true,
-        message: "Amount must be a valid positive number",
-        received: paymentDetails?.amount
-      });
-    }
-
-    // Validate amount precision (max 2 decimal places)
-    const decimalPlaces = (parsedAmount.toString().split('.')[1] || '').length;
-    if (decimalPlaces > 2) {
-      return res.status(400).json({
-        error: true,
-        message: "Amount can have maximum 2 decimal places"
-      });
-    }
-
-    // Check if customer exists with better error handling
-    const customer = await customers.findOne({ 
-      customerId: customerId,
-      isActive: true 
-    });
-
-    if (!customer) {
-      return res.status(404).json({
-        error: true,
-        message: "Customer not found",
-        customerId: customerId
-      });
-    }
-
-    // Get branch information with better error handling
-    const branch = await branches.findOne({ branchId, isActive: true });
-    if (!branch) {
-      return res.status(400).json({
-        error: true,
-        message: "Branch not found or inactive",
-        branchId: branchId
-      });
-    }
-
-    // Validate user exists (if createdBy is provided)
-    if (createdBy) {
-      const user = await users.findOne({ 
-        _id: new ObjectId(createdBy), 
-        isActive: true 
-      });
-      if (!user) {
-        return res.status(400).json({
-          error: true,
-          message: "User not found or inactive",
-          createdBy: createdBy
-        });
-      }
-    }
-
-    // Generate unique transaction ID
-    const transactionId = await generateTransactionId(db, branch.branchCode);
-
-    // Validate ObjectId function
-    const isValidObjectId = (id) => {
-      try { return ObjectId.isValid(id); } catch { return false; }
-    };
-
-    // Double Entry Bookkeeping Implementation with transaction safety
-    const balanceUpdates = [];
-    const accountingEntries = [];
-    let session = null;
-
-    try {
-      // Start a MongoDB session for transaction safety
-      session = db.client.startSession();
-      await session.startTransaction();
-
-      // Get Debit Account with better error handling
-      const debitAcc = await bankAccounts.findOne({ 
-        _id: new ObjectId(debitAccount.id), 
-        isDeleted: { $ne: true } 
-      }, { session });
-
-      if (!debitAcc) {
-        await session.abortTransaction();
-        return res.status(400).json({ 
-          error: true, 
-          message: "Debit account not found or deleted",
-          accountId: debitAccount.id
-        });
-      }
-
-      // Get Credit Account with better error handling
-      const creditAcc = await bankAccounts.findOne({ 
-        _id: new ObjectId(creditAccount.id), 
-        isDeleted: { $ne: true } 
-      }, { session });
-
-      if (!creditAcc) {
-        await session.abortTransaction();
-        return res.status(400).json({ 
-          error: true, 
-          message: "Credit account not found or deleted",
-          accountId: creditAccount.id
-        });
-      }
-
-      // Check if debit and credit accounts are different
-      if (debitAccount.id === creditAccount.id) {
-        await session.abortTransaction();
-        return res.status(400).json({
-          error: true,
-          message: "Debit and credit accounts cannot be the same"
-        });
-      }
-
-      // Validate sufficient balance in debit account
-      if (debitAcc.currentBalance < parsedAmount) {
-        await session.abortTransaction();
-        return res.status(400).json({
-          error: true,
-          message: `Insufficient balance in debit account`,
-          details: {
-            available: debitAcc.currentBalance,
-            required: parsedAmount,
-            shortfall: parsedAmount - debitAcc.currentBalance
-          }
-        });
-      }
-
-      // Process Debit Entry (Money going out)
-      const newDebitBalance = debitAcc.currentBalance - parsedAmount;
-      const debitUpdateResult = await bankAccounts.findOneAndUpdate(
-        { _id: debitAcc._id },
-        { 
-          $set: { 
-            currentBalance: newDebitBalance, 
-            updatedAt: new Date() 
-          },
-          $push: { 
-            balanceHistory: { 
-              amount: parsedAmount, 
-              type: 'debit', 
-              note: `Debit: ${notes || category}`, 
-              at: new Date(), 
-              transactionId,
-              reference: `TXN-${transactionId}`
-            } 
-          }
-        },
-        { returnDocument: "after", session }
-      );
-
-      balanceUpdates.push({ 
-        role: 'debit', 
-        account: debitUpdateResult.value,
-        previousBalance: debitAcc.currentBalance,
-        newBalance: newDebitBalance,
-        change: -parsedAmount
-      });
-
-      // Process Credit Entry (Money coming in)
-      const newCreditBalance = (creditAcc.currentBalance || 0) + parsedAmount;
-      const creditUpdateResult = await bankAccounts.findOneAndUpdate(
-        { _id: creditAcc._id },
-        { 
-          $set: { 
-            currentBalance: newCreditBalance, 
-            updatedAt: new Date() 
-          },
-          $push: { 
-            balanceHistory: { 
-              amount: parsedAmount, 
-              type: 'credit', 
-              note: `Credit: ${notes || category}`, 
-              at: new Date(), 
-              transactionId,
-              reference: `TXN-${transactionId}`
-            } 
-          }
-        },
-        { returnDocument: "after", session }
-      );
-
-      balanceUpdates.push({ 
-        role: 'credit', 
-        account: creditUpdateResult.value,
-        previousBalance: creditAcc.currentBalance || 0,
-        newBalance: newCreditBalance,
-        change: +parsedAmount
-      });
-
-      // Create accounting entries for audit trail
-      accountingEntries.push({
-        accountId: debitAccount.id,
-        accountName: debitAcc.accountName,
-        amount: parsedAmount,
-        type: 'debit',
-        description: `Debit: ${notes || category}`,
-        transactionId,
-        date: new Date(date)
-      });
-
-      accountingEntries.push({
-        accountId: creditAccount.id,
-        accountName: creditAcc.accountName,
-        amount: parsedAmount,
-        type: 'credit',
-        description: `Credit: ${notes || category}`,
-        transactionId,
-        date: new Date(date)
-      });
-
-      // Create transaction object with proper double entry structure
-      const newTransaction = {
-        transactionId,
-        transactionType: normalizedTransactionType,
-        customerId: customer.customerId,
-        customerName: customer.name,
-        customerPhone: customer.mobile,
-        customerEmail: customer.email,
-        category,
-        paymentMethod: normalizedPaymentMethod,
-        paymentDetails: {
-          bankName: paymentDetails?.bankName || null,
-          accountNumber: paymentDetails?.accountNumber || null,
-          chequeNumber: paymentDetails?.chequeNumber || null,
-          mobileProvider: paymentDetails?.mobileProvider || null,
-          transactionId: paymentDetails?.transactionId || null,
-          amount: parsedAmount,
-          reference: paymentDetails?.reference || null
-        },
-        customerBankAccount: {
-          bankName: customerBankAccount?.bankName || null,
-          accountNumber: customerBankAccount?.accountNumber || null
-        },
-        // Double Entry Accounts
-        debitAccount: {
-          id: debitAccount.id,
-          name: debitAcc.accountName,
-          bankName: debitAcc.bankName,
-          accountNumber: debitAcc.accountNumber,
-          previousBalance: debitAcc.currentBalance,
-          newBalance: newDebitBalance
-        },
-        creditAccount: {
-          id: creditAccount.id,
-          name: creditAcc.accountName,
-          bankName: creditAcc.bankName,
-          accountNumber: creditAcc.accountNumber,
-          previousBalance: creditAcc.currentBalance || 0,
-          newBalance: newCreditBalance
-        },
-        // Accounting Entries
-        accountingEntries,
-        notes: notes || null,
-        date: new Date(date),
-        createdBy: createdBy || null,
-        branchId: branch.branchId,
-        branchName: branch.branchName,
-        branchCode: branch.branchCode,
-        // Legacy fields for backward compatibility
-        sourceAccount: sourceAccount?.id ? {
-          id: sourceAccount.id,
-          name: sourceAccount.name || null,
-          bankName: sourceAccount.bankName || null,
-          accountNumber: sourceAccount.accountNumber || null
-        } : null,
-        destinationAccount: destinationAccount?.id ? {
-          id: destinationAccount.id,
-          name: destinationAccount.name || null,
-          bankName: destinationAccount.bankName || null,
-          accountNumber: destinationAccount.accountNumber || null
-        } : null,
-        employeeReference: employeeReference?.id ? employeeReference : null,
-        status: 'completed',
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        isActive: true
-      };
-
-      const result = await transactions.insertOne(newTransaction, { session });
-
-      // Commit the transaction
-      await session.commitTransaction();
-
-      res.status(201).json({
-        success: true,
-        message: "Transaction created successfully with double entry bookkeeping",
-        transaction: {
-          _id: result.insertedId,
-          transactionId: newTransaction.transactionId,
-          transactionType: newTransaction.transactionType,
-          customerId: newTransaction.customerId,
-          customerName: newTransaction.customerName,
-          customerPhone: newTransaction.customerPhone,
-          customerEmail: newTransaction.customerEmail,
-          category: newTransaction.category,
-          paymentMethod: newTransaction.paymentMethod,
-          paymentDetails: newTransaction.paymentDetails,
-          // Double Entry Information
-          debitAccount: newTransaction.debitAccount,
-          creditAccount: newTransaction.creditAccount,
-          accountingEntries: newTransaction.accountingEntries,
-          notes: newTransaction.notes,
-          date: newTransaction.date,
-          branchId: newTransaction.branchId,
-          branchName: newTransaction.branchName,
-          status: newTransaction.status,
-          createdAt: newTransaction.createdAt,
-          balanceUpdates
-        }
-      });
-
-    } catch (transactionError) {
-      // Rollback transaction on error
-      if (session) {
-        await session.abortTransaction();
-      }
-      throw transactionError;
-    } finally {
-      // End session
-      if (session) {
-        await session.endSession();
-      }
-    }
-
-  } catch (error) {
-    console.error('Create transaction error:', error);
-    
-    // Handle specific error types
-    if (error.code === 11000) {
-      return res.status(400).json({
-        error: true,
-        message: "Transaction ID already exists",
-        code: "DUPLICATE_TRANSACTION_ID"
-      });
-    }
-    
-    if (error.name === 'ValidationError') {
-      return res.status(400).json({
-        error: true,
-        message: "Validation error",
-        details: error.message
-      });
-    }
-
-    res.status(500).json({ 
-      error: true, 
-      message: "Internal server error while creating transaction",
-      ...(process.env.NODE_ENV === 'development' && { details: error.message })
-    });
-  }
-});
-    
-
-    // Get all transactions with enhanced filters and pagination
-    app.get("/transactions", async (req, res) => {
-      try {
-        const { 
-          transactionType, 
-          category, 
-          paymentMethod, 
-          branchId, 
-          customerId, 
-          dateFrom, 
-          dateTo, 
-          search,
-          status,
-          sortBy = 'createdAt',
-          sortOrder = 'desc',
-          page = 1,
-          limit = 20,
-          includeInactive = false
-        } = req.query;
-        
-        // Validate pagination parameters
-        const pageNum = Math.max(1, parseInt(page));
-        const limitNum = Math.min(100, Math.max(1, parseInt(limit))); // Max 100 items per page
-        
-        let filter = { isActive: true };
-        
-        // Include inactive transactions if requested
-        if (includeInactive === 'true') {
-          delete filter.isActive;
-        }
-        
-        // Apply filters with validation
-        if (transactionType) {
-          if (!['credit', 'debit', 'account_to_account', 'transfer'].includes(transactionType)) {
-            return res.status(400).json({
-              error: true,
-              message: "Invalid transaction type",
-              validTypes: ['credit', 'debit', 'account_to_account', 'transfer']
-            });
-          }
-          // Normalize transaction type: 'transfer' -> 'account_to_account'
-          const normalizedType = transactionType === 'transfer' ? 'account_to_account' : transactionType;
-          filter.transactionType = normalizedType;
-        }
-        
-        if (category) filter.category = { $regex: category, $options: 'i' };
-        if (paymentMethod) filter.paymentMethod = paymentMethod;
-        if (branchId) filter.branchId = branchId;
-        if (customerId) filter.customerId = customerId;
-        if (status) filter.status = status;
-        
-        // Enhanced date range filter
-        if (dateFrom || dateTo) {
-          filter.date = {};
-          if (dateFrom) {
-            const startDate = new Date(dateFrom);
-            if (isNaN(startDate.getTime())) {
-              return res.status(400).json({
-                error: true,
-                message: "Invalid dateFrom format. Use YYYY-MM-DD"
-              });
-            }
-            filter.date.$gte = startDate;
-          }
-          if (dateTo) {
-            const endDate = new Date(dateTo);
-            if (isNaN(endDate.getTime())) {
-              return res.status(400).json({
-                error: true,
-                message: "Invalid dateTo format. Use YYYY-MM-DD"
-              });
-            }
-            endDate.setHours(23, 59, 59, 999);
-            filter.date.$lte = endDate;
-          }
-        }
-        
-        // Enhanced search filter
-        if (search) {
-          const searchRegex = { $regex: search, $options: 'i' };
-          filter.$or = [
-            { transactionId: searchRegex },
-            { customerName: searchRegex },
-            { customerPhone: searchRegex },
-            { customerEmail: searchRegex },
-            { notes: searchRegex },
-            { category: searchRegex },
-            { 'debitAccount.name': searchRegex },
-            { 'creditAccount.name': searchRegex }
-          ];
-        }
-
-        // Validate sort parameters
-        const validSortFields = ['createdAt', 'date', 'amount', 'customerName', 'transactionType'];
-        const sortField = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
-        const sortDirection = sortOrder === 'asc' ? 1 : -1;
-        
-        // Calculate pagination
-        const skip = (pageNum - 1) * limitNum;
-        
-        // Get total count
-        const totalCount = await transactions.countDocuments(filter);
-        
-        // Get transactions with pagination and sorting
-        const allTransactions = await transactions.find(filter)
-          .sort({ [sortField]: sortDirection })
-          .skip(skip)
-          .limit(limitNum)
-          .toArray();
-
-        // Calculate pagination metadata
-        const totalPages = Math.ceil(totalCount / limitNum);
-        const hasNextPage = pageNum < totalPages;
-        const hasPrevPage = pageNum > 1;
-
-        res.json({
-          success: true,
-          data: {
-            transactions: allTransactions,
-            pagination: {
-              currentPage: pageNum,
-              totalPages,
-              totalCount,
-              limit: limitNum,
-              hasNextPage,
-              hasPrevPage,
-              nextPage: hasNextPage ? pageNum + 1 : null,
-              prevPage: hasPrevPage ? pageNum - 1 : null
-            },
-            filters: {
-              transactionType,
-              category,
-              paymentMethod,
-              branchId,
-              customerId,
-              dateFrom,
-              dateTo,
-              search,
-              status,
-              sortBy: sortField,
-              sortOrder
-            }
-          }
-        });
-      } catch (error) {
-        console.error('Get transactions error:', error);
-        res.status(500).json({ 
-          error: true, 
-          message: "Internal server error while fetching transactions",
-          ...(process.env.NODE_ENV === 'development' && { details: error.message })
-        });
-      }
-    });
-
-    // Get transaction by ID with enhanced details
-    app.get("/transactions/:transactionId", async (req, res) => {
-      try {
-        const { transactionId } = req.params;
-        const { includeInactive = false } = req.query;
-        
-        // Validate transaction ID format
-        if (!transactionId || transactionId.trim() === '') {
-          return res.status(400).json({
-            error: true,
-            message: "Transaction ID is required"
-          });
-        }
-
-        // Build filter
-        const filter = { transactionId: transactionId.trim() };
-        if (includeInactive !== 'true') {
-          filter.isActive = true;
-        }
-        
-        const transaction = await transactions.findOne(filter);
-
-        if (!transaction) {
-          return res.status(404).json({ 
-            error: true, 
-            message: "Transaction not found",
-            transactionId: transactionId
-          });
-        }
-
-        // Get related customer details if available
-        let customerDetails = null;
-        if (transaction.customerId) {
-          customerDetails = await customers.findOne({
-            customerId: transaction.customerId,
-            isActive: true
-          });
-        }
-
-        // Get branch details if available
-        let branchDetails = null;
-        if (transaction.branchId) {
-          branchDetails = await branches.findOne({
-            branchId: transaction.branchId,
-            isActive: true
-          });
-        }
-
-        // Get creator details if available
-        let creatorDetails = null;
-        if (transaction.createdBy) {
-          creatorDetails = await users.findOne({
-            _id: new ObjectId(transaction.createdBy),
-            isActive: true
-          });
-        }
-
-        res.json({
-          success: true,
-          data: {
-            transaction: {
-              ...transaction,
-              // Add related details
-              relatedData: {
-                customer: customerDetails ? {
-                  name: customerDetails.name,
-                  email: customerDetails.email,
-                  mobile: customerDetails.mobile,
-                  address: customerDetails.address
-                } : null,
-                branch: branchDetails ? {
-                  branchName: branchDetails.branchName,
-                  branchCode: branchDetails.branchCode,
-                  address: branchDetails.address
-                } : null,
-                creator: creatorDetails ? {
-                  name: creatorDetails.name,
-                  email: creatorDetails.email,
-                  role: creatorDetails.role
-                } : null
-              }
-            }
-          }
-        });
-      } catch (error) {
-        console.error('Get transaction error:', error);
-        res.status(500).json({ 
-          error: true, 
-          message: "Internal server error while fetching transaction",
-          ...(process.env.NODE_ENV === 'development' && { details: error.message })
-        });
-      }
-    });
-
-    // Update transaction with enhanced validation and balance management
-    app.patch("/transactions/:transactionId", async (req, res) => {
-      let session = null;
-      try {
-        const { transactionId } = req.params;
-        const updateData = req.body;
-        
-        // Validate transaction ID
-        if (!transactionId || transactionId.trim() === '') {
-          return res.status(400).json({
-            error: true,
-            message: "Transaction ID is required"
-          });
-        }
-
-        // Get existing transaction
-        const existingTransaction = await transactions.findOne({
-          transactionId: transactionId.trim(),
-          isActive: true
-        });
-
-        if (!existingTransaction) {
-          return res.status(404).json({
-            error: true,
-            message: "Transaction not found",
-            transactionId: transactionId
-          });
-        }
-
-        // Start transaction session for data consistency
-        session = db.client.startSession();
-        await session.startTransaction();
-
-        // Fields that cannot be updated
-        const restrictedFields = [
-          'transactionId', 'createdAt', '_id', 'accountingEntries',
-          'debitAccount', 'creditAccount', 'balanceUpdates'
-        ];
-        
-        // Remove restricted fields
-        restrictedFields.forEach(field => delete updateData[field]);
-        
-        // Validate transaction type if being updated
-        if (updateData.transactionType) {
-          if (!['income', 'expense', 'transfer'].includes(updateData.transactionType)) {
-            await session.abortTransaction();
-            return res.status(400).json({
-              error: true,
-              message: "Transaction type must be 'income', 'expense', or 'transfer'",
-              validTypes: ['income', 'expense', 'transfer']
-            });
-          }
-        }
-
-        // Validate payment method if being updated
-        if (updateData.paymentMethod) {
-          const validPaymentMethods = ['cash', 'bank-transfer', 'cheque', 'mobile-banking', 'others', 'bank'];
-          if (!validPaymentMethods.includes(updateData.paymentMethod)) {
-            await session.abortTransaction();
-            return res.status(400).json({
-              error: true,
-              message: "Invalid payment method",
-              validMethods: validPaymentMethods
-            });
-          }
-          // Normalize legacy 'bank' to 'bank-transfer'
-          if (updateData.paymentMethod === 'bank') {
-            updateData.paymentMethod = 'bank-transfer';
-          }
-        }
-
-        // Validate date if being updated
-        if (updateData.date && !isValidDate(updateData.date)) {
-          await session.abortTransaction();
-          return res.status(400).json({
-            error: true,
-            message: "Invalid date format. Please use YYYY-MM-DD format"
-          });
-        }
-
-        // Validate amount if being updated
-        if (updateData.paymentDetails?.amount) {
-          const parsedAmount = parseFloat(updateData.paymentDetails.amount);
-          if (isNaN(parsedAmount) || parsedAmount <= 0) {
-            await session.abortTransaction();
-            return res.status(400).json({
-              error: true,
-              message: "Amount must be a valid positive number"
-            });
-          }
-          
-          // Check if amount changed and handle balance updates
-          const oldAmount = existingTransaction.paymentDetails?.amount || 0;
-          if (parsedAmount !== oldAmount) {
-            // This is a complex operation that requires balance reversal and re-calculation
-            // For now, we'll prevent amount changes to maintain data integrity
-            await session.abortTransaction();
-            return res.status(400).json({
-              error: true,
-              message: "Amount changes are not allowed. Please create a new transaction or reverse this one.",
-              code: "AMOUNT_CHANGE_NOT_ALLOWED"
-            });
-          }
-        }
-
-        // Validate customer if being updated
-        if (updateData.customerId) {
-          const customer = await customers.findOne({
-            customerId: updateData.customerId,
-            isActive: true
-          }, { session });
-          
-          if (!customer) {
-            await session.abortTransaction();
-            return res.status(400).json({
-              error: true,
-              message: "Customer not found",
-              customerId: updateData.customerId
-            });
-          }
-          
-          // Update customer details in transaction
-          updateData.customerName = customer.name;
-          updateData.customerPhone = customer.mobile;
-          updateData.customerEmail = customer.email;
-        }
-
-        // Validate branch if being updated
-        if (updateData.branchId) {
-          const branch = await branches.findOne({
-            branchId: updateData.branchId,
-            isActive: true
-          }, { session });
-          
-          if (!branch) {
-            await session.abortTransaction();
-            return res.status(400).json({
-              error: true,
-              message: "Branch not found",
-              branchId: updateData.branchId
-            });
-          }
-          
-          // Update branch details in transaction
-          updateData.branchName = branch.branchName;
-          updateData.branchCode = branch.branchCode;
-        }
-
-        // Add update timestamp
-        updateData.updatedAt = new Date();
-
-        // Update transaction
-        const result = await transactions.updateOne(
-          { transactionId: transactionId.trim(), isActive: true },
-          { $set: updateData },
-          { session }
-        );
-
-        if (result.matchedCount === 0) {
-          await session.abortTransaction();
-          return res.status(404).json({
-            error: true,
-            message: "Transaction not found"
-          });
-        }
-
-        // Get updated transaction
-        const updatedTransaction = await transactions.findOne({
-          transactionId: transactionId.trim(),
-          isActive: true
-        }, { session });
-
-        // Commit transaction
-        await session.commitTransaction();
-
-        res.json({
-          success: true,
-          message: "Transaction updated successfully",
-          data: {
-            transaction: updatedTransaction,
-            modifiedCount: result.modifiedCount
-          }
-        });
-
-      } catch (error) {
-        // Rollback transaction on error
-        if (session) {
-          await session.abortTransaction();
-        }
-        
-        console.error('Update transaction error:', error);
-        res.status(500).json({
-          error: true,
-          message: "Internal server error while updating transaction",
-          ...(process.env.NODE_ENV === 'development' && { details: error.message })
-        });
-      } finally {
-        // End session
-        if (session) {
-          await session.endSession();
-        }
-      }
-    });
-
-    // Delete transaction with balance reversal and audit trail
-    app.delete("/transactions/:transactionId", async (req, res) => {
-      let session = null;
-      try {
-        const { transactionId } = req.params;
-        const { reason, deletedBy } = req.body;
-        
-        // Validate transaction ID
-        if (!transactionId || transactionId.trim() === '') {
-          return res.status(400).json({
-            error: true,
-            message: "Transaction ID is required"
-          });
-        }
-
-        // Validate deletion reason
-        if (!reason || reason.trim() === '') {
-          return res.status(400).json({
-            error: true,
-            message: "Deletion reason is required"
-          });
-        }
-
-        // Get existing transaction
-        const existingTransaction = await transactions.findOne({
-          transactionId: transactionId.trim(),
-          isActive: true
-        });
-
-        if (!existingTransaction) {
-          return res.status(404).json({
-            error: true,
-            message: "Transaction not found",
-            transactionId: transactionId
-          });
-        }
-
-        // Start transaction session for data consistency
-        session = db.client.startSession();
-        await session.startTransaction();
-
-        try {
-          // Reverse the balance changes
-          const amount = existingTransaction.paymentDetails?.amount || 0;
-          
-          if (amount > 0 && existingTransaction.debitAccount?.id && existingTransaction.creditAccount?.id) {
-            // Get current account balances
-            const debitAcc = await bankAccounts.findOne({
-              _id: new ObjectId(existingTransaction.debitAccount.id),
-              isDeleted: { $ne: true }
-            }, { session });
-
-            const creditAcc = await bankAccounts.findOne({
-              _id: new ObjectId(existingTransaction.creditAccount.id),
-              isDeleted: { $ne: true }
-            }, { session });
-
-            if (debitAcc && creditAcc) {
-              // Reverse debit (add back to debit account)
-              const newDebitBalance = debitAcc.currentBalance + amount;
-              await bankAccounts.updateOne(
-                { _id: debitAcc._id },
-                {
-                  $set: { 
-                    currentBalance: newDebitBalance, 
-                    updatedAt: new Date() 
-                  },
-                  $push: { 
-                    balanceHistory: { 
-                      amount: amount, 
-                      type: 'credit', 
-                      note: `Reversal: ${existingTransaction.notes || existingTransaction.category}`, 
-                      at: new Date(), 
-                      transactionId: `REV-${existingTransaction.transactionId}`,
-                      reference: `REV-TXN-${existingTransaction.transactionId}`,
-                      reason: reason
-                    } 
-                  }
-                },
-                { session }
-              );
-
-              // Reverse credit (subtract from credit account)
-              const newCreditBalance = creditAcc.currentBalance - amount;
-              await bankAccounts.updateOne(
-                { _id: creditAcc._id },
-                {
-                  $set: { 
-                    currentBalance: newCreditBalance, 
-                    updatedAt: new Date() 
-                  },
-                  $push: { 
-                    balanceHistory: { 
-                      amount: amount, 
-                      type: 'debit', 
-                      note: `Reversal: ${existingTransaction.notes || existingTransaction.category}`, 
-                      at: new Date(), 
-                      transactionId: `REV-${existingTransaction.transactionId}`,
-                      reference: `REV-TXN-${existingTransaction.transactionId}`,
-                      reason: reason
-                    } 
-                  }
-                },
-                { session }
-              );
-            }
-          }
-
-          // Soft delete the transaction
-          const result = await transactions.updateOne(
-            { transactionId: transactionId.trim(), isActive: true },
-            { 
-              $set: { 
-                isActive: false, 
-                updatedAt: new Date(),
-                deletedAt: new Date(),
-                deletedBy: deletedBy || null,
-                deletionReason: reason,
-                status: 'deleted'
-              } 
-            },
-            { session }
-          );
-
-          if (result.matchedCount === 0) {
-            await session.abortTransaction();
-            return res.status(404).json({
-              error: true,
-              message: "Transaction not found"
-            });
-          }
-
-          // Create audit log entry
-          const auditLog = {
-            action: 'DELETE_TRANSACTION',
-            transactionId: existingTransaction.transactionId,
-            originalTransaction: {
-              transactionType: existingTransaction.transactionType,
-              amount: existingTransaction.paymentDetails?.amount,
-              customerId: existingTransaction.customerId,
-              category: existingTransaction.category,
-              debitAccount: existingTransaction.debitAccount?.id,
-              creditAccount: existingTransaction.creditAccount?.id
-            },
-            reason: reason,
-            deletedBy: deletedBy || null,
-            deletedAt: new Date(),
-            createdAt: new Date()
-          };
-
-          // Insert audit log (assuming you have an auditLogs collection)
-          // await auditLogs.insertOne(auditLog, { session });
-
-          // Commit transaction
-          await session.commitTransaction();
-
-          res.json({
-            success: true,
-            message: "Transaction deleted successfully with balance reversal",
-            data: {
-              transactionId: existingTransaction.transactionId,
-              amount: existingTransaction.paymentDetails?.amount,
-              reason: reason,
-              deletedAt: new Date(),
-              balanceReversed: amount > 0
-            }
-          });
-
-        } catch (transactionError) {
-          await session.abortTransaction();
-          throw transactionError;
-        }
-
-      } catch (error) {
-        console.error('Delete transaction error:', error);
-        res.status(500).json({
-          error: true,
-          message: "Internal server error while deleting transaction",
-          ...(process.env.NODE_ENV === 'development' && { details: error.message })
-        });
-      } finally {
-        // End session
-        if (session) {
-          await session.endSession();
-        }
-      }
-    });
-
-    // Get transaction statistics
-    app.get("/transactions/stats/overview", async (req, res) => {
-      try {
-        const { branchId, dateFrom, dateTo } = req.query;
-        
-        let filter = { isActive: true };
-        
-        // Apply branch filter
-        if (branchId) filter.branchId = branchId;
-        
-        // Apply date range filter
-        if (dateFrom || dateTo) {
-          filter.date = {};
-          if (dateFrom) filter.date.$gte = new Date(dateFrom);
-          if (dateTo) {
-            const endDate = new Date(dateTo);
-            endDate.setHours(23, 59, 59, 999);
-            filter.date.$lte = endDate;
-          }
-        }
-
-        // Get total transactions
-        const totalTransactions = await transactions.countDocuments(filter);
-        
-        // Get credit transactions
-        const creditTransactions = await transactions.countDocuments({
-          ...filter,
-          transactionType: 'credit'
-        });
-        
-        // Get debit transactions
-        const debitTransactions = await transactions.countDocuments({
-          ...filter,
-          transactionType: 'debit'
-        });
-
-        // Get total amounts
-        const creditAmount = await transactions.aggregate([
-          { $match: { ...filter, transactionType: 'credit' } },
-          { $group: { _id: null, total: { $sum: '$paymentDetails.amount' } } }
-        ]).toArray();
-
-        const debitAmount = await transactions.aggregate([
-          { $match: { ...filter, transactionType: 'debit' } },
-          { $group: { _id: null, total: { $sum: '$paymentDetails.amount' } } }
-        ]).toArray();
-
-        // Get today's transactions
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const todayEnd = new Date();
-        todayEnd.setHours(23, 59, 59, 999);
-        
-        const todayTransactions = await transactions.countDocuments({
-          ...filter,
-          createdAt: { $gte: today, $lte: todayEnd }
-        });
-
-        // Get this month's transactions
-        const thisMonth = new Date();
-        thisMonth.setDate(1);
-        thisMonth.setHours(0, 0, 0, 0);
-        
-        const thisMonthTransactions = await transactions.countDocuments({
-          ...filter,
-          createdAt: { $gte: thisMonth }
-        });
-
-        // Get transactions by category
-        const transactionsByCategory = await transactions.aggregate([
-          { $match: filter },
-          { $group: { _id: '$category', count: { $sum: 1 }, totalAmount: { $sum: '$paymentDetails.amount' } } },
-          { $sort: { count: -1 } }
-        ]).toArray();
-
-        // Get transactions by payment method
-        const transactionsByPaymentMethod = await transactions.aggregate([
-          { $match: filter },
-          { $group: { _id: '$paymentMethod', count: { $sum: 1 }, totalAmount: { $sum: '$paymentDetails.amount' } } },
-          { $sort: { count: -1 } }
-        ]).toArray();
-
-        res.json({
-          success: true,
-          stats: {
-            total: totalTransactions,
-            credit: creditTransactions,
-            debit: debitTransactions,
-            creditAmount: creditAmount[0]?.total || 0,
-            debitAmount: debitAmount[0]?.total || 0,
-            netAmount: (creditAmount[0]?.total || 0) - (debitAmount[0]?.total || 0),
-            today: todayTransactions,
-            thisMonth: thisMonthTransactions,
-            byCategory: transactionsByCategory,
-            byPaymentMethod: transactionsByPaymentMethod
-          }
-        });
-      } catch (error) {
-        console.error('Get transaction stats error:', error);
-        res.status(500).json({ 
-          error: true, 
-          message: "Internal server error while fetching transaction statistics" 
-        });
-      }
-    });
-
-    // Get transaction report by date range
-    app.get("/transactions/report", async (req, res) => {
-      try {
-        const { 
-          dateFrom, 
-          dateTo, 
-          branchId, 
-          transactionType,
-          category,
-          paymentMethod,
-          format = 'json'
-        } = req.query;
-
-        if (!dateFrom || !dateTo) {
-          return res.status(400).json({
-            error: true,
-            message: "Date range (dateFrom and dateTo) is required"
-          });
-        }
-
-        let filter = { isActive: true };
-        
-        // Apply filters
-        if (branchId) filter.branchId = branchId;
-        if (transactionType) filter.transactionType = transactionType;
-        if (category) filter.category = category;
-        if (paymentMethod) filter.paymentMethod = paymentMethod;
-        
-        // Date range filter
-        const startDate = new Date(dateFrom);
-        const endDate = new Date(dateTo);
-        endDate.setHours(23, 59, 59, 999);
-        filter.date = { $gte: startDate, $lte: endDate };
-
-        // Get transactions
-        const reportTransactions = await transactions.find(filter)
-          .sort({ date: -1 })
-          .toArray();
-
-        // Calculate summary
-        const summary = {
-          totalTransactions: reportTransactions.length,
-          totalCreditAmount: 0,
-          totalDebitAmount: 0,
-          creditCount: 0,
-          debitCount: 0
-        };
-
-        reportTransactions.forEach(transaction => {
-          if (transaction.transactionType === 'credit') {
-            summary.totalCreditAmount += transaction.paymentDetails.amount;
-            summary.creditCount++;
-          } else {
-            summary.totalDebitAmount += transaction.paymentDetails.amount;
-            summary.debitCount++;
-          }
-        });
-
-        summary.netAmount = summary.totalCreditAmount - summary.totalDebitAmount;
-
-        res.json({
-          success: true,
-          report: {
-            dateRange: {
-              from: dateFrom,
-              to: dateTo
-            },
-            summary,
-            transactions: reportTransactions
-          }
-        });
-      } catch (error) {
-        console.error('Get transaction report error:', error);
-        res.status(500).json({ 
-          error: true, 
-          message: "Internal server error while generating transaction report" 
-        });
-      }
-    });
-
     
     
     // Sale And Invoice 
@@ -4199,33 +2417,33 @@ app.patch("/vendors/:id", async (req, res) => {
   }
 });
 
-// ✅ DELETE (soft delete)
-// app.delete("/vendors/:id", async (req, res) => {
-//   try {
-//     const { id } = req.params;
+//✅ DELETE (soft delete)
+app.delete("/vendors/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
 
-//     if (!ObjectId.isValid(id)) {
-//       return res.status(400).json({ error: true, message: "Invalid vendor ID" });
-//     }
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid vendor ID" });
+    }
 
-//     const result = await vendors.updateOne(
-//       { _id: new ObjectId(id) },
-//       { $set: { isActive: false } }
-//     );
+    const result = await vendors.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { isActive: false } }
+    );
 
-//     if (result.modifiedCount === 0) {
-//       return res.status(404).json({ error: true, message: "Vendor not found" });
-//     }
+    if (result.modifiedCount === 0) {
+      return res.status(404).json({ error: true, message: "Vendor not found" });
+    }
 
-//     res.json({ success: true, message: "Vendor deleted successfully" });
-//   } catch (error) {
-//     console.error("Error deleting vendor:", error);
-//     res.status(500).json({
-//       error: true,
-//       message: "Internal server error while deleting vendor",
-//     });
-//   }
-// });
+    res.json({ success: true, message: "Vendor deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting vendor:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while deleting vendor",
+    });
+  }
+});
 
 
 
@@ -4435,352 +2653,375 @@ app.get("/vendors/stats/data", async (req, res) => {
   }
 });
 
-// ==================== ENHANCED TRANSACTION ROUTES ====================
 
-// Create Credit Transaction
-app.post("/transactions/credit", async (req, res) => {
-  try {
-    const transactionData = {
-      ...req.body,
-      transactionType: 'credit'
-    };
-    
-    // Forward to main transaction endpoint
-    req.body = transactionData;
-    return app._router.handle(req, res, () => {
-      // This will be handled by the main /transactions endpoint
-    });
-  } catch (error) {
-    console.error('Create credit transaction error:', error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while creating credit transaction"
-    });
-  }
-});
+// ==================== TRANSACTION ROUTES ====================
 
-// Create Debit Transaction
-app.post("/transactions/debit", async (req, res) => {
-  try {
-    const transactionData = {
-      ...req.body,
-      transactionType: 'debit'
-    };
-    
-    // Forward to main transaction endpoint
-    req.body = transactionData;
-    return app._router.handle(req, res, () => {
-      // This will be handled by the main /transactions endpoint
-    });
-  } catch (error) {
-    console.error('Create debit transaction error:', error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while creating debit transaction"
-    });
-  }
-});
 
-// Create Account-to-Account Transfer
-app.post("/transactions/account-to-account", async (req, res) => {
+// ✅ POST: Create new transaction (IMPROVED VERSION)
+app.post("/api/transactions", async (req, res) => {
+  let session = null;
+  
   try {
-    const transactionData = {
-      ...req.body,
-      transactionType: 'account_to_account'
-    };
-    
-    // Forward to main transaction endpoint
-    req.body = transactionData;
-    return app._router.handle(req, res, () => {
-      // This will be handled by the main /transactions endpoint
-    });
-  } catch (error) {
-    console.error('Create account-to-account transaction error:', error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while creating account-to-account transaction"
-    });
-  }
-});
+    const {
+      transactionType,
+      serviceCategory,
+      partyType,
+      partyId,
+      invoiceId,
+      paymentMethod,
+      targetAccountId,
+      accountManagerId,
+      amount,
+      branchId,
+      createdBy,
+      notes,
+      reference,
+      fromAccountId,
+      toAccountId,
+      // Frontend sends these nested objects
+      debitAccount,
+      creditAccount,
+      paymentDetails,
+      customerId,
+      category,
+      customerBankAccount,
+      employeeReference
+    } = req.body;
 
-// Get transactions by category (Haj, Umrah, Air, Agent, Vendor)
-app.get("/transactions/category/:category", async (req, res) => {
-  try {
-    const { category } = req.params;
-    const { 
-      transactionType, 
-      paymentMethod, 
-      branchId, 
-      customerId, 
-      dateFrom, 
-      dateTo, 
-      search,
-      status,
-      sortBy = 'createdAt',
-      sortOrder = 'desc',
-      page = 1,
-      limit = 20
-    } = req.query;
-    
-    // Validate category
-    const validCategories = ['haj', 'umrah', 'air', 'agent', 'vendor'];
-    if (!validCategories.includes(category.toLowerCase())) {
-      return res.status(400).json({
-        error: true,
-        message: "Invalid category. Must be one of: haj, umrah, air, agent, vendor"
+    // Extract values from nested objects if provided
+    const finalAmount = amount || paymentDetails?.amount;
+    const finalPartyId = partyId || customerId;
+    const finalTargetAccountId = targetAccountId || creditAccount?.id || debitAccount?.id;
+    const finalFromAccountId = fromAccountId || debitAccount?.id;
+    const finalToAccountId = toAccountId || creditAccount?.id;
+    const finalServiceCategory = serviceCategory || category;
+
+    // 1. Validation - আগে সব validate করুন
+    if (!transactionType || !finalAmount || !finalPartyId) {
+      return res.status(400).json({ 
+        success: false,
+        message: "Missing required fields: transactionType, amount, and partyId" 
       });
     }
 
-    // Validate pagination parameters
-    const pageNum = Math.max(1, parseInt(page));
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+    if (!['credit', 'debit', 'transfer'].includes(transactionType)) {
+      return res.status(400).json({ 
+        success: false,
+        message: "Transaction type must be 'credit', 'debit', or 'transfer'" 
+      });
+    }
+
+    const numericAmount = parseFloat(finalAmount);
+    if (isNaN(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({ 
+        success: false,
+        message: "Amount must be a valid positive number" 
+      });
+    }
+
+    // 2. Validate party - আগে validate করুন
+    let party = null;
+    const searchPartyId = finalPartyId;
+    const isValidObjectId = ObjectId.isValid(searchPartyId);
+    const searchCondition = isValidObjectId 
+      ? { $or: [{ customerId: searchPartyId }, { _id: new ObjectId(searchPartyId) }], isActive: true }
+      : { $or: [{ customerId: searchPartyId }, { _id: searchPartyId }], isActive: true };
     
-    let filter = { 
-      isActive: true,
-      category: { $regex: category, $options: 'i' }
-    };
+    if (partyType === 'customer') {
+      party = await customers.findOne(searchCondition);
+    } else if (partyType === 'agent') {
+      const agentCondition = isValidObjectId 
+        ? { $or: [{ agentId: searchPartyId }, { _id: new ObjectId(searchPartyId) }], isActive: true }
+        : { $or: [{ agentId: searchPartyId }, { _id: searchPartyId }], isActive: true };
+      party = await agents.findOne(agentCondition);
+    } else if (partyType === 'vendor') {
+      const vendorCondition = isValidObjectId 
+        ? { $or: [{ vendorId: searchPartyId }, { _id: new ObjectId(searchPartyId) }], isActive: true }
+        : { $or: [{ vendorId: searchPartyId }, { _id: searchPartyId }], isActive: true };
+      party = await vendors.findOne(vendorCondition);
+    }
+
+    // Allow transactions even if party is not found in database
+    // Party information will be stored as provided
+    if (!party && partyType && partyType !== 'other') {
+      console.warn(`Party not found in database: ${partyType} with ID ${searchPartyId}`);
+      // Don't return error, allow transaction to proceed
+    }
+
+    // 3. Validate branch - আগে validate করুন
+    let branch;
+    if (branchId) {
+      branch = await branches.findOne({ branchId, isActive: true });
+    } else {
+      branch = await branches.findOne({ isActive: true });
+    }
     
-    // Apply additional filters
-    if (transactionType) {
-      if (!['credit', 'debit', 'account_to_account', 'transfer'].includes(transactionType)) {
-        return res.status(400).json({
-          error: true,
-          message: "Invalid transaction type",
-          validTypes: ['credit', 'debit', 'account_to_account', 'transfer']
+    if (!branch) {
+      return res.status(400).json({ success: false, message: "Branch not found" });
+    }
+
+    // 4. Validate accounts BEFORE updating balances - আগে validate করুন
+    let account = null;
+    let fromAccount = null;
+    let toAccount = null;
+    
+    if (transactionType === "credit" || transactionType === "debit") {
+      if (!finalTargetAccountId) {
+        return res.status(400).json({ 
+          success: false,
+          message: "targetAccountId is required for credit/debit transactions" 
         });
       }
-      // Normalize transaction type: 'transfer' -> 'account_to_account'
-      const normalizedType = transactionType === 'transfer' ? 'account_to_account' : transactionType;
-      filter.transactionType = normalizedType;
+      account = await bankAccounts.findOne({ _id: new ObjectId(finalTargetAccountId) });
+      if (!account) {
+        return res.status(404).json({ success: false, message: "Target account not found" });
+      }
+      
+      if (transactionType === "debit" && (account.currentBalance || 0) < numericAmount) {
+        return res.status(400).json({ 
+          success: false,
+          message: "Insufficient balance" 
+        });
+      }
+    } else if (transactionType === "transfer") {
+      if (!finalFromAccountId || !finalToAccountId) {
+        return res.status(400).json({ 
+          success: false,
+          message: "fromAccountId and toAccountId are required for transfer transactions" 
+        });
+      }
+      
+      fromAccount = await bankAccounts.findOne({ _id: new ObjectId(finalFromAccountId) });
+      toAccount = await bankAccounts.findOne({ _id: new ObjectId(finalToAccountId) });
+      
+      if (!fromAccount || !toAccount) {
+        return res.status(404).json({ 
+          success: false,
+          message: "One or both accounts not found" 
+        });
+      }
+      
+      if ((fromAccount.currentBalance || 0) < numericAmount) {
+        return res.status(400).json({ 
+          success: false,
+          message: "Insufficient balance in source account" 
+        });
+      }
+    }
+
+    // 5. Start MongoDB session for atomic operations
+    session = db.client.startSession();
+    session.startTransaction();
+
+    let transactionResult;
+
+    try {
+      // 6. Update balances WITHIN transaction
+      if (transactionType === "credit") {
+        const newBalance = (account.currentBalance || 0) + numericAmount;
+        await bankAccounts.updateOne(
+          { _id: new ObjectId(finalTargetAccountId) },
+          { $set: { currentBalance: newBalance, updatedAt: new Date() } },
+          { session }
+        );
+        
+      } else if (transactionType === "debit") {
+        const newBalance = (account.currentBalance || 0) - numericAmount;
+        await bankAccounts.updateOne(
+          { _id: new ObjectId(finalTargetAccountId) },
+          { $set: { currentBalance: newBalance, updatedAt: new Date() } },
+          { session }
+        );
+        
+      } else if (transactionType === "transfer") {
+        const fromNewBalance = (fromAccount.currentBalance || 0) - numericAmount;
+        const toNewBalance = (toAccount.currentBalance || 0) + numericAmount;
+        
+        await bankAccounts.updateOne(
+          { _id: new ObjectId(finalFromAccountId) },
+          { $set: { currentBalance: fromNewBalance, updatedAt: new Date() } },
+          { session }
+        );
+        
+        await bankAccounts.updateOne(
+          { _id: new ObjectId(finalToAccountId) },
+          { $set: { currentBalance: toNewBalance, updatedAt: new Date() } },
+          { session }
+        );
+      }
+
+      // 7. Generate transaction ID
+      const transactionId = await generateTransactionId(db, branch.branchCode);
+
+      // 8. Create transaction record
+      const transactionData = {
+        transactionId,
+        transactionType,
+        serviceCategory: finalServiceCategory,
+        partyType,
+        partyId: finalPartyId,
+        partyName: party?.name || party?.customerName || party?.agentName || party?.tradeName || party?.vendorName || 'Unknown',
+        partyPhone: party?.phone || party?.customerPhone || party?.contactNo || party?.mobile || null,
+        partyEmail: party?.email || party?.customerEmail || null,
+        invoiceId,
+        paymentMethod,
+        targetAccountId: transactionType === 'transfer' ? finalToAccountId : finalTargetAccountId,
+        fromAccountId: transactionType === 'transfer' ? finalFromAccountId : null,
+        accountManagerId,
+        // Include nested objects for compatibility
+        debitAccount: debitAccount || (transactionType === 'debit' ? { id: finalTargetAccountId } : null),
+        creditAccount: creditAccount || (transactionType === 'credit' ? { id: finalTargetAccountId } : null),
+        paymentDetails: paymentDetails || { amount: numericAmount },
+        customerBankAccount: customerBankAccount || null,
+        amount: numericAmount,
+        branchId: branch.branchId,
+        branchName: branch.branchName,
+        branchCode: branch.branchCode,
+        createdBy: createdBy || 'SYSTEM',
+        notes: notes || '',
+        reference: reference || paymentDetails?.reference || transactionId,
+        employeeReference: employeeReference || null,
+        status: 'completed',
+        date: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        isActive: true
+      };
+
+      // 8.1 If party is an agent, update agent due amounts atomically
+      if (partyType === 'agent' && party && party._id) {
+        const categoryText = String(finalServiceCategory || '').toLowerCase();
+        const isHajjCategory = categoryText.includes('haj');
+        const isUmrahCategory = categoryText.includes('umrah');
+        const dueDelta = transactionType === 'debit' ? numericAmount : (transactionType === 'credit' ? -numericAmount : 0);
+
+        const agentUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: dueDelta } };
+        if (isHajjCategory) {
+          agentUpdate.$inc.hajDue = (agentUpdate.$inc.hajDue || 0) + dueDelta;
+        }
+        if (isUmrahCategory) {
+          agentUpdate.$inc.umrahDue = (agentUpdate.$inc.umrahDue || 0) + dueDelta;
+        }
+        await agents.updateOne({ _id: party._id }, agentUpdate, { session });
+      }
+
+      transactionResult = await transactions.insertOne(transactionData, { session });
+
+      // 9. Commit transaction
+      await session.commitTransaction();
+      
+      res.json({ 
+        success: true, 
+        transaction: { ...transactionData, _id: transactionResult.insertedId } 
+      });
+      
+    } catch (transactionError) {
+      // Rollback on error
+      await session.abortTransaction();
+      throw transactionError;
     }
     
-    if (paymentMethod) filter.paymentMethod = paymentMethod;
-    if (branchId) filter.branchId = branchId;
-    if (customerId) filter.customerId = customerId;
-    if (status) filter.status = status;
+  } catch (err) {
+    // Clean up session on error
+    if (session && session.inTransaction()) {
+      await session.abortTransaction();
+    }
     
-    // Date range filter
-    if (dateFrom || dateTo) {
+    console.error('Transaction creation error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: err.message 
+    });
+  } finally {
+    // End session
+    if (session) {
+      session.endSession();
+    }
+  }
+});
+// ==================== ORDER ROUTES ====================
+
+// ✅ GET: List transactions with filters and pagination
+app.get("/api/transactions", async (req, res) => {
+  try {
+    const {
+      partyType,
+      partyId,
+      transactionType,
+      serviceCategory,
+      branchId,
+      accountId,
+      fromDate,
+      toDate,
+      page = 1,
+      limit = 20,
+      q
+    } = req.query || {};
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+
+    const filter = { isActive: { $ne: false } };
+
+    if (partyType) filter.partyType = String(partyType);
+    if (partyId) filter.partyId = String(partyId);
+    if (transactionType) filter.transactionType = String(transactionType);
+    if (serviceCategory) filter.serviceCategory = String(serviceCategory);
+    if (branchId) filter.branchId = String(branchId);
+    if (accountId) filter.$or = [
+      { targetAccountId: String(accountId) },
+      { fromAccountId: String(accountId) }
+    ];
+
+    if (fromDate || toDate) {
       filter.date = {};
-      if (dateFrom) {
-        const startDate = new Date(dateFrom);
-        if (isNaN(startDate.getTime())) {
-          return res.status(400).json({
-            error: true,
-            message: "Invalid dateFrom format. Use YYYY-MM-DD"
-          });
+      if (fromDate) filter.date.$gte = new Date(fromDate);
+      if (toDate) {
+        const end = new Date(toDate);
+        if (!isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
         }
-        filter.date.$gte = startDate;
-      }
-      if (dateTo) {
-        const endDate = new Date(dateTo);
-        if (isNaN(endDate.getTime())) {
-          return res.status(400).json({
-            error: true,
-            message: "Invalid dateTo format. Use YYYY-MM-DD"
-          });
-        }
-        endDate.setHours(23, 59, 59, 999);
-        filter.date.$lte = endDate;
+        filter.date.$lte = end;
       }
     }
-    
-    // Search filter
-    if (search) {
-      const searchRegex = { $regex: search, $options: 'i' };
+
+    if (q) {
+      const text = String(q).trim();
       filter.$or = [
-        { transactionId: searchRegex },
-        { customerName: searchRegex },
-        { customerPhone: searchRegex },
-        { customerEmail: searchRegex },
-        { notes: searchRegex },
-        { 'debitAccount.name': searchRegex },
-        { 'creditAccount.name': searchRegex }
+        ...(filter.$or || []),
+        { transactionId: { $regex: text, $options: 'i' } },
+        { partyName: { $regex: text, $options: 'i' } },
+        { notes: { $regex: text, $options: 'i' } },
+        { reference: { $regex: text, $options: 'i' } }
       ];
     }
 
-    // Validate sort parameters
-    const validSortFields = ['createdAt', 'date', 'amount', 'customerName', 'transactionType'];
-    const sortField = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
-    const sortDirection = sortOrder === 'asc' ? 1 : -1;
-    
-    // Calculate pagination
-    const skip = (pageNum - 1) * limitNum;
-    
-    // Get total count
-    const totalCount = await transactions.countDocuments(filter);
-    
-    // Get transactions with pagination and sorting
-    const categoryTransactions = await transactions.find(filter)
-      .sort({ [sortField]: sortDirection })
-      .skip(skip)
-      .limit(limitNum)
-      .toArray();
-
-    // Calculate pagination metadata
-    const totalPages = Math.ceil(totalCount / limitNum);
-    const hasNextPage = pageNum < totalPages;
-    const hasPrevPage = pageNum > 1;
-
-    res.json({
-      success: true,
-      data: {
-        transactions: categoryTransactions,
-        category: category.toLowerCase(),
-        pagination: {
-          currentPage: pageNum,
-          totalPages,
-          totalCount,
-          limit: limitNum,
-          hasNextPage,
-          hasPrevPage,
-          nextPage: hasNextPage ? pageNum + 1 : null,
-          prevPage: hasPrevPage ? pageNum - 1 : null
-        },
-        filters: {
-          category: category.toLowerCase(),
-          transactionType,
-          paymentMethod,
-          branchId,
-          customerId,
-          dateFrom,
-          dateTo,
-          search,
-          status,
-          sortBy: sortField,
-          sortOrder
-        }
-      }
-    });
-  } catch (error) {
-    console.error(`Get ${category} transactions error:`, error);
-    res.status(500).json({
-      error: true,
-      message: `Internal server error while fetching ${category} transactions`
-    });
-  }
-});
-
-// Get transaction statistics by category
-app.get("/transactions/stats/category/:category", async (req, res) => {
-  try {
-    const { category } = req.params;
-    const { dateFrom, dateTo } = req.query;
-    
-    // Validate category
-    const validCategories = ['haj', 'umrah', 'air', 'agent', 'vendor'];
-    if (!validCategories.includes(category.toLowerCase())) {
-      return res.status(400).json({
-        error: true,
-        message: "Invalid category. Must be one of: haj, umrah, air, agent, vendor"
-      });
-    }
-
-    let filter = { 
-      isActive: true,
-      category: { $regex: category, $options: 'i' }
-    };
-
-    // Date range filter
-    if (dateFrom || dateTo) {
-      filter.date = {};
-      if (dateFrom) {
-        const startDate = new Date(dateFrom);
-        if (isNaN(startDate.getTime())) {
-          return res.status(400).json({
-            error: true,
-            message: "Invalid dateFrom format. Use YYYY-MM-DD"
-          });
-        }
-        filter.date.$gte = startDate;
-      }
-      if (dateTo) {
-        const endDate = new Date(dateTo);
-        if (isNaN(endDate.getTime())) {
-          return res.status(400).json({
-            error: true,
-            message: "Invalid dateTo format. Use YYYY-MM-DD"
-          });
-        }
-        endDate.setHours(23, 59, 59, 999);
-        filter.date.$lte = endDate;
-      }
-    }
-
-    // Get transaction counts by type
-    const creditCount = await transactions.countDocuments({
-      ...filter,
-      transactionType: 'credit'
-    });
-    
-    const debitCount = await transactions.countDocuments({
-      ...filter,
-      transactionType: 'debit'
-    });
-    
-    const accountToAccountCount = await transactions.countDocuments({
-      ...filter,
-      transactionType: 'account_to_account'
-    });
-
-    // Get total amounts by transaction type
-    const creditAmount = await transactions.aggregate([
-      { $match: { ...filter, transactionType: 'credit' } },
-      { $group: { _id: null, total: { $sum: '$amount' } } }
-    ]).toArray();
-
-    const debitAmount = await transactions.aggregate([
-      { $match: { ...filter, transactionType: 'debit' } },
-      { $group: { _id: null, total: { $sum: '$amount' } } }
-    ]).toArray();
-
-    const accountToAccountAmount = await transactions.aggregate([
-      { $match: { ...filter, transactionType: 'account_to_account' } },
-      { $group: { _id: null, total: { $sum: '$amount' } } }
-    ]).toArray();
-
-    // Get recent transactions
-    const recentTransactions = await transactions.find(filter)
+    const cursor = transactions
+      .find(filter)
       .sort({ createdAt: -1 })
-      .limit(5)
-      .toArray();
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum);
+
+    const [items, total] = await Promise.all([
+      cursor.toArray(),
+      transactions.countDocuments(filter)
+    ]);
 
     res.json({
       success: true,
-      stats: {
-        category: category.toLowerCase(),
-        counts: {
-          credit: creditCount,
-          debit: debitCount,
-          accountToAccount: accountToAccountCount,
-          total: creditCount + debitCount + accountToAccountCount
-        },
-        amounts: {
-          credit: creditAmount[0]?.total || 0,
-          debit: debitAmount[0]?.total || 0,
-          accountToAccount: accountToAccountAmount[0]?.total || 0,
-          total: (creditAmount[0]?.total || 0) + (debitAmount[0]?.total || 0) + (accountToAccountAmount[0]?.total || 0)
-        },
-        recentTransactions: recentTransactions.map(t => ({
-          transactionId: t.transactionId,
-          customerName: t.customerName,
-          amount: t.amount,
-          transactionType: t.transactionType,
-          date: t.date,
-          status: t.status
-        }))
+      data: items,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
       }
     });
   } catch (error) {
-    console.error(`Get ${category} transaction stats error:`, error);
-    res.status(500).json({
-      error: true,
-      message: `Internal server error while fetching ${category} transaction statistics`
-    });
+    console.error('List transactions error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch transactions', error: error.message });
   }
 });
-
-// ==================== ORDER ROUTES ====================
 
 // ✅ POST: Create new order
 app.post("/orders", async (req, res) => {
@@ -5439,8 +3680,8 @@ app.get("api/haj-umrah/agents/:id", async (req, res) => {
   }
 });
 
-// Update agent
-app.put("api/haj-umrah/agents/:id", async (req, res) => {
+// PUT /api/haj-umrah/agents/:id
+app.put("/api/haj-umrah/agents/:id", async (req, res) => {
   try {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
@@ -5458,39 +3699,62 @@ app.put("api/haj-umrah/agents/:id", async (req, res) => {
       isActive,
       totalDue,
       hajDue,
-      umrahDue
+      umrahDue,
     } = req.body;
 
+    // Helpers
+    const isValidDateYMD = (str) => {
+      if (typeof str !== "string") return false;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(str)) return false;
+      const d = new Date(str);
+      // Ensure date is valid and preserved in UTC string (avoid 31->next month issues)
+      return !Number.isNaN(d.getTime()) && str === d.toISOString().slice(0, 10);
+    };
+
+    const parseNumberField = (value, fieldName) => {
+      if (value === "" || value === null) return 0; // allow empty/null as 0 if you want
+      const n = typeof value === "number" ? value : parseFloat(value);
+      if (!Number.isFinite(n)) {
+        throw new Error(`${fieldName} must be a valid number`);
+      }
+      return n;
+    };
+
     const update = { $set: { updatedAt: new Date() } };
+
     if (tradeName !== undefined) update.$set.tradeName = String(tradeName).trim();
     if (tradeLocation !== undefined) update.$set.tradeLocation = String(tradeLocation).trim();
     if (ownerName !== undefined) update.$set.ownerName = String(ownerName).trim();
     if (contactNo !== undefined) update.$set.contactNo = String(contactNo).trim();
     if (dob !== undefined) {
-      if (dob && !isValidDate(dob)) {
+      if (dob && !isValidDateYMD(dob)) {
         return res.status(400).send({ error: true, message: "Invalid date format for dob (YYYY-MM-DD)" });
       }
       update.$set.dob = dob || null;
     }
-    if (nid !== undefined) update.$set.nid = nid || "";
-    if (passport !== undefined) update.$set.passport = passport || "";
+    if (nid !== undefined) update.$set.nid = String(nid ?? "").trim();
+    if (passport !== undefined) update.$set.passport = String(passport ?? "").trim();
     if (isActive !== undefined) update.$set.isActive = Boolean(isActive);
-    if (totalDue !== undefined) update.$set.totalDue = parseFloat(totalDue) || 0;
-    if (hajDue !== undefined) update.$set.hajDue = parseFloat(hajDue) || 0;
-    if (umrahDue !== undefined) update.$set.umrahDue = parseFloat(umrahDue) || 0;
+    if (totalDue !== undefined) update.$set.totalDue = parseNumberField(totalDue, "totalDue");
+    if (hajDue !== undefined) update.$set.hajDue = parseNumberField(hajDue, "hajDue");
+    if (umrahDue !== undefined) update.$set.umrahDue = parseNumberField(umrahDue, "umrahDue");
 
-    // Validate fields if provided
+    // Field-level validations (only if present)
     if (update.$set.contactNo) {
       const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
       if (!phoneRegex.test(update.$set.contactNo)) {
         return res.status(400).send({ error: true, message: "Enter a valid phone number" });
       }
     }
-    if (update.$set.nid && !/^[0-9]{8,20}$/.test(update.$set.nid)) {
-      return res.status(400).send({ error: true, message: "NID should be 8-20 digits" });
+    if (update.$set.nid) {
+      if (!/^[0-9]{8,20}$/.test(update.$set.nid)) {
+        return res.status(400).send({ error: true, message: "NID should be 8-20 digits" });
+      }
     }
-    if (update.$set.passport && !/^[A-Za-z0-9]{6,12}$/.test(update.$set.passport)) {
-      return res.status(400).send({ error: true, message: "Passport should be 6-12 chars" });
+    if (update.$set.passport) {
+      if (!/^[A-Za-z0-9]{6,12}$/.test(update.$set.passport)) {
+        return res.status(400).send({ error: true, message: "Passport should be 6-12 chars" });
+      }
     }
 
     const result = await agents.updateOne({ _id: new ObjectId(id) }, update);
@@ -5499,10 +3763,13 @@ app.put("api/haj-umrah/agents/:id", async (req, res) => {
     }
 
     const updated = await agents.findOne({ _id: new ObjectId(id) });
-    res.send({ success: true, message: "Agent updated successfully", data: updated });
-  } catch (error) {
-    console.error('Update agent error:', error);
-    res.status(500).json({ error: true, message: "Internal server error while updating agent" });
+    return res.send({ success: true, message: "Agent updated successfully", data: updated });
+  } catch (err) {
+    console.error("Update agent error:", err);
+    const message = err?.message || "Internal server error while updating agent";
+    // 400 for known validation errors, else 500
+    const status = /must be a valid number|Invalid date format/i.test(message) ? 400 : 500;
+    return res.status(status).json({ error: true, message });
   }
 });
 
@@ -6508,7 +4775,7 @@ app.delete('/api/haj-umrah/agent-packages/:id/remove-customer/:customerId', asyn
 });
 
 
-// GET /api/haj-umrah/agents
+// GET /haj-umrah/agents
 // Get all agents
 app.get('/api/haj-umrah/agents', async (req, res) => {
   try {
@@ -6643,6 +4910,225 @@ app.get('/api/haj-umrah/agents/:id', async (req, res) => {
     });
   }
 });
+
+
+// ==================== PACKAGES ROUTES (for general package management without agents) ====================
+// POST /haj-umrah/packages - Create new package
+app.post('/haj-umrah/packages', async (req, res) => {
+  try {
+    const {
+      packageName,
+      packageYear,
+      packageMonth,
+      packageType,
+      customPackageType,
+      sarToBdtRate,
+      notes,
+      costs,
+      totals,
+      status
+    } = req.body;
+    
+    // Validation
+    if (!packageName || !packageYear) {
+      return res.status(400).json({
+        success: false,
+        message: 'Package name and year are required'
+      });
+    }
+    
+    // Create package document
+    const packageDoc = {
+      packageName: String(packageName),
+      packageYear: String(packageYear),
+      packageMonth: packageMonth || '',
+      packageType: packageType || 'Regular',
+      customPackageType: customPackageType || '',
+      sarToBdtRate: parseFloat(sarToBdtRate) || 0,
+      notes: notes || '',
+      status: status || 'Active',
+      costs: costs || {},
+      totals: totals || {},
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    
+    const result = await packages.insertOne(packageDoc);
+    const createdPackage = await packages.findOne({ _id: result.insertedId });
+    
+    res.status(201).json({
+      success: true,
+      message: 'Package created successfully',
+      data: createdPackage
+    });
+  } catch (error) {
+    console.error('Create package error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create package',
+      error: error.message
+    });
+  }
+});
+
+// GET /haj-umrah/packages - Get all packages
+app.get('/haj-umrah/packages', async (req, res) => {
+  try {
+    const { year, month, type, customPackageType, status, limit = 50, page = 1 } = req.query;
+    
+    const filter = {};
+    if (year) filter.packageYear = String(year);
+    if (month) filter.packageMonth = String(month);
+    if (type) filter.packageType = type;
+    if (customPackageType) filter.customPackageType = customPackageType;
+    if (status) filter.status = status;
+    
+    const limitNum = parseInt(limit);
+    const pageNum = parseInt(page);
+    
+    const packagesList = await packages
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum)
+      .toArray();
+    
+    const total = await packages.countDocuments(filter);
+    
+    res.json({
+      success: true,
+      data: packagesList,
+      pagination: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Get packages error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch packages',
+      error: error.message
+    });
+  }
+});
+
+// GET /haj-umrah/packages/:id - Get single package
+app.get('/haj-umrah/packages/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid package ID'
+      });
+    }
+    
+    const package = await packages.findOne({ _id: new ObjectId(id) });
+    
+    if (!package) {
+      return res.status(404).json({
+        success: false,
+        message: 'Package not found'
+      });
+    }
+    
+    res.json({
+      success: true,
+      data: package
+    });
+  } catch (error) {
+    console.error('Get package error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch package',
+      error: error.message
+    });
+  }
+});
+
+// PUT /haj-umrah/packages/:id - Update package
+app.put('/haj-umrah/packages/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid package ID'
+      });
+    }
+    
+    const updateData = {
+      ...req.body,
+      updatedAt: new Date()
+    };
+    
+    const result = await packages.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateData }
+    );
+    
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Package not found'
+      });
+    }
+    
+    const updatedPackage = await packages.findOne({ _id: new ObjectId(id) });
+    
+    res.json({
+      success: true,
+      message: 'Package updated successfully',
+      data: updatedPackage
+    });
+  } catch (error) {
+    console.error('Update package error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update package',
+      error: error.message
+    });
+  }
+});
+
+// DELETE /haj-umrah/packages/:id - Delete package
+app.delete('/haj-umrah/packages/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid package ID'
+      });
+    }
+    
+    const result = await packages.deleteOne({ _id: new ObjectId(id) });
+    
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Package not found'
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: 'Package deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete package error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete package',
+      error: error.message
+    });
+  }
+});
+
+
 
 // ==================== BANK ACCOUNTS ROUTES ====================
 // Schema (MongoDB):
@@ -7482,6 +5968,8 @@ app.post("/bank-accounts/transfers", async (req, res) => {
     });
   }
 });
+
+
 
 // { Office Managment }
 
