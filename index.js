@@ -2176,7 +2176,6 @@ app.get("/sales/:saleId", async (req, res) => {
   }
 });
 
-// Vendor add and list
 
     // ✅ POST: Add new vendor
 app.post("/vendors", async (req, res) => {
@@ -2198,6 +2197,31 @@ app.post("/vendors", async (req, res) => {
       });
     }
 
+    // Normalize and validate contact number
+    let normalizedContact = String(contactNo || '').trim();
+    const contactDigits = normalizedContact.replace(/\D/g, '');
+    if (contactDigits.startsWith('8801') && contactDigits.length >= 13) {
+      normalizedContact = '0' + contactDigits.slice(3, 13);
+    } else if (contactDigits.startsWith('01') && contactDigits.length >= 11) {
+      normalizedContact = contactDigits.slice(0, 11);
+    } else {
+      normalizedContact = contactDigits;
+    }
+    if (!/^01[3-9]\d{8}$/.test(normalizedContact)) {
+      return res.status(400).json({
+        error: true,
+        message: "Invalid contact number format. Please use 01XXXXXXXXX format"
+      });
+    }
+
+    // Handle DOB: treat empty string as null; validate if provided
+    let dobToStore = (dob === '' ? null : (dob || null));
+    if (dobToStore !== null) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dobToStore)) || Number.isNaN(new Date(dobToStore).getTime())) {
+        return res.status(400).json({ error: true, message: 'Invalid date format. Please use YYYY-MM-DD format' });
+      }
+    }
+
     // Generate unique vendor ID
     const vendorId = await generateVendorId(db);
 
@@ -2206,8 +2230,8 @@ app.post("/vendors", async (req, res) => {
       tradeName: tradeName.trim(),
       tradeLocation: tradeLocation.trim(),
       ownerName: ownerName.trim(),
-      contactNo: contactNo.trim(),
-      dob: dob || null,
+      contactNo: normalizedContact,
+      dob: dobToStore,
       nid: nid?.trim() || "",
       passport: passport?.trim() || "",
       isActive: true,
@@ -2221,6 +2245,7 @@ app.post("/vendors", async (req, res) => {
       message: "Vendor added successfully",
       vendorId: result.insertedId,
       vendorUniqueId: vendorId,
+      vendor: { _id: result.insertedId, ...newVendor },
     });
   } catch (error) {
     console.error("Error adding vendor:", error);
@@ -2231,428 +2256,501 @@ app.post("/vendors", async (req, res) => {
   }
 });
 
+   // Vendor add and list
 
-// ✅ GET: All active vendors
-app.get("/vendors", async (req, res) => {
-  try {
-    const allVendors = await vendors.find({ isActive: true }).toArray();
-    res.json({ success: true, vendors: allVendors });
-  } catch (error) {
-    console.error("Error fetching vendors:", error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while fetching vendors",
-    });
-  }
-});
-
-
-// ✅ GET: Single vendor by ID
-app.get("/vendors/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Check if valid MongoDB ObjectId
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: true, message: "Invalid vendor ID" });
-    }
-
-    const vendor = await vendors.findOne({
-      _id: new ObjectId(id),
-      isActive: true,
-    });
-
-    if (!vendor) {
-      return res.status(404).json({ error: true, message: "Vendor not found" });
-    }
-
-    res.json({ success: true, vendor });
-  } catch (error) {
-    console.error("Error fetching vendor:", error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while fetching vendor",
-    });
-  }
-});
-
-// ✅ PATCH: Update vendor information
-app.patch("/vendors/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const updateData = req.body;
-
-    // Check if valid MongoDB ObjectId
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: true, message: "Invalid vendor ID" });
-    }
-
-    // Check if vendor exists
-    const existingVendor = await vendors.findOne({
-      _id: new ObjectId(id),
-      isActive: true,
-    });
-
-    if (!existingVendor) {
-      return res.status(404).json({ error: true, message: "Vendor not found" });
-    }
-
-    // Prepare update data - only allow specific fields to be updated
-    const allowedFields = ['tradeName', 'tradeLocation', 'ownerName', 'contactNo', 'dob', 'nid', 'passport'];
-    const filteredUpdateData = {};
+    // ✅ POST: Add new vendor
+    app.post("/vendors", async (req, res) => {
+      try {
+        const {
+          tradeName,
+          tradeLocation,
+          ownerName,
+          contactNo,
+          dob,
+          nid,
+          passport
+        } = req.body;
     
-    // Only allow specific fields to be updated
-    allowedFields.forEach(field => {
-      if (updateData[field] !== undefined) {
-        // Trim string fields
-        if (typeof updateData[field] === 'string') {
-          filteredUpdateData[field] = updateData[field].trim();
-        } else {
-          filteredUpdateData[field] = updateData[field];
+        if (!tradeName || !tradeLocation || !ownerName || !contactNo) {
+          return res.status(400).json({
+            error: true,
+            message: "Trade Name, Location, Owner Name & Contact No are required",
+          });
         }
-      }
-    });
-
-    // Validate required fields if they are being updated
-    if (filteredUpdateData.tradeName && !filteredUpdateData.tradeName) {
-      return res.status(400).json({
-        error: true,
-        message: "Trade Name cannot be empty"
-      });
-    }
-
-    if (filteredUpdateData.tradeLocation && !filteredUpdateData.tradeLocation) {
-      return res.status(400).json({
-        error: true,
-        message: "Trade Location cannot be empty"
-      });
-    }
-
-    if (filteredUpdateData.ownerName && !filteredUpdateData.ownerName) {
-      return res.status(400).json({
-        error: true,
-        message: "Owner Name cannot be empty"
-      });
-    }
-
-    if (filteredUpdateData.contactNo && !filteredUpdateData.contactNo) {
-      return res.status(400).json({
-        error: true,
-        message: "Contact Number cannot be empty"
-      });
-    }
-
-    // Validate contact number format if being updated
-    if (filteredUpdateData.contactNo && !/^01[3-9]\d{8}$/.test(filteredUpdateData.contactNo)) {
-      return res.status(400).json({
-        error: true,
-        message: "Invalid contact number format. Please use 01XXXXXXXXX format"
-      });
-    }
-
-    // Validate date of birth format if being updated
-    if (filteredUpdateData.dob && filteredUpdateData.dob !== null && !isValidDate(filteredUpdateData.dob)) {
-      return res.status(400).json({
-        error: true,
-        message: "Invalid date format. Please use YYYY-MM-DD format"
-      });
-    }
-
-    // Check if contact number already exists for another vendor
-    if (filteredUpdateData.contactNo) {
-      const existingVendorWithContact = await vendors.findOne({
-        contactNo: filteredUpdateData.contactNo,
-        _id: { $ne: new ObjectId(id) },
-        isActive: true
-      });
-
-      if (existingVendorWithContact) {
-        return res.status(400).json({
+    
+        // Generate unique vendor ID
+        const vendorId = await generateVendorId(db);
+    
+        const newVendor = {
+          vendorId: vendorId,
+          tradeName: tradeName.trim(),
+          tradeLocation: tradeLocation.trim(),
+          ownerName: ownerName.trim(),
+          contactNo: contactNo.trim(),
+          dob: dob || null,
+          nid: nid?.trim() || "",
+          passport: passport?.trim() || "",
+          isActive: true,
+          createdAt: new Date(),
+        };
+    
+        const result = await vendors.insertOne(newVendor);
+    
+        res.status(201).json({
+          success: true,
+          message: "Vendor added successfully",
+          vendorId: result.insertedId,
+          vendorUniqueId: vendorId,
+        });
+      } catch (error) {
+        console.error("Error adding vendor:", error);
+        res.status(500).json({
           error: true,
-          message: "Vendor with this contact number already exists"
+          message: "Internal server error while adding vendor",
         });
       }
-    }
-
-    // Add update timestamp
-    filteredUpdateData.updatedAt = new Date();
-
-    // Remove fields that shouldn't be updated
-    delete filteredUpdateData._id;
-    delete filteredUpdateData.createdAt;
-    delete filteredUpdateData.isActive;
-
-    // Update vendor
-    const result = await vendors.updateOne(
-      { _id: new ObjectId(id), isActive: true },
-      { $set: filteredUpdateData }
-    );
-
-    if (result.modifiedCount === 0) {
-      return res.status(400).json({
-        error: true,
-        message: "No changes made or vendor not found"
-      });
-    }
-
-    // Get updated vendor data
-    const updatedVendor = await vendors.findOne({
-      _id: new ObjectId(id),
-      isActive: true,
     });
-
-    res.json({
-      success: true,
-      message: "Vendor information updated successfully",
-      modifiedCount: result.modifiedCount,
-      vendor: updatedVendor
-    });
-
-  } catch (error) {
-    console.error("Error updating vendor:", error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while updating vendor",
-    });
-  }
-});
-
-//✅ DELETE (soft delete)
-app.delete("/vendors/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: true, message: "Invalid vendor ID" });
-    }
-
-    const result = await vendors.updateOne(
-      { _id: new ObjectId(id) },
-      { $set: { isActive: false } }
-    );
-
-    if (result.modifiedCount === 0) {
-      return res.status(404).json({ error: true, message: "Vendor not found" });
-    }
-
-    res.json({ success: true, message: "Vendor deleted successfully" });
-  } catch (error) {
-    console.error("Error deleting vendor:", error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while deleting vendor",
-    });
-  }
-});
-
-
-
-
-// ✅ GET: Vendor statistics overview
-app.get("/vendors/stats/overview", async (req, res) => {
-  try {
-    // Totals
-    const totalVendors = await vendors.countDocuments({ isActive: true });
-
-    // Today
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
-
-    const todayCount = await vendors.countDocuments({
-      isActive: true,
-      createdAt: { $gte: todayStart, $lte: todayEnd },
-    });
-
-    // This month
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    monthStart.setHours(0, 0, 0, 0);
-    const thisMonthCount = await vendors.countDocuments({
-      isActive: true,
-      createdAt: { $gte: monthStart },
-    });
-
-    // With NID / Passport
-    const withNID = await vendors.countDocuments({ isActive: true, nid: { $exists: true, $ne: "" } });
-    const withPassport = await vendors.countDocuments({ isActive: true, passport: { $exists: true, $ne: "" } });
-
-    // By tradeLocation
-    const byLocation = await vendors.aggregate([
-      { $match: { isActive: true } },
-      { $group: { _id: "$tradeLocation", count: { $sum: 1 } } },
-      { $sort: { count: -1 } }
-    ]).toArray();
-
-    res.json({
-      success: true,
-      stats: {
-        total: totalVendors,
-        today: todayCount,
-        thisMonth: thisMonthCount,
-        withNID,
-        withPassport,
-        byLocation
+    
+    // ✅ GET: All active vendors
+    app.get("/vendors", async (req, res) => {
+      try {
+        const allVendors = await vendors.find({ isActive: true }).toArray();
+        res.json({ success: true, vendors: allVendors });
+      } catch (error) {
+        console.error("Error fetching vendors:", error);
+        res.status(500).json({
+          error: true,
+          message: "Internal server error while fetching vendors",
+        });
       }
     });
-  } catch (error) {
-    console.error("Error fetching vendor statistics:", error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while fetching vendor statistics",
-    });
-  }
-});
-
-// ✅ GET: Vendor statistics data (detailed analytics)
-app.get("/vendors/stats/data", async (req, res) => {
-  try {
-    const { period = 'month', location } = req.query;
-
-    let dateFilter = {};
-    const now = new Date();
     
-    // Set date range based on period
-    switch (period) {
-      case 'week':
-        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        dateFilter = { $gte: weekAgo };
-        break;
-      case 'month':
-        const monthAgo = new Date(now.getFullYear(), now.getMonth(), 1);
-        dateFilter = { $gte: monthAgo };
-        break;
-      case 'quarter':
-        const quarterStart = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
-        dateFilter = { $gte: quarterStart };
-        break;
-      case 'year':
-        const yearStart = new Date(now.getFullYear(), 0, 1);
-        dateFilter = { $gte: yearStart };
-        break;
-      default:
-        dateFilter = { $gte: new Date(now.getFullYear(), now.getMonth(), 1) };
-    }
-
-    // Base match filter
-    let matchFilter = { isActive: true, createdAt: dateFilter };
     
-    // Add location filter if specified
-    if (location) {
-      matchFilter.tradeLocation = { $regex: location, $options: 'i' };
-    }
-
-    // Vendor registration trends over time
-    const registrationTrends = await vendors.aggregate([
-      { $match: matchFilter },
-      {
-        $group: {
-          _id: {
-            year: { $year: "$createdAt" },
-            month: { $month: "$createdAt" },
-            day: period === 'week' ? { $dayOfMonth: "$createdAt" } : null
-          },
-          count: { $sum: 1 }
+    // ✅ GET: Single vendor by ID
+    app.get("/vendors/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+    
+        // Check if valid MongoDB ObjectId
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).json({ error: true, message: "Invalid vendor ID" });
         }
-      },
-      { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } }
-    ]).toArray();
-
-    // Vendors by location (top locations)
-    const vendorsByLocation = await vendors.aggregate([
-      { $match: matchFilter },
-      { $group: { _id: "$tradeLocation", count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 10 }
-    ]).toArray();
-
-    // Vendor demographics (with/without documents)
-    const documentStats = await vendors.aggregate([
-      { $match: matchFilter },
-      {
-        $group: {
-          _id: null,
-          withNID: {
-            $sum: { $cond: [{ $and: [{ $ne: ["$nid", ""] }, { $ne: ["$nid", null] }] }, 1, 0] }
-          },
-          withPassport: {
-            $sum: { $cond: [{ $and: [{ $ne: ["$passport", ""] }, { $ne: ["$passport", null] }] }, 1, 0] }
-          },
-          withoutDocuments: {
-            $sum: { 
-              $cond: [
-                { $and: [
-                  { $or: [{ $eq: ["$nid", ""] }, { $eq: ["$nid", null] }] },
-                  { $or: [{ $eq: ["$passport", ""] }, { $eq: ["$passport", null] }] }
-                ]}, 
-                1, 0
-              ]
+    
+        const vendor = await vendors.findOne({
+          _id: new ObjectId(id),
+          isActive: true,
+        });
+    
+        if (!vendor) {
+          return res.status(404).json({ error: true, message: "Vendor not found" });
+        }
+    
+        res.json({ success: true, vendor });
+      } catch (error) {
+        console.error("Error fetching vendor:", error);
+        res.status(500).json({
+          error: true,
+          message: "Internal server error while fetching vendor",
+        });
+      }
+    });
+    
+    // ✅ PATCH: Update vendor information
+    app.patch("/vendors/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const updateData = req.body;
+    
+        // Check if valid MongoDB ObjectId
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).json({ error: true, message: "Invalid vendor ID" });
+        }
+    
+        // Check if vendor exists
+        const existingVendor = await vendors.findOne({
+          _id: new ObjectId(id),
+          isActive: true,
+        });
+    
+        if (!existingVendor) {
+          return res.status(404).json({ error: true, message: "Vendor not found" });
+        }
+    
+        // Prepare update data - only allow specific fields to be updated
+        const allowedFields = ['tradeName', 'tradeLocation', 'ownerName', 'contactNo', 'dob', 'nid', 'passport'];
+        const filteredUpdateData = {};
+        
+        // Only allow specific fields to be updated
+        allowedFields.forEach(field => {
+          if (updateData[field] !== undefined) {
+            // Trim string fields
+            if (typeof updateData[field] === 'string') {
+              filteredUpdateData[field] = updateData[field].trim();
+            } else {
+              filteredUpdateData[field] = updateData[field];
+            }
+          }
+        });
+    
+        // Validate required fields if they are being updated
+        if (filteredUpdateData.tradeName && !filteredUpdateData.tradeName) {
+          return res.status(400).json({
+            error: true,
+            message: "Trade Name cannot be empty"
+          });
+        }
+    
+        if (filteredUpdateData.tradeLocation && !filteredUpdateData.tradeLocation) {
+          return res.status(400).json({
+            error: true,
+            message: "Trade Location cannot be empty"
+          });
+        }
+    
+        if (filteredUpdateData.ownerName && !filteredUpdateData.ownerName) {
+          return res.status(400).json({
+            error: true,
+            message: "Owner Name cannot be empty"
+          });
+        }
+    
+        if (filteredUpdateData.contactNo && !filteredUpdateData.contactNo) {
+          return res.status(400).json({
+            error: true,
+            message: "Contact Number cannot be empty"
+          });
+        }
+    
+        // Validate contact number format if being updated
+        if (filteredUpdateData.contactNo && !/^01[3-9]\d{8}$/.test(filteredUpdateData.contactNo)) {
+          return res.status(400).json({
+            error: true,
+            message: "Invalid contact number format. Please use 01XXXXXXXXX format"
+          });
+        }
+    
+        // Validate date of birth format if being updated
+        if (filteredUpdateData.dob && filteredUpdateData.dob !== null && !isValidDate(filteredUpdateData.dob)) {
+          return res.status(400).json({
+            error: true,
+            message: "Invalid date format. Please use YYYY-MM-DD format"
+          });
+        }
+    
+        // Check if contact number already exists for another vendor
+        if (filteredUpdateData.contactNo) {
+          const existingVendorWithContact = await vendors.findOne({
+            contactNo: filteredUpdateData.contactNo,
+            _id: { $ne: new ObjectId(id) },
+            isActive: true
+          });
+    
+          if (existingVendorWithContact) {
+            return res.status(400).json({
+              error: true,
+              message: "Vendor with this contact number already exists"
+            });
+          }
+        }
+    
+        // Add update timestamp
+        filteredUpdateData.updatedAt = new Date();
+    
+        // Remove fields that shouldn't be updated
+        delete filteredUpdateData._id;
+        delete filteredUpdateData.createdAt;
+        delete filteredUpdateData.isActive;
+    
+        // Update vendor
+        const result = await vendors.updateOne(
+          { _id: new ObjectId(id), isActive: true },
+          { $set: filteredUpdateData }
+        );
+    
+        if (result.modifiedCount === 0) {
+          return res.status(400).json({
+            error: true,
+            message: "No changes made or vendor not found"
+          });
+        }
+    
+        // Get updated vendor data
+        const updatedVendor = await vendors.findOne({
+          _id: new ObjectId(id),
+          isActive: true,
+        });
+    
+        res.json({
+          success: true,
+          message: "Vendor information updated successfully",
+          modifiedCount: result.modifiedCount,
+          vendor: updatedVendor
+        });
+    
+      } catch (error) {
+        console.error("Error updating vendor:", error);
+        res.status(500).json({
+          error: true,
+          message: "Internal server error while updating vendor",
+        });
+      }
+    });
+    
+    //✅ DELETE (soft delete)
+    app.delete("/vendors/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+    
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).json({ error: true, message: "Invalid vendor ID" });
+        }
+    
+        const result = await vendors.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { isActive: false } }
+        );
+    
+        if (result.modifiedCount === 0) {
+          return res.status(404).json({ error: true, message: "Vendor not found" });
+        }
+    
+        res.json({ success: true, message: "Vendor deleted successfully" });
+      } catch (error) {
+        console.error("Error deleting vendor:", error);
+        res.status(500).json({
+          error: true,
+          message: "Internal server error while deleting vendor",
+        });
+      }
+    });
+    
+    
+    // ✅ GET: Vendor statistics overview
+    app.get("/vendors/stats/overview", async (req, res) => {
+      try {
+        // Totals
+        const totalVendors = await vendors.countDocuments({ isActive: true });
+    
+        // Today
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const todayEnd = new Date();
+        todayEnd.setHours(23, 59, 59, 999);
+    
+        const todayCount = await vendors.countDocuments({
+          isActive: true,
+          createdAt: { $gte: todayStart, $lte: todayEnd },
+        });
+    
+        // This month
+        const monthStart = new Date();
+        monthStart.setDate(1);
+        monthStart.setHours(0, 0, 0, 0);
+        const thisMonthCount = await vendors.countDocuments({
+          isActive: true,
+          createdAt: { $gte: monthStart },
+        });
+    
+        // With NID / Passport
+        const withNID = await vendors.countDocuments({ isActive: true, nid: { $exists: true, $ne: "" } });
+        const withPassport = await vendors.countDocuments({ isActive: true, passport: { $exists: true, $ne: "" } });
+    
+        // By tradeLocation
+        const byLocation = await vendors.aggregate([
+          { $match: { isActive: true } },
+          { $group: { _id: "$tradeLocation", count: { $sum: 1 } } },
+          { $sort: { count: -1 } }
+        ]).toArray();
+    
+        res.json({
+          success: true,
+          stats: {
+            total: totalVendors,
+            today: todayCount,
+            thisMonth: thisMonthCount,
+            withNID,
+            withPassport,
+            byLocation
+          }
+        });
+      } catch (error) {
+        console.error("Error fetching vendor statistics:", error);
+        res.status(500).json({
+          error: true,
+          message: "Internal server error while fetching vendor statistics",
+        });
+      }
+    });
+    
+    // ✅ GET: Vendor statistics data (detailed analytics)
+    app.get("/vendors/stats/data", async (req, res) => {
+      try {
+        const { period = 'month', location } = req.query;
+    
+        let dateFilter = {};
+        const now = new Date();
+        
+        // Set date range based on period
+        switch (period) {
+          case 'week':
+            const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+            dateFilter = { $gte: weekAgo };
+            break;
+          case 'month':
+            const monthAgo = new Date(now.getFullYear(), now.getMonth(), 1);
+            dateFilter = { $gte: monthAgo };
+            break;
+          case 'quarter':
+            const quarterStart = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
+            dateFilter = { $gte: quarterStart };
+            break;
+          case 'year':
+            const yearStart = new Date(now.getFullYear(), 0, 1);
+            dateFilter = { $gte: yearStart };
+            break;
+          default:
+            dateFilter = { $gte: new Date(now.getFullYear(), now.getMonth(), 1) };
+        }
+    
+        // Base match filter
+        let matchFilter = { isActive: true, createdAt: dateFilter };
+        
+        // Add location filter if specified
+        if (location) {
+          matchFilter.tradeLocation = { $regex: location, $options: 'i' };
+        }
+    
+        // Vendor registration trends over time
+        const registrationTrends = await vendors.aggregate([
+          { $match: matchFilter },
+          {
+            $group: {
+              _id: {
+                year: { $year: "$createdAt" },
+                month: { $month: "$createdAt" },
+                day: period === 'week' ? { $dayOfMonth: "$createdAt" } : null
+              },
+              count: { $sum: 1 }
             }
           },
-          total: { $sum: 1 }
-        }
-      }
-    ]).toArray();
-
-    // Recent vendor activity (last 30 days)
-    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    const recentVendors = await vendors.find({
-      isActive: true,
-      createdAt: { $gte: thirtyDaysAgo }
-    }).sort({ createdAt: -1 }).limit(10).toArray();
-
-    // Vendor growth rate
-    const currentPeriod = await vendors.countDocuments(matchFilter);
+          { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } }
+        ]).toArray();
     
-    let previousPeriodFilter = {};
-    const currentDate = new Date();
-    switch (period) {
-      case 'week':
-        const twoWeeksAgo = new Date(currentDate.getTime() - 14 * 24 * 60 * 60 * 1000);
-        const oneWeekAgo = new Date(currentDate.getTime() - 7 * 24 * 60 * 60 * 1000);
-        previousPeriodFilter = { isActive: true, createdAt: { $gte: twoWeeksAgo, $lt: oneWeekAgo } };
-        break;
-      case 'month':
-        const lastMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
-        const currentMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
-        previousPeriodFilter = { isActive: true, createdAt: { $gte: lastMonth, $lt: currentMonth } };
-        break;
-      default:
-        previousPeriodFilter = { isActive: true, createdAt: { $gte: new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1), $lt: new Date(currentDate.getFullYear(), currentDate.getMonth(), 1) } };
+        // Vendors by location (top locations)
+        const vendorsByLocation = await vendors.aggregate([
+          { $match: matchFilter },
+          { $group: { _id: "$tradeLocation", count: { $sum: 1 } } },
+          { $sort: { count: -1 } },
+          { $limit: 10 }
+        ]).toArray();
+    
+        // Vendor demographics (with/without documents)
+        const documentStats = await vendors.aggregate([
+          { $match: matchFilter },
+          {
+            $group: {
+              _id: null,
+              withNID: {
+                $sum: { $cond: [{ $and: [{ $ne: ["$nid", ""] }, { $ne: ["$nid", null] }] }, 1, 0] }
+              },
+              withPassport: {
+                $sum: { $cond: [{ $and: [{ $ne: ["$passport", ""] }, { $ne: ["$passport", null] }] }, 1, 0] }
+              },
+              withoutDocuments: {
+                $sum: { 
+                  $cond: [
+                    { $and: [
+                      { $or: [{ $eq: ["$nid", ""] }, { $eq: ["$nid", null] }] },
+                      { $or: [{ $eq: ["$passport", ""] }, { $eq: ["$passport", null] }] }
+                    ]}, 
+                    1, 0
+                  ]
+                }
+              },
+              total: { $sum: 1 }
+            }
+          }
+        ]).toArray();
+    
+        // Recent vendor activity (last 30 days)
+        const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        const recentVendors = await vendors.find({
+          isActive: true,
+          createdAt: { $gte: thirtyDaysAgo }
+        }).sort({ createdAt: -1 }).limit(10).toArray();
+    
+        // Vendor growth rate
+        const currentPeriod = await vendors.countDocuments(matchFilter);
+        
+        let previousPeriodFilter = {};
+        const currentDate = new Date();
+        switch (period) {
+          case 'week':
+            const twoWeeksAgo = new Date(currentDate.getTime() - 14 * 24 * 60 * 60 * 1000);
+            const oneWeekAgo = new Date(currentDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+            previousPeriodFilter = { isActive: true, createdAt: { $gte: twoWeeksAgo, $lt: oneWeekAgo } };
+            break;
+          case 'month':
+            const lastMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
+            const currentMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+            previousPeriodFilter = { isActive: true, createdAt: { $gte: lastMonth, $lt: currentMonth } };
+            break;
+          default:
+            previousPeriodFilter = { isActive: true, createdAt: { $gte: new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1), $lt: new Date(currentDate.getFullYear(), currentDate.getMonth(), 1) } };
+        }
+        
+        const previousPeriod = await vendors.countDocuments(previousPeriodFilter);
+        const growthRate = previousPeriod > 0 ? ((currentPeriod - previousPeriod) / previousPeriod * 100) : 0;
+    
+        res.json({
+          success: true,
+          data: {
+            period,
+            totalVendors: currentPeriod,
+            growthRate: Math.round(growthRate * 100) / 100,
+            registrationTrends,
+            vendorsByLocation,
+            documentStats: documentStats[0] || { withNID: 0, withPassport: 0, withoutDocuments: 0, total: 0 },
+            recentVendors,
+            summary: {
+              period,
+              total: currentPeriod,
+              previousPeriod,
+              growthRate: Math.round(growthRate * 100) / 100,
+              topLocation: vendorsByLocation[0] || null
+            }
+          }
+        });
+      } catch (error) {
+        console.error("Error fetching vendor statistics data:", error);
+        res.status(500).json({
+          error: true,
+          message: "Internal server error while fetching vendor statistics data",
+        });
+      }
+    });
+    
+   app.get('/vendors/:id/financials', async (req, res) => {
+  const { id } = req.params;
+  const query = ObjectId.isValid(id)
+    ? { _id: new ObjectId(id), isActive: true }
+    : { vendorId: id, isActive: true };
+
+  const vendor = await vendors.findOne(query, {
+    projection: { totalAmount: 1, paidAmount: 1, outstandingAmount: 1, lastPaymentDate: 1 }
+  });
+  if (!vendor) return res.status(404).json({ success: false, message: 'Vendor not found' });
+
+  res.json({
+    success: true,
+    financials: {
+      totalAmount: vendor.totalAmount || 0,
+      paidAmount: vendor.paidAmount || 0,
+      outstandingAmount: vendor.outstandingAmount || 0,
+      lastPaymentDate: vendor.lastPaymentDate || null
     }
-    
-    const previousPeriod = await vendors.countDocuments(previousPeriodFilter);
-    const growthRate = previousPeriod > 0 ? ((currentPeriod - previousPeriod) / previousPeriod * 100) : 0;
-
-    res.json({
-      success: true,
-      data: {
-        period,
-        totalVendors: currentPeriod,
-        growthRate: Math.round(growthRate * 100) / 100,
-        registrationTrends,
-        vendorsByLocation,
-        documentStats: documentStats[0] || { withNID: 0, withPassport: 0, withoutDocuments: 0, total: 0 },
-        recentVendors,
-        summary: {
-          period,
-          total: currentPeriod,
-          previousPeriod,
-          growthRate: Math.round(growthRate * 100) / 100,
-          topLocation: vendorsByLocation[0] || null
-        }
-      }
-    });
-  } catch (error) {
-    console.error("Error fetching vendor statistics data:", error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while fetching vendor statistics data",
-    });
-  }
+  });
 });
-
 
 // ==================== TRANSACTION ROUTES ====================
 
@@ -2905,6 +3003,18 @@ app.post("/api/transactions", async (req, res) => {
         await agents.updateOne({ _id: party._id }, agentUpdate, { session });
       }
 
+      // 8.2 If party is a vendor, update vendor due amounts atomically
+      if (partyType === 'vendor' && party && party._id) {
+        const dueDelta = transactionType === 'debit' ? numericAmount : (transactionType === 'credit' ? -numericAmount : 0);
+        if (dueDelta !== 0) {
+          await vendors.updateOne(
+            { _id: party._id },
+            { $set: { updatedAt: new Date() }, $inc: { totalDue: dueDelta } },
+            { session }
+          );
+        }
+      }
+
       transactionResult = await transactions.insertOne(transactionData, { session });
 
       // 9. Commit transaction
@@ -2939,7 +3049,6 @@ app.post("/api/transactions", async (req, res) => {
     }
   }
 });
-// ==================== ORDER ROUTES ====================
 
 // ✅ GET: List transactions with filters and pagination
 app.get("/api/transactions", async (req, res) => {
@@ -3023,6 +3132,8 @@ app.get("/api/transactions", async (req, res) => {
   }
 });
 
+// ==================== ORDER ROUTES ====================
+
 // ✅ POST: Create new order
 app.post("/orders", async (req, res) => {
   try {
@@ -3052,22 +3163,13 @@ app.post("/orders", async (req, res) => {
       });
     }
 
-    // Check if vendor exists - handle both MongoDB ObjectId and string ID
+    // Check if vendor exists - support both MongoDB ObjectId and string vendorId (e.g., VN-...)
     let vendor;
     if (ObjectId.isValid(vendorId)) {
-      vendor = await vendors.findOne({ 
-        _id: new ObjectId(vendorId),
-        isActive: true 
-      });
+      vendor = await vendors.findOne({ _id: new ObjectId(vendorId), isActive: true });
     } else {
-      // If not a valid ObjectId, search by other fields
-      vendor = await vendors.findOne({ 
-        $or: [
-          { _id: vendorId },
-          { tradeName: vendorId }
-        ],
-        isActive: true 
-      });
+      const normalized = String(vendorId).trim().toUpperCase();
+      vendor = await vendors.findOne({ vendorId: normalized, isActive: true });
     }
 
     if (!vendor) {
