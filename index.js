@@ -645,6 +645,45 @@ const generateOrderId = async (db, branchCode) => {
   return `ORD${branchCode}${dateStr}${serial}`;
 };
 
+// Helper: Generate unique Loan ID
+const generateLoanId = async (db, branchCode, loanType = 'giving') => {
+  const counterCollection = db.collection("counters");
+
+  // Get current date in DDMMYY format
+  const today = new Date();
+  const dateStr = String(today.getDate()).padStart(2, '0') +
+    String(today.getMonth() + 1).padStart(2, '0') +
+    today.getFullYear().toString().slice(-2);
+
+  // Create counter key for loan type and date
+  const counterKey = `loan_${loanType}_${branchCode}_${dateStr}`;
+
+  // Find or create counter
+  let counter = await counterCollection.findOne({ counterKey });
+
+  if (!counter) {
+    // Create new counter starting from 0
+    await counterCollection.insertOne({ counterKey, sequence: 0 });
+    counter = { sequence: 0 };
+  }
+
+  // Increment sequence
+  const newSequence = counter.sequence + 1;
+
+  // Update counter
+  await counterCollection.updateOne(
+    { counterKey },
+    { $set: { sequence: newSequence } }
+  );
+
+  // Format: LOAN + type prefix (G/R) + branchCode + DDMMYY + 0001
+  // giving: LOANGDH2508290001, receiving: LOANRDH2508290001
+  const typePrefix = loanType === 'giving' ? 'G' : 'R';
+  const serial = String(newSequence).padStart(4, '0');
+
+  return `LOAN${typePrefix}${branchCode}${dateStr}${serial}`;
+};
+
 // Helper: Generate unique Vendor ID
 const generateVendorId = async (db) => {
   const counterCollection = db.collection("counters");
@@ -752,7 +791,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, services, sales, vendors, orders, bankAccounts, categories, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts;
+let db, users, branches, counters, customers, customerTypes, services, sales, vendors, orders, bankAccounts, categories, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -781,6 +820,8 @@ async function initializeDatabase() {
     transactions = db.collection("transactions");
     invoices = db.collection("invoices");
     accounts = db.collection("accounts");
+    vendorBills = db.collection("vendorBills");
+    loans = db.collection("loans");
 
 
 
@@ -2560,6 +2601,105 @@ app.delete("/api/categories/:id/subcategories/:subId", async (req, res) => {
   }
 });
 
+// ✅ GET: Categories wise Credit and Debit Summary
+app.get("/api/categories-summary", async (req, res) => {
+  try {
+    const { fromDate, toDate } = req.query || {};
+    
+    // Build date filter for transactions
+    const dateFilter = {};
+    if (fromDate || toDate) {
+      dateFilter.date = {};
+      if (fromDate) dateFilter.date.$gte = new Date(fromDate);
+      if (toDate) {
+        const end = new Date(toDate);
+        if (!isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+        }
+        dateFilter.date.$lte = end;
+      }
+    }
+    
+    // Get all categories
+    const allCategories = await categories.find({}).toArray();
+    
+    // Get all transactions grouped by serviceCategory
+    const allTransactions = await transactions.find({
+      ...dateFilter,
+      isActive: { $ne: false }
+    }).toArray();
+    
+    // Initialize summary object with all categories
+    const categorySummary = {};
+    
+    // Initialize all categories with 0 values
+    allCategories.forEach(category => {
+      categorySummary[category.name] = {
+        categoryId: String(category._id),
+        categoryName: category.name,
+        totalCredit: 0,
+        totalDebit: 0,
+        netAmount: 0
+      };
+    });
+    
+    // Aggregate transactions by category
+    allTransactions.forEach(tx => {
+      const categoryName = tx.serviceCategory || tx.category || 'Others';
+      
+      if (!categorySummary[categoryName]) {
+        categorySummary[categoryName] = {
+          categoryId: null,
+          categoryName: categoryName,
+          totalCredit: 0,
+          totalDebit: 0,
+          netAmount: 0
+        };
+      }
+      
+      if (tx.transactionType === 'credit') {
+        categorySummary[categoryName].totalCredit += tx.amount || 0;
+      } else if (tx.transactionType === 'debit') {
+        categorySummary[categoryName].totalDebit += tx.amount || 0;
+      }
+      
+      // Calculate net amount
+      categorySummary[categoryName].netAmount = 
+        categorySummary[categoryName].totalCredit - categorySummary[categoryName].totalDebit;
+    });
+    
+    // Convert object to array and format numbers
+    const summaryArray = Object.values(categorySummary).map(item => ({
+      categoryId: item.categoryId,
+      categoryName: item.categoryName,
+      totalCredit: parseFloat(item.totalCredit.toFixed(2)),
+      totalDebit: parseFloat(item.totalDebit.toFixed(2)),
+      netAmount: parseFloat(item.netAmount.toFixed(2))
+    }));
+    
+    // Calculate grand totals
+    const grandTotal = {
+      totalCredit: parseFloat(summaryArray.reduce((sum, item) => sum + item.totalCredit, 0).toFixed(2)),
+      totalDebit: parseFloat(summaryArray.reduce((sum, item) => sum + item.totalDebit, 0).toFixed(2)),
+      netAmount: parseFloat(summaryArray.reduce((sum, item) => sum + item.netAmount, 0).toFixed(2))
+    };
+    
+    res.json({
+      success: true,
+      data: summaryArray,
+      grandTotal,
+      period: {
+        fromDate: fromDate || null,
+        toDate: toDate || null
+      }
+    });
+    
+  } catch (err) {
+    console.error("/api/categories-summary GET error:", err);
+    res.status(500).json({ error: true, message: "Failed to load categories summary" });
+  }
+});
+
 
 
 
@@ -3226,6 +3366,394 @@ app.get('/vendors/:id/financials', async (req, res) => {
   });
 });
 
+// ==================== VENDOR BILLS ROUTES ====================
+
+// ✅ POST: Create new vendor bill
+app.post("/vendors/bills", async (req, res) => {
+  try {
+    const billData = req.body;
+    const {
+      vendorId,
+      vendorName,
+      billType,
+      billDate,
+      billNumber,
+      totalAmount,
+      amount,
+      paymentMethod,
+      paymentStatus,
+      dueDate,
+      createdBy,
+      branchId,
+      createdAt,
+      ...otherFields
+    } = billData;
+
+    // Validation
+    if (!vendorId || !billType || !billDate || !totalAmount) {
+      return res.status(400).json({
+        error: true,
+        message: "Vendor ID, Bill Type, Bill Date, and Total Amount are required"
+      });
+    }
+
+    // Validate amount
+    const parsedTotalAmount = parseFloat(totalAmount);
+    if (isNaN(parsedTotalAmount) || parsedTotalAmount <= 0) {
+      return res.status(400).json({
+        error: true,
+        message: "Total Amount must be greater than 0"
+      });
+    }
+
+    // Check if vendor exists
+    let vendor;
+    if (ObjectId.isValid(vendorId)) {
+      vendor = await vendors.findOne({ _id: new ObjectId(vendorId), isActive: true });
+    } else {
+      const normalized = String(vendorId).trim().toUpperCase();
+      vendor = await vendors.findOne({ vendorId: normalized, isActive: true });
+    }
+
+    if (!vendor) {
+      return res.status(404).json({
+        error: true,
+        message: "Vendor not found"
+      });
+    }
+
+    // Create bill document
+    const newBill = {
+      vendorId: vendor.vendorId || vendorId,
+      vendorName: vendor.tradeName || vendorName,
+      billType: billType.trim(),
+      billDate: new Date(billDate),
+      billNumber: billNumber || `${billType}-${Date.now()}`,
+      totalAmount: parsedTotalAmount,
+      amount: parseFloat(amount) || parsedTotalAmount,
+      paymentMethod: paymentMethod || '',
+      paymentStatus: paymentStatus || 'pending',
+      dueDate: dueDate ? new Date(dueDate) : null,
+      createdBy: createdBy || 'unknown',
+      branchId: branchId || 'main_branch',
+      createdAt: new Date(createdAt || Date.now()),
+      updatedAt: new Date(),
+      isActive: true,
+      // Include all other fields from the request
+      ...otherFields
+    };
+
+    // Insert bill into vendorBills collection
+    const result = await vendorBills.insertOne(newBill);
+
+    // Update vendor financials based on bill type
+    const isHajj = billType.toLowerCase().includes('hajj') || billType.toLowerCase().includes('haj');
+    const isUmrah = billType.toLowerCase().includes('umrah');
+
+    const vendorUpdate = { $set: { updatedAt: new Date(), lastBillDate: new Date(billDate) } };
+    
+    // Increase totalDue
+    vendorUpdate.$inc = { totalDue: parsedTotalAmount };
+
+    // Increase specific due amounts based on bill type
+    if (isHajj) {
+      vendorUpdate.$inc.hajDue = parsedTotalAmount;
+    }
+    if (isUmrah) {
+      vendorUpdate.$inc.umrahDue = parsedTotalAmount;
+    }
+
+    // If payment was made, update totalPaid
+    if (paymentStatus === 'paid' && paymentMethod) {
+      vendorUpdate.$inc.totalPaid = parsedTotalAmount;
+      vendorUpdate.$inc.totalDue = -parsedTotalAmount; // Net effect: 0 increase in due
+      if (isHajj) {
+        vendorUpdate.$inc.hajDue = -parsedTotalAmount;
+      }
+      if (isUmrah) {
+        vendorUpdate.$inc.umrahDue = -parsedTotalAmount;
+      }
+    }
+
+    // Update vendor
+    if (ObjectId.isValid(vendorId)) {
+      await vendors.updateOne(
+        { _id: new ObjectId(vendorId), isActive: true },
+        vendorUpdate
+      );
+    } else {
+      await vendors.updateOne(
+        { vendorId: vendor.vendorId, isActive: true },
+        vendorUpdate
+      );
+    }
+
+    // Get the created bill
+    const createdBill = await vendorBills.findOne({ _id: result.insertedId });
+
+    res.status(201).json({
+      success: true,
+      message: "Vendor bill created successfully",
+      bill: createdBill
+    });
+
+  } catch (error) {
+    console.error("Error creating vendor bill:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while creating vendor bill"
+    });
+  }
+});
+
+// ✅ GET: Get all vendor bills with filters
+app.get("/vendors/bills", async (req, res) => {
+  try {
+    const { vendorId, billType, startDate, endDate, paymentStatus, limit = 100 } = req.query;
+
+    // Build query
+    const query = { isActive: true };
+
+    if (vendorId) {
+      if (ObjectId.isValid(vendorId)) {
+        query.vendorId = vendorId;
+      } else {
+        query.vendorId = vendorId;
+      }
+    }
+
+    if (billType) {
+      query.billType = billType;
+    }
+
+    if (paymentStatus) {
+      query.paymentStatus = paymentStatus;
+    }
+
+    if (startDate || endDate) {
+      query.billDate = {};
+      if (startDate) {
+        query.billDate.$gte = new Date(startDate);
+      }
+      if (endDate) {
+        query.billDate.$lte = new Date(endDate);
+      }
+    }
+
+    const bills = await vendorBills
+      .find(query)
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .toArray();
+
+    res.json({ success: true, bills });
+
+  } catch (error) {
+    console.error("Error fetching vendor bills:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while fetching vendor bills"
+    });
+  }
+});
+
+// ✅ GET: Get single vendor bill by ID
+app.get("/vendors/bills/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid bill ID" });
+    }
+
+    const bill = await vendorBills.findOne({
+      _id: new ObjectId(id),
+      isActive: true
+    });
+
+    if (!bill) {
+      return res.status(404).json({ error: true, message: "Bill not found" });
+    }
+
+    res.json({ success: true, bill });
+
+  } catch (error) {
+    console.error("Error fetching vendor bill:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while fetching vendor bill"
+    });
+  }
+});
+
+// ✅ GET: Get all bills for a specific vendor
+app.get("/vendors/:id/bills", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { limit = 100 } = req.query;
+
+    // Find vendor first
+    let vendor;
+    if (ObjectId.isValid(id)) {
+      vendor = await vendors.findOne({ _id: new ObjectId(id), isActive: true });
+    } else {
+      vendor = await vendors.findOne({ vendorId: id, isActive: true });
+    }
+
+    if (!vendor) {
+      return res.status(404).json({ error: true, message: "Vendor not found" });
+    }
+
+    // Get all bills for this vendor
+    const bills = await vendorBills
+      .find({ vendorId: vendor.vendorId, isActive: true })
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .toArray();
+
+    res.json({ success: true, bills });
+
+  } catch (error) {
+    console.error("Error fetching vendor bills:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while fetching vendor bills"
+    });
+  }
+});
+
+// ✅ PATCH: Update vendor bill
+app.patch("/vendors/bills/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid bill ID" });
+    }
+
+    // Check if bill exists
+    const existingBill = await vendorBills.findOne({
+      _id: new ObjectId(id),
+      isActive: true
+    });
+
+    if (!existingBill) {
+      return res.status(404).json({ error: true, message: "Bill not found" });
+    }
+
+    // Prepare update data
+    const allowedFields = ['paymentStatus', 'paymentMethod', 'notes', 'dueDate'];
+    const filteredUpdateData = {};
+
+    allowedFields.forEach(field => {
+      if (updateData[field] !== undefined) {
+        filteredUpdateData[field] = updateData[field];
+      }
+    });
+
+    // Add update timestamp
+    filteredUpdateData.updatedAt = new Date();
+
+    // Update bill
+    const result = await vendorBills.updateOne(
+      { _id: new ObjectId(id), isActive: true },
+      { $set: filteredUpdateData }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(400).json({
+        error: true,
+        message: "No changes made or bill not found"
+      });
+    }
+
+    // Get updated bill
+    const updatedBill = await vendorBills.findOne({
+      _id: new ObjectId(id),
+      isActive: true
+    });
+
+    res.json({
+      success: true,
+      message: "Bill updated successfully",
+      bill: updatedBill
+    });
+
+  } catch (error) {
+    console.error("Error updating vendor bill:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while updating vendor bill"
+    });
+  }
+});
+
+// ✅ DELETE: Soft delete vendor bill
+app.delete("/vendors/bills/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid bill ID" });
+    }
+
+    // Find the bill first to reverse vendor financials
+    const bill = await vendorBills.findOne({
+      _id: new ObjectId(id),
+      isActive: true
+    });
+
+    if (!bill) {
+      return res.status(404).json({ error: true, message: "Bill not found" });
+    }
+
+    // Reverse vendor financials
+    const vendorUpdate = { $set: { updatedAt: new Date() } };
+    
+    const isHajj = bill.billType.toLowerCase().includes('hajj') || bill.billType.toLowerCase().includes('haj');
+    const isUmrah = bill.billType.toLowerCase().includes('umrah');
+
+    vendorUpdate.$inc = { totalDue: -bill.totalAmount };
+
+    if (isHajj) {
+      vendorUpdate.$inc.hajDue = -bill.totalAmount;
+    }
+    if (isUmrah) {
+      vendorUpdate.$inc.umrahDue = -bill.totalAmount;
+    }
+
+    // If payment was made, also reverse totalPaid
+    if (bill.paymentStatus === 'paid' && bill.paymentMethod) {
+      vendorUpdate.$inc.totalPaid = -bill.totalAmount;
+    }
+
+    // Update vendor
+    await vendors.updateOne(
+      { vendorId: bill.vendorId, isActive: true },
+      vendorUpdate
+    );
+
+    // Soft delete the bill
+    const result = await vendorBills.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { isActive: false, deletedAt: new Date() } }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(404).json({ error: true, message: "Bill not found" });
+    }
+
+    res.json({ success: true, message: "Vendor bill deleted successfully" });
+
+  } catch (error) {
+    console.error("Error deleting vendor bill:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while deleting vendor bill"
+    });
+  }
+});
 
 
 // ==================== TRANSACTION ROUTES ====================
@@ -4240,6 +4768,1673 @@ app.delete("/orders/:orderId", async (req, res) => {
     res.status(500).json({
       error: true,
       message: "Internal server error while deleting order"
+    });
+  }
+});
+
+// ==================== LOAN ROUTES ====================
+
+// ✅ POST: Create new loan giving
+app.post("/loans/giving", async (req, res) => {
+  try {
+    const {
+      // Personal Profile Information
+      fullName,
+      fatherName,
+      motherName,
+      dateOfBirth,
+      gender,
+      maritalStatus,
+      nidNumber,
+      nidFrontImage,
+      nidBackImage,
+      profilePhoto,
+      // Address Information
+      presentAddress,
+      permanentAddress,
+      district,
+      upazila,
+      postCode,
+      // Business Information
+      businessName,
+      businessType,
+      businessAddress,
+      businessRegistration,
+      businessExperience,
+      // Loan Details
+      loanType,
+      amount,
+      source,
+      purpose,
+      interestRate,
+      duration,
+      givenDate,
+      // Contact Information
+      contactPerson,
+      contactPhone,
+      contactEmail,
+      emergencyContact,
+      emergencyPhone,
+      // Additional Information
+      notes,
+      status = 'Active',
+      remainingAmount,
+      createdBy,
+      branchId
+    } = req.body;
+
+    // Validation
+    if (!fullName || !fatherName || !motherName || !dateOfBirth || !gender || 
+        !nidNumber || !presentAddress || !permanentAddress || !district || !upazila ||
+        !businessName || !businessType || !loanType || !amount || !source || 
+        !purpose || !interestRate || !duration || !contactPerson || !contactPhone ||
+        !emergencyContact || !emergencyPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required fields"
+      });
+    }
+
+    // Validate numeric fields
+    const numericAmount = parseFloat(amount);
+    const numericInterestRate = parseFloat(interestRate);
+    const numericDuration = parseInt(duration);
+
+    if (isNaN(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Amount must be greater than 0"
+      });
+    }
+
+    if (isNaN(numericInterestRate) || numericInterestRate <= 0 || numericInterestRate > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Interest rate must be between 0 and 100"
+      });
+    }
+
+    if (isNaN(numericDuration) || numericDuration <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Duration must be greater than 0"
+      });
+    }
+
+    // Validate phone number format
+    const phoneRegex = /^01[3-9]\d{8}$/;
+    if (!phoneRegex.test(contactPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number format"
+      });
+    }
+
+    if (emergencyPhone && !phoneRegex.test(emergencyPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid emergency phone number format"
+      });
+    }
+
+    // Validate email if provided
+    if (contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid email format"
+      });
+    }
+
+    // Get branch information
+    const branch = await branches.findOne({ branchId: branchId || 'main', isActive: true });
+    if (!branch) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid branch ID"
+      });
+    }
+
+    // Generate unique loan ID
+    const loanId = await generateLoanId(db, branch.branchCode, 'giving');
+
+    // Calculate remaining amount if not provided
+    const finalRemainingAmount = remainingAmount !== undefined ? parseFloat(remainingAmount) : numericAmount;
+
+    // Create loan document
+    const newLoan = {
+      loanId,
+      loanDirection: 'giving', // This is a loan giving
+      // Personal Profile Information
+      fullName: fullName.trim(),
+      fatherName: fatherName.trim(),
+      motherName: motherName.trim(),
+      dateOfBirth: new Date(dateOfBirth),
+      gender,
+      maritalStatus: maritalStatus || null,
+      nidNumber: nidNumber.trim(),
+      nidFrontImage: nidFrontImage || null,
+      nidBackImage: nidBackImage || null,
+      profilePhoto: profilePhoto || null,
+      // Address Information
+      presentAddress: presentAddress.trim(),
+      permanentAddress: permanentAddress.trim(),
+      district: district.trim(),
+      upazila: upazila.trim(),
+      postCode: postCode || null,
+      // Business Information
+      businessName: businessName.trim(),
+      businessType: businessType.trim(),
+      businessAddress: businessAddress || null,
+      businessRegistration: businessRegistration || null,
+      businessExperience: businessExperience || null,
+      // Loan Details
+      loanType: loanType.trim(),
+      amount: numericAmount,
+      source: source.trim(),
+      purpose: purpose.trim(),
+      interestRate: numericInterestRate,
+      duration: numericDuration,
+      givenDate: new Date(givenDate || new Date()),
+      // Contact Information
+      contactPerson: contactPerson.trim(),
+      contactPhone: contactPhone.trim(),
+      contactEmail: contactEmail || null,
+      emergencyContact: emergencyContact.trim(),
+      emergencyPhone: emergencyPhone.trim(),
+      // Additional Information
+      notes: notes || null,
+      // Status and tracking
+      status: status,
+      remainingAmount: finalRemainingAmount,
+      // Metadata
+      createdBy: createdBy || 'unknown_user',
+      branchId: branch.branchId,
+      branchName: branch.branchName,
+      branchCode: branch.branchCode,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      isActive: true
+    };
+
+    // Insert loan into database
+    const result = await loans.insertOne(newLoan);
+
+    if (!result.insertedId) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to create loan"
+      });
+    }
+
+    // Get the created loan
+    const createdLoan = await loans.findOne({ _id: result.insertedId });
+
+    // Create transaction for loan giving (DEBIT - money going out)
+    // Note: Frontend should provide targetAccountId in request body for transaction
+    let transactionCreated = null;
+    const targetAccountId = req.body.targetAccountId; // Account from which money will be debited
+    
+    if (targetAccountId) {
+      try {
+        // Generate transaction ID
+        const transactionId = await generateTransactionId(db, branch.branchCode);
+
+        // Create transaction record for loan giving
+        const transactionData = {
+          transactionId,
+          transactionType: 'debit', // Money going out (আমাদের account থেকে money বের হচ্ছে)
+          serviceCategory: 'Loan Giving',
+          partyType: 'loan', // New party type for loans
+          partyId: result.insertedId.toString(),
+          partyName: createdLoan.fullName,
+          partyPhone: createdLoan.contactPhone,
+          partyEmail: createdLoan.contactEmail || null,
+          invoiceId: createdLoan.loanId, // Use loanId as reference
+          paymentMethod: 'bank-transfer',
+          targetAccountId: targetAccountId,
+          accountManagerId: null,
+          debitAccount: { id: targetAccountId },
+          creditAccount: null,
+          paymentDetails: {
+            amount: numericAmount,
+            reference: createdLoan.loanId,
+            loanId: createdLoan.loanId,
+            loanType: createdLoan.loanType
+          },
+          amount: numericAmount,
+          branchId: branch.branchId,
+          branchName: branch.branchName,
+          branchCode: branch.branchCode,
+          createdBy: createdBy || 'unknown_user',
+          notes: `Loan Given: ${createdLoan.loanType} - ${notes || 'No additional notes'}`,
+          reference: createdLoan.loanId,
+          employeeReference: null,
+          status: 'completed',
+          date: new Date(givenDate || new Date()),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          isActive: true,
+          loanId: createdLoan.loanId, // Link to loan document
+          loanDirection: 'giving'
+        };
+
+        // Insert transaction
+        await transactions.insertOne(transactionData);
+        transactionCreated = transactionId;
+
+        // Update bank account balance (debit)
+        const account = await bankAccounts.findOne({ _id: new ObjectId(targetAccountId) });
+        if (account) {
+          const newBalance = (account.currentBalance || 0) - numericAmount;
+          await bankAccounts.updateOne(
+            { _id: new ObjectId(targetAccountId) },
+            {
+              $set: { currentBalance: newBalance, updatedAt: new Date() },
+              $push: {
+                balanceHistory: {
+                  amount: numericAmount,
+                  type: 'withdrawal',
+                  note: `Loan Given: ${createdLoan.loanId} - ${createdLoan.fullName}`,
+                  at: new Date(),
+                  transactionId,
+                  loanId: createdLoan.loanId
+                }
+              }
+            }
+          );
+        }
+      } catch (transactionError) {
+        console.error('Transaction creation error for loan:', transactionError);
+        // Continue even if transaction creation fails - loan is already created
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      message: "Loan has been successfully given",
+      loan: {
+        loanId: createdLoan.loanId,
+        fullName: createdLoan.fullName,
+        loanDirection: createdLoan.loanDirection,
+        loanType: createdLoan.loanType,
+        amount: createdLoan.amount,
+        status: createdLoan.status,
+        remainingAmount: createdLoan.remainingAmount,
+        branchId: createdLoan.branchId,
+        createdAt: createdLoan.createdAt
+      },
+      transactionId: transactionCreated || null
+    });
+
+  } catch (error) {
+    console.error('Loan giving error:', error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while giving loan",
+      error: error.message
+    });
+  }
+});
+
+// ✅ POST: Create new loan receiving (loan application)
+app.post("/loans/receiving", async (req, res) => {
+  try {
+    const {
+      // Personal Profile Information
+      fullName,
+      fatherName,
+      motherName,
+      dateOfBirth,
+      gender,
+      maritalStatus,
+      nidNumber,
+      nidFrontImage,
+      nidBackImage,
+      profilePhoto,
+      // Address Information
+      presentAddress,
+      permanentAddress,
+      district,
+      upazila,
+      postCode,
+      // Business Information
+      businessName,
+      businessType,
+      businessAddress,
+      businessRegistration,
+      businessExperience,
+      // Loan Details
+      loanType,
+      amount,
+      source,
+      purpose,
+      interestRate,
+      duration,
+      appliedDate,
+      // Contact Information
+      contactPerson,
+      contactPhone,
+      contactEmail,
+      emergencyContact,
+      emergencyPhone,
+      // Additional Information
+      notes,
+      status = 'Pending',
+      createdBy,
+      branchId
+    } = req.body;
+
+    // Validation
+    if (!fullName || !fatherName || !dateOfBirth || !gender || 
+        !nidNumber || !presentAddress || !district || !upazila ||
+        !loanType || !amount || !source || !purpose || !interestRate || 
+        !duration || !contactPhone || !profilePhoto || !nidFrontImage || !nidBackImage) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required fields"
+      });
+    }
+
+    // Validate numeric fields
+    const numericAmount = parseFloat(amount);
+    const numericInterestRate = parseFloat(interestRate);
+    const numericDuration = parseInt(duration);
+
+    if (isNaN(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Amount must be greater than 0"
+      });
+    }
+
+    if (isNaN(numericInterestRate) || numericInterestRate <= 0 || numericInterestRate > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Interest rate must be between 0 and 100"
+      });
+    }
+
+    if (isNaN(numericDuration) || numericDuration <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Duration must be greater than 0"
+      });
+    }
+
+    // Validate NID number format
+    const nidRegex = /^\d{10}$|^\d{13}$|^\d{17}$/;
+    if (!nidRegex.test(nidNumber.replace(/\s/g, ''))) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid NID number format"
+      });
+    }
+
+    // Validate phone number format
+    const phoneRegex = /^01[3-9]\d{8}$/;
+    if (!phoneRegex.test(contactPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number format"
+      });
+    }
+
+    // Validate email if provided
+    if (contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid email format"
+      });
+    }
+
+    // Get branch information
+    const branch = await branches.findOne({ branchId: branchId || 'main', isActive: true });
+    if (!branch) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid branch ID"
+      });
+    }
+
+    // Generate unique loan ID
+    const loanId = await generateLoanId(db, branch.branchCode, 'receiving');
+
+    // Create loan document
+    const newLoan = {
+      loanId,
+      loanDirection: 'receiving', // This is a loan receiving/application
+      // Personal Profile Information
+      fullName: fullName.trim(),
+      fatherName: fatherName.trim(),
+      motherName: motherName ? motherName.trim() : null,
+      dateOfBirth: new Date(dateOfBirth),
+      gender,
+      maritalStatus: maritalStatus || null,
+      nidNumber: nidNumber.trim().replace(/\s/g, ''),
+      nidFrontImage: nidFrontImage || null,
+      nidBackImage: nidBackImage || null,
+      profilePhoto: profilePhoto || null,
+      // Address Information
+      presentAddress: presentAddress.trim(),
+      permanentAddress: permanentAddress || null,
+      district: district.trim(),
+      upazila: upazila.trim(),
+      postCode: postCode || null,
+      // Business Information
+      businessName: businessName || null,
+      businessType: businessType || null,
+      businessAddress: businessAddress || null,
+      businessRegistration: businessRegistration || null,
+      businessExperience: businessExperience || null,
+      // Loan Details
+      loanType: loanType.trim(),
+      amount: numericAmount,
+      source: source.trim(),
+      purpose: purpose.trim(),
+      interestRate: numericInterestRate,
+      duration: numericDuration,
+      appliedDate: new Date(appliedDate || new Date()),
+      // Contact Information
+      contactPerson: contactPerson || null,
+      contactPhone: contactPhone.trim(),
+      contactEmail: contactEmail || null,
+      emergencyContact: emergencyContact || null,
+      emergencyPhone: emergencyPhone || null,
+      // Additional Information
+      notes: notes || null,
+      // Status and tracking
+      status: status, // Pending by default for loan applications
+      remainingAmount: numericAmount, // Initially equal to loan amount
+      // Metadata
+      createdBy: createdBy || 'unknown_user',
+      branchId: branch.branchId,
+      branchName: branch.branchName,
+      branchCode: branch.branchCode,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      isActive: true
+    };
+
+    // Insert loan into database
+    const result = await loans.insertOne(newLoan);
+
+    if (!result.insertedId) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to create loan application"
+      });
+    }
+
+    // Get the created loan
+    const createdLoan = await loans.findOne({ _id: result.insertedId });
+
+    // Create transaction for loan receiving if status is 'Active' (approved)
+    // Note: Frontend should provide targetAccountId if loan is being approved directly
+    let transactionCreated = null;
+    const targetAccountId = req.body.targetAccountId; // Account where money will be credited
+    
+    // If loan is approved (status = 'Active') and targetAccountId is provided
+    if (status === 'Active' && targetAccountId) {
+      try {
+        // Generate transaction ID
+        const transactionId = await generateTransactionId(db, branch.branchCode);
+
+        // Create transaction record for loan receiving
+        const transactionData = {
+          transactionId,
+          transactionType: 'credit', // Money coming in (আমাদের account এ money আসছে)
+          serviceCategory: 'Loan Receiving',
+          partyType: 'loan', // New party type for loans
+          partyId: result.insertedId.toString(),
+          partyName: createdLoan.fullName,
+          partyPhone: createdLoan.contactPhone,
+          partyEmail: createdLoan.contactEmail || null,
+          invoiceId: createdLoan.loanId, // Use loanId as reference
+          paymentMethod: 'bank-transfer',
+          targetAccountId: targetAccountId,
+          accountManagerId: null,
+          debitAccount: null,
+          creditAccount: { id: targetAccountId },
+          paymentDetails: {
+            amount: numericAmount,
+            reference: createdLoan.loanId,
+            loanId: createdLoan.loanId,
+            loanType: createdLoan.loanType
+          },
+          amount: numericAmount,
+          branchId: branch.branchId,
+          branchName: branch.branchName,
+          branchCode: branch.branchCode,
+          createdBy: createdBy || 'unknown_user',
+          notes: `Loan Received: ${createdLoan.loanType} - ${notes || 'No additional notes'}`,
+          reference: createdLoan.loanId,
+          employeeReference: null,
+          status: 'completed',
+          date: new Date(appliedDate || new Date()),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          isActive: true,
+          loanId: createdLoan.loanId, // Link to loan document
+          loanDirection: 'receiving'
+        };
+
+        // Insert transaction
+        await transactions.insertOne(transactionData);
+        transactionCreated = transactionId;
+
+        // Update bank account balance (credit)
+        const account = await bankAccounts.findOne({ _id: new ObjectId(targetAccountId) });
+        if (account) {
+          const newBalance = (account.currentBalance || 0) + numericAmount;
+          await bankAccounts.updateOne(
+            { _id: new ObjectId(targetAccountId) },
+            {
+              $set: { currentBalance: newBalance, updatedAt: new Date() },
+              $push: {
+                balanceHistory: {
+                  amount: numericAmount,
+                  type: 'deposit',
+                  note: `Loan Received: ${createdLoan.loanId} - ${createdLoan.fullName}`,
+                  at: new Date(),
+                  transactionId,
+                  loanId: createdLoan.loanId
+                }
+              }
+            }
+          );
+        }
+      } catch (transactionError) {
+        console.error('Transaction creation error for loan receiving:', transactionError);
+        // Continue even if transaction creation fails - loan is already created
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      message: status === 'Active' 
+        ? "Loan has been received successfully" 
+        : "Loan application has been submitted successfully",
+      loan: {
+        loanId: createdLoan.loanId,
+        fullName: createdLoan.fullName,
+        loanDirection: createdLoan.loanDirection,
+        loanType: createdLoan.loanType,
+        amount: createdLoan.amount,
+        status: createdLoan.status,
+        remainingAmount: createdLoan.remainingAmount,
+        branchId: createdLoan.branchId,
+        createdAt: createdLoan.createdAt
+      },
+      transactionId: transactionCreated || null,
+      note: status === 'Pending' 
+        ? "Transaction will be created when loan is approved" 
+        : null
+    });
+
+  } catch (error) {
+    console.error('Loan application error:', error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while submitting loan application",
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get all loans with filters
+app.get("/loans", async (req, res) => {
+  try {
+    const {
+      loanDirection, // 'giving' or 'receiving'
+      status,
+      branchId,
+      dateFrom,
+      dateTo,
+      search,
+      page = 1,
+      limit = 20
+    } = req.query;
+
+    let filter = { isActive: true };
+
+    // Apply filters
+    if (loanDirection) {
+      filter.loanDirection = loanDirection;
+    }
+    if (status) {
+      filter.status = status;
+    }
+    if (branchId) {
+      filter.branchId = branchId;
+    }
+
+    // Date range filter
+    if (dateFrom || dateTo) {
+      filter.createdAt = {};
+      if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
+      if (dateTo) {
+        const endDate = new Date(dateTo);
+        endDate.setHours(23, 59, 59, 999);
+        filter.createdAt.$lte = endDate;
+      }
+    }
+
+    // Search filter
+    if (search) {
+      filter.$or = [
+        { loanId: { $regex: search, $options: 'i' } },
+        { fullName: { $regex: search, $options: 'i' } },
+        { nidNumber: { $regex: search, $options: 'i' } },
+        { contactPhone: { $regex: search, $options: 'i' } },
+        { loanType: { $regex: search, $options: 'i' } },
+        { businessName: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // Calculate pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // Get total count
+    const totalCount = await loans.countDocuments(filter);
+
+    // Get loans with pagination
+    const allLoans = await loans.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .toArray();
+
+    // Optionally add transaction count for each loan (if needed)
+    // This can be slow for large lists, so make it optional
+    const includeTransactionCount = req.query.includeTransactionCount === 'true';
+
+    if (includeTransactionCount) {
+      // Add transaction count for each loan
+      const loansWithTransactionCount = await Promise.all(
+        allLoans.map(async (loan) => {
+          try {
+            const txCount = await transactions.countDocuments({
+              loanId: loan.loanId,
+              isActive: true
+            });
+            return {
+              ...loan,
+              transactionCount: txCount
+            };
+          } catch (error) {
+            return {
+              ...loan,
+              transactionCount: 0
+            };
+          }
+        })
+      );
+
+      return res.json({
+        success: true,
+        count: loansWithTransactionCount.length,
+        totalCount,
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(totalCount / parseInt(limit)),
+        loans: loansWithTransactionCount
+      });
+    }
+
+    res.json({
+      success: true,
+      count: allLoans.length,
+      totalCount,
+      currentPage: parseInt(page),
+      totalPages: Math.ceil(totalCount / parseInt(limit)),
+      loans: allLoans,
+      note: "Add ?includeTransactionCount=true to include transaction count for each loan"
+    });
+
+  } catch (error) {
+    console.error('Get loans error:', error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while fetching loans",
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get loan by ID
+app.get("/loans/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Try to find by loanId first
+    let loan = await loans.findOne({
+      loanId: id,
+      isActive: true
+    });
+
+    // If not found by loanId, try by MongoDB ObjectId
+    if (!loan && ObjectId.isValid(id)) {
+      loan = await loans.findOne({
+        _id: new ObjectId(id),
+        isActive: true
+      });
+    }
+
+    if (!loan) {
+      return res.status(404).json({
+        success: false,
+        message: "Loan not found"
+      });
+    }
+
+    // Get related transactions for this loan
+    let relatedTransactions = [];
+    let transactionCount = 0;
+    let totalPaid = 0;
+    let totalReceived = 0;
+
+    try {
+      // Fetch transactions related to this loan
+      const transactionsList = await transactions.find({
+        loanId: loan.loanId,
+        isActive: true
+      })
+      .sort({ createdAt: -1 })
+      .limit(50) // Limit to recent 50 transactions
+      .toArray();
+
+      relatedTransactions = transactionsList;
+      transactionCount = transactionsList.length;
+
+      // Calculate totals
+      transactionsList.forEach(tx => {
+        if (tx.transactionType === 'credit') {
+          totalReceived += parseFloat(tx.amount || 0);
+        } else if (tx.transactionType === 'debit') {
+          totalPaid += parseFloat(tx.amount || 0);
+        }
+      });
+    } catch (transactionError) {
+      console.error('Error fetching loan transactions:', transactionError);
+      // Continue without transaction data
+    }
+
+    // Prepare response with loan and transaction summary
+    res.json({
+      success: true,
+      loan: loan,
+      transactionSummary: {
+        count: transactionCount,
+        totalPaid: totalPaid,
+        totalReceived: totalReceived,
+        transactions: relatedTransactions // Include transaction list
+      }
+    });
+
+  } catch (error) {
+    console.error('Get loan error:', error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while fetching loan",
+      error: error.message
+    });
+  }
+});
+
+// ✅ POST: Record loan payment/installment (কিস্তি)
+app.post("/loans/:loanId/payment", async (req, res) => {
+  try {
+    const { loanId } = req.params;
+    const {
+      amount,
+      paymentDate,
+      paymentMethod = 'bank-transfer',
+      targetAccountId, // কোন account এ money credit হবে
+      notes,
+      createdBy,
+      branchId
+    } = req.body;
+
+    // Validation
+    if (!amount || !targetAccountId) {
+      return res.status(400).json({
+        success: false,
+        message: "Amount and targetAccountId are required"
+      });
+    }
+
+    const numericAmount = parseFloat(amount);
+    if (isNaN(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Amount must be greater than 0"
+      });
+    }
+
+    // Find loan by loanId or MongoDB ObjectId
+    let loan = await loans.findOne({
+      loanId: loanId,
+      isActive: true
+    });
+
+    if (!loan && ObjectId.isValid(loanId)) {
+      loan = await loans.findOne({
+        _id: new ObjectId(loanId),
+        isActive: true
+      });
+    }
+
+    if (!loan) {
+      return res.status(404).json({
+        success: false,
+        message: "Loan not found"
+      });
+    }
+
+    // Check if loan is giving type (borrower payment)
+    if (loan.loanDirection !== 'giving') {
+      return res.status(400).json({
+        success: false,
+        message: "This endpoint is only for loan giving (borrower payment). Use /loans/:loanId/repayment for loan receiving repayment."
+      });
+    }
+
+    // Check if loan is active
+    if (loan.status !== 'Active') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot process payment for loan with status: ${loan.status}`
+      });
+    }
+
+    // Check if payment amount exceeds remaining amount
+    const currentRemaining = parseFloat(loan.remainingAmount || loan.amount || 0);
+    if (numericAmount > currentRemaining) {
+      return res.status(400).json({
+        success: false,
+        message: `Payment amount (${numericAmount}) exceeds remaining amount (${currentRemaining})`
+      });
+    }
+
+    // Get branch information
+    const branch = await branches.findOne({ branchId: branchId || loan.branchId || 'main', isActive: true });
+    if (!branch) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid branch ID"
+      });
+    }
+
+    // Calculate new remaining amount
+    const newRemainingAmount = currentRemaining - numericAmount;
+    const isFullyPaid = newRemainingAmount <= 0;
+
+    // Generate transaction ID
+    const transactionId = await generateTransactionId(db, branch.branchCode);
+
+    // Create transaction record for loan payment (CREDIT - money coming in)
+    const transactionData = {
+      transactionId,
+      transactionType: 'credit', // Money coming in (আমাদের account এ money আসছে)
+      serviceCategory: 'Loan Payment',
+      partyType: 'loan',
+      partyId: loan._id.toString(),
+      partyName: loan.fullName,
+      partyPhone: loan.contactPhone,
+      partyEmail: loan.contactEmail || null,
+      invoiceId: loan.loanId,
+      paymentMethod: paymentMethod,
+      targetAccountId: targetAccountId,
+      accountManagerId: null,
+      debitAccount: null,
+      creditAccount: { id: targetAccountId },
+      paymentDetails: {
+        amount: numericAmount,
+        reference: loan.loanId,
+        loanId: loan.loanId,
+        loanType: loan.loanType,
+        paymentType: 'installment'
+      },
+      amount: numericAmount,
+      branchId: branch.branchId,
+      branchName: branch.branchName,
+      branchCode: branch.branchCode,
+      createdBy: createdBy || 'unknown_user',
+      notes: `Loan Payment/Installment: ${loan.loanType} - ${notes || 'No additional notes'}`,
+      reference: loan.loanId,
+      employeeReference: null,
+      status: 'completed',
+      date: new Date(paymentDate || new Date()),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      isActive: true,
+      loanId: loan.loanId,
+      loanDirection: loan.loanDirection
+    };
+
+    // Start transaction session for atomic updates
+    const session = db.client.startSession();
+    session.startTransaction();
+
+    try {
+      // 1. Insert transaction
+      await transactions.insertOne(transactionData, { session });
+
+      // 2. Update loan (remaining amount and status if fully paid)
+      const loanUpdate = {
+        remainingAmount: isFullyPaid ? 0 : newRemainingAmount,
+        updatedAt: new Date()
+      };
+
+      if (isFullyPaid) {
+        loanUpdate.status = 'Closed';
+        loanUpdate.closedDate = new Date();
+      }
+
+      await loans.updateOne(
+        { _id: loan._id },
+        { $set: loanUpdate },
+        { session }
+      );
+
+      // 3. Update bank account balance (credit)
+      const account = await bankAccounts.findOne({ _id: new ObjectId(targetAccountId) }, { session });
+      if (!account) {
+        throw new Error('Bank account not found');
+      }
+
+      const newBalance = (account.currentBalance || 0) + numericAmount;
+      await bankAccounts.updateOne(
+        { _id: new ObjectId(targetAccountId) },
+        {
+          $set: { currentBalance: newBalance, updatedAt: new Date() },
+          $push: {
+            balanceHistory: {
+              amount: numericAmount,
+              type: 'deposit',
+              note: `Loan Payment: ${loan.loanId} - ${loan.fullName}${isFullyPaid ? ' (Fully Paid)' : ''}`,
+              at: new Date(),
+              transactionId,
+              loanId: loan.loanId
+            }
+          }
+        },
+        { session }
+      );
+
+      // Commit transaction
+      await session.commitTransaction();
+
+      // Get updated loan
+      const updatedLoan = await loans.findOne({ _id: loan._id });
+
+      res.status(200).json({
+        success: true,
+        message: isFullyPaid 
+          ? "Loan payment recorded successfully. Loan is now fully paid." 
+          : "Loan payment/installment recorded successfully",
+        payment: {
+          transactionId,
+          loanId: loan.loanId,
+          amount: numericAmount,
+          remainingAmount: isFullyPaid ? 0 : newRemainingAmount,
+          isFullyPaid,
+          paymentDate: new Date(paymentDate || new Date())
+        },
+        loan: {
+          loanId: updatedLoan.loanId,
+          status: updatedLoan.status,
+          remainingAmount: updatedLoan.remainingAmount,
+          amount: updatedLoan.amount
+        }
+      });
+
+    } catch (transactionError) {
+      // Rollback transaction
+      await session.abortTransaction();
+      throw transactionError;
+    } finally {
+      await session.endSession();
+    }
+
+  } catch (error) {
+    console.error('Loan payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while recording loan payment",
+      error: error.message
+    });
+  }
+});
+
+// ✅ PATCH: Approve loan receiving application
+app.patch("/loans/:loanId/approve", async (req, res) => {
+  try {
+    const { loanId } = req.params;
+    const {
+      targetAccountId, // কোন account এ money credit হবে
+      approvedBy,
+      notes
+    } = req.body;
+
+    // Validation
+    if (!targetAccountId) {
+      return res.status(400).json({
+        success: false,
+        message: "targetAccountId is required"
+      });
+    }
+
+    // Find loan by loanId or MongoDB ObjectId
+    let loan = await loans.findOne({
+      loanId: loanId,
+      isActive: true
+    });
+
+    if (!loan && ObjectId.isValid(loanId)) {
+      loan = await loans.findOne({
+        _id: new ObjectId(loanId),
+        isActive: true
+      });
+    }
+
+    if (!loan) {
+      return res.status(404).json({
+        success: false,
+        message: "Loan not found"
+      });
+    }
+
+    // Check if loan is receiving type
+    if (loan.loanDirection !== 'receiving') {
+      return res.status(400).json({
+        success: false,
+        message: "This endpoint is only for loan receiving applications"
+      });
+    }
+
+    // Check if loan is already approved
+    if (loan.status === 'Active') {
+      return res.status(400).json({
+        success: false,
+        message: "Loan is already approved"
+      });
+    }
+
+    // Check if loan is in Pending status
+    if (loan.status !== 'Pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot approve loan with status: ${loan.status}`
+      });
+    }
+
+    // Get branch information
+    const branch = await branches.findOne({ 
+      branchId: loan.branchId || 'main', 
+      isActive: true 
+    });
+    if (!branch) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid branch ID"
+      });
+    }
+
+    // Validate bank account exists
+    const account = await bankAccounts.findOne({ 
+      _id: new ObjectId(targetAccountId),
+      isDeleted: { $ne: true }
+    });
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        message: "Bank account not found"
+      });
+    }
+
+    const numericAmount = parseFloat(loan.amount || 0);
+
+    // Generate transaction ID
+    const transactionId = await generateTransactionId(db, branch.branchCode);
+
+    // Create transaction record for loan approval (CREDIT - money coming in)
+    const transactionData = {
+      transactionId,
+      transactionType: 'credit', // Money coming in (আমাদের account এ money আসছে)
+      serviceCategory: 'Loan Receiving',
+      partyType: 'loan',
+      partyId: loan._id.toString(),
+      partyName: loan.fullName,
+      partyPhone: loan.contactPhone,
+      partyEmail: loan.contactEmail || null,
+      invoiceId: loan.loanId,
+      paymentMethod: 'bank-transfer',
+      targetAccountId: targetAccountId,
+      accountManagerId: null,
+      debitAccount: null,
+      creditAccount: { id: targetAccountId },
+      paymentDetails: {
+        amount: numericAmount,
+        reference: loan.loanId,
+        loanId: loan.loanId,
+        loanType: loan.loanType
+      },
+      amount: numericAmount,
+      branchId: branch.branchId,
+      branchName: branch.branchName,
+      branchCode: branch.branchCode,
+      createdBy: approvedBy || 'unknown_user',
+      notes: `Loan Approved: ${loan.loanType} - ${notes || 'No additional notes'}`,
+      reference: loan.loanId,
+      employeeReference: null,
+      status: 'completed',
+      date: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      isActive: true,
+      loanId: loan.loanId,
+      loanDirection: 'receiving'
+    };
+
+    // Start transaction session for atomic updates
+    const session = db.client.startSession();
+    session.startTransaction();
+
+    try {
+      // 1. Insert transaction
+      await transactions.insertOne(transactionData, { session });
+
+      // 2. Update loan status to Active
+      await loans.updateOne(
+        { _id: loan._id },
+        {
+          $set: {
+            status: 'Active',
+            approvedBy: approvedBy || null,
+            approvalDate: new Date(),
+            updatedAt: new Date()
+          }
+        },
+        { session }
+      );
+
+      // 3. Update bank account balance (credit)
+      const newBalance = (account.currentBalance || 0) + numericAmount;
+      await bankAccounts.updateOne(
+        { _id: new ObjectId(targetAccountId) },
+        {
+          $set: { currentBalance: newBalance, updatedAt: new Date() },
+          $push: {
+            balanceHistory: {
+              amount: numericAmount,
+              type: 'deposit',
+              note: `Loan Approved: ${loan.loanId} - ${loan.fullName}`,
+              at: new Date(),
+              transactionId,
+              loanId: loan.loanId
+            }
+          }
+        },
+        { session }
+      );
+
+      // Commit transaction
+      await session.commitTransaction();
+
+      // Get updated loan
+      const updatedLoan = await loans.findOne({ _id: loan._id });
+
+      res.status(200).json({
+        success: true,
+        message: "Loan approved successfully",
+        loan: {
+          loanId: updatedLoan.loanId,
+          status: updatedLoan.status,
+          approvedBy: updatedLoan.approvedBy,
+          approvalDate: updatedLoan.approvalDate
+        },
+        transactionId
+      });
+
+    } catch (transactionError) {
+      // Rollback transaction
+      await session.abortTransaction();
+      throw transactionError;
+    } finally {
+      await session.endSession();
+    }
+
+  } catch (error) {
+    console.error('Loan approval error:', error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while approving loan",
+      error: error.message
+    });
+  }
+});
+
+// ✅ POST: Record loan repayment (Loan Receiving এর জন্য)
+app.post("/loans/:loanId/repayment", async (req, res) => {
+  try {
+    const { loanId } = req.params;
+    const {
+      amount,
+      repaymentDate,
+      paymentMethod = 'bank-transfer',
+      sourceAccountId, // কোন account থেকে money debit হবে
+      notes,
+      createdBy,
+      branchId
+    } = req.body;
+
+    // Validation
+    if (!amount || !sourceAccountId) {
+      return res.status(400).json({
+        success: false,
+        message: "Amount and sourceAccountId are required"
+      });
+    }
+
+    const numericAmount = parseFloat(amount);
+    if (isNaN(numericAmount) || numericAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Amount must be greater than 0"
+      });
+    }
+
+    // Find loan by loanId or MongoDB ObjectId
+    let loan = await loans.findOne({
+      loanId: loanId,
+      isActive: true
+    });
+
+    if (!loan && ObjectId.isValid(loanId)) {
+      loan = await loans.findOne({
+        _id: new ObjectId(loanId),
+        isActive: true
+      });
+    }
+
+    if (!loan) {
+      return res.status(404).json({
+        success: false,
+        message: "Loan not found"
+      });
+    }
+
+    // Check if loan is receiving type
+    if (loan.loanDirection !== 'receiving') {
+      return res.status(400).json({
+        success: false,
+        message: "This endpoint is only for loan receiving"
+      });
+    }
+
+    // Check if loan is active
+    if (loan.status !== 'Active') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot process repayment for loan with status: ${loan.status}`
+      });
+    }
+
+    // Check if payment amount exceeds remaining amount
+    const currentRemaining = parseFloat(loan.remainingAmount || loan.amount || 0);
+    if (numericAmount > currentRemaining) {
+      return res.status(400).json({
+        success: false,
+        message: `Repayment amount (${numericAmount}) exceeds remaining amount (${currentRemaining})`
+      });
+    }
+
+    // Get branch information
+    const branch = await branches.findOne({ 
+      branchId: branchId || loan.branchId || 'main', 
+      isActive: true 
+    });
+    if (!branch) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid branch ID"
+      });
+    }
+
+    // Validate bank account exists and has sufficient balance
+    const account = await bankAccounts.findOne({ 
+      _id: new ObjectId(sourceAccountId),
+      isDeleted: { $ne: true }
+    });
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        message: "Bank account not found"
+      });
+    }
+
+    if (account.currentBalance < numericAmount) {
+      return res.status(400).json({
+        success: false,
+        message: "Insufficient balance in bank account"
+      });
+    }
+
+    // Calculate new remaining amount
+    const newRemainingAmount = currentRemaining - numericAmount;
+    const isFullyRepaid = newRemainingAmount <= 0;
+
+    // Generate transaction ID
+    const transactionId = await generateTransactionId(db, branch.branchCode);
+
+    // Create transaction record for loan repayment (DEBIT - money going out)
+    const transactionData = {
+      transactionId,
+      transactionType: 'debit', // Money going out (আমাদের account থেকে money বের হচ্ছে)
+      serviceCategory: 'Loan Repayment',
+      partyType: 'loan',
+      partyId: loan._id.toString(),
+      partyName: loan.fullName,
+      partyPhone: loan.contactPhone,
+      partyEmail: loan.contactEmail || null,
+      invoiceId: loan.loanId,
+      paymentMethod: paymentMethod,
+      targetAccountId: sourceAccountId,
+      accountManagerId: null,
+      debitAccount: { id: sourceAccountId },
+      creditAccount: null,
+      paymentDetails: {
+        amount: numericAmount,
+        reference: loan.loanId,
+        loanId: loan.loanId,
+        loanType: loan.loanType,
+        paymentType: 'repayment'
+      },
+      amount: numericAmount,
+      branchId: branch.branchId,
+      branchName: branch.branchName,
+      branchCode: branch.branchCode,
+      createdBy: createdBy || 'unknown_user',
+      notes: `Loan Repayment: ${loan.loanType} - ${notes || 'No additional notes'}`,
+      reference: loan.loanId,
+      employeeReference: null,
+      status: 'completed',
+      date: new Date(repaymentDate || new Date()),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      isActive: true,
+      loanId: loan.loanId,
+      loanDirection: 'receiving'
+    };
+
+    // Start transaction session for atomic updates
+    const session = db.client.startSession();
+    session.startTransaction();
+
+    try {
+      // 1. Insert transaction
+      await transactions.insertOne(transactionData, { session });
+
+      // 2. Update loan (remaining amount and status if fully repaid)
+      const loanUpdate = {
+        remainingAmount: isFullyRepaid ? 0 : newRemainingAmount,
+        updatedAt: new Date()
+      };
+
+      if (isFullyRepaid) {
+        loanUpdate.status = 'Closed';
+        loanUpdate.closedDate = new Date();
+      }
+
+      await loans.updateOne(
+        { _id: loan._id },
+        { $set: loanUpdate },
+        { session }
+      );
+
+      // 3. Update bank account balance (debit)
+      const newBalance = (account.currentBalance || 0) - numericAmount;
+      await bankAccounts.updateOne(
+        { _id: new ObjectId(sourceAccountId) },
+        {
+          $set: { currentBalance: newBalance, updatedAt: new Date() },
+          $push: {
+            balanceHistory: {
+              amount: numericAmount,
+              type: 'withdrawal',
+              note: `Loan Repayment: ${loan.loanId} - ${loan.fullName}${isFullyRepaid ? ' (Fully Repaid)' : ''}`,
+              at: new Date(),
+              transactionId,
+              loanId: loan.loanId
+            }
+          }
+        },
+        { session }
+      );
+
+      // Commit transaction
+      await session.commitTransaction();
+
+      // Get updated loan
+      const updatedLoan = await loans.findOne({ _id: loan._id });
+
+      res.status(200).json({
+        success: true,
+        message: isFullyRepaid 
+          ? "Loan repayment recorded successfully. Loan is now fully repaid." 
+          : "Loan repayment recorded successfully",
+        repayment: {
+          transactionId,
+          loanId: loan.loanId,
+          amount: numericAmount,
+          remainingAmount: isFullyRepaid ? 0 : newRemainingAmount,
+          isFullyRepaid,
+          repaymentDate: new Date(repaymentDate || new Date())
+        },
+        loan: {
+          loanId: updatedLoan.loanId,
+          status: updatedLoan.status,
+          remainingAmount: updatedLoan.remainingAmount,
+          amount: updatedLoan.amount
+        }
+      });
+
+    } catch (transactionError) {
+      // Rollback transaction
+      await session.abortTransaction();
+      throw transactionError;
+    } finally {
+      await session.endSession();
+    }
+
+  } catch (error) {
+    console.error('Loan repayment error:', error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while recording loan repayment",
+      error: error.message
+    });
+  }
+});
+
+// ✅ PATCH: Update loan details
+app.patch("/loans/:loanId", async (req, res) => {
+  try {
+    const { loanId } = req.params;
+    const updateData = req.body;
+
+    // Find loan by loanId or MongoDB ObjectId
+    let loan = await loans.findOne({
+      loanId: loanId,
+      isActive: true
+    });
+
+    if (!loan && ObjectId.isValid(loanId)) {
+      loan = await loans.findOne({
+        _id: new ObjectId(loanId),
+        isActive: true
+      });
+    }
+
+    if (!loan) {
+      return res.status(404).json({
+        success: false,
+        message: "Loan not found"
+      });
+    }
+
+    // Don't allow updates if loan is closed
+    if (loan.status === 'Closed') {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot update closed loan"
+      });
+    }
+
+    // Remove fields that shouldn't be updated
+    const restrictedFields = ['loanId', 'createdAt', '_id', 'loanDirection', 'amount', 'remainingAmount'];
+    restrictedFields.forEach(field => {
+      delete updateData[field];
+    });
+
+    // Validate numeric fields if being updated
+    if (updateData.interestRate !== undefined) {
+      const numericInterestRate = parseFloat(updateData.interestRate);
+      if (isNaN(numericInterestRate) || numericInterestRate <= 0 || numericInterestRate > 100) {
+        return res.status(400).json({
+          success: false,
+          message: "Interest rate must be between 0 and 100"
+        });
+      }
+      updateData.interestRate = numericInterestRate;
+    }
+
+    if (updateData.duration !== undefined) {
+      const numericDuration = parseInt(updateData.duration);
+      if (isNaN(numericDuration) || numericDuration <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Duration must be greater than 0"
+        });
+      }
+      updateData.duration = numericDuration;
+    }
+
+    // Add updatedAt timestamp
+    updateData.updatedAt = new Date();
+
+    // Update loan
+    const result = await loans.updateOne(
+      { _id: loan._id },
+      { $set: updateData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Loan not found"
+      });
+    }
+
+    // Get updated loan
+    const updatedLoan = await loans.findOne({ _id: loan._id });
+
+    res.json({
+      success: true,
+      message: "Loan updated successfully",
+      loan: updatedLoan
+    });
+
+  } catch (error) {
+    console.error('Update loan error:', error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while updating loan",
+      error: error.message
+    });
+  }
+});
+
+// ✅ PATCH: Reject loan application
+app.patch("/loans/:loanId/reject", async (req, res) => {
+  try {
+    const { loanId } = req.params;
+    const {
+      rejectionReason,
+      rejectedBy,
+      notes
+    } = req.body;
+
+    // Find loan by loanId or MongoDB ObjectId
+    let loan = await loans.findOne({
+      loanId: loanId,
+      isActive: true
+    });
+
+    if (!loan && ObjectId.isValid(loanId)) {
+      loan = await loans.findOne({
+        _id: new ObjectId(loanId),
+        isActive: true
+      });
+    }
+
+    if (!loan) {
+      return res.status(404).json({
+        success: false,
+        message: "Loan not found"
+      });
+    }
+
+    // Check if loan is in Pending status
+    if (loan.status !== 'Pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot reject loan with status: ${loan.status}. Only pending loans can be rejected.`
+      });
+    }
+
+    // Update loan status to Rejected
+    const result = await loans.updateOne(
+      { _id: loan._id },
+      {
+        $set: {
+          status: 'Rejected',
+          rejectionReason: rejectionReason || null,
+          rejectedBy: rejectedBy || null,
+          rejectionDate: new Date(),
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Loan not found"
+      });
+    }
+
+    // Get updated loan
+    const updatedLoan = await loans.findOne({ _id: loan._id });
+
+    res.json({
+      success: true,
+      message: "Loan application rejected successfully",
+      loan: {
+        loanId: updatedLoan.loanId,
+        status: updatedLoan.status,
+        rejectionReason: updatedLoan.rejectionReason,
+        rejectedBy: updatedLoan.rejectedBy,
+        rejectionDate: updatedLoan.rejectionDate
+      }
+    });
+
+  } catch (error) {
+    console.error('Loan rejection error:', error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while rejecting loan",
+      error: error.message
     });
   }
 });
@@ -6050,6 +8245,23 @@ app.post('/haj-umrah/packages', async (req, res) => {
       });
     }
 
+    // Ensure totals.passengerTotals structure exists
+    const totalsData = totals || {};
+    if (!totalsData.passengerTotals) {
+      totalsData.passengerTotals = {
+        adult: 0,
+        child: 0,
+        infant: 0
+      };
+    } else {
+      // Ensure all three passenger types are present
+      totalsData.passengerTotals = {
+        adult: parseFloat(totalsData.passengerTotals.adult) || 0,
+        child: parseFloat(totalsData.passengerTotals.child) || 0,
+        infant: parseFloat(totalsData.passengerTotals.infant) || 0
+      };
+    }
+
     // Create package document
     const packageDoc = {
       packageName: String(packageName),
@@ -6061,7 +8273,7 @@ app.post('/haj-umrah/packages', async (req, res) => {
       notes: notes || '',
       status: status || 'Active',
       costs: costs || {},
-      totals: totals || {},
+      totals: totalsData,
       createdAt: new Date(),
       updatedAt: new Date()
     };
@@ -6106,11 +8318,38 @@ app.get('/haj-umrah/packages', async (req, res) => {
       .limit(limitNum)
       .toArray();
 
+    // Ensure passengerTotals structure exists in all packages
+    const normalizedPackages = packagesList.map(pkg => {
+      if (pkg.totals && !pkg.totals.passengerTotals) {
+        pkg.totals.passengerTotals = {
+          adult: 0,
+          child: 0,
+          infant: 0
+        };
+      } else if (!pkg.totals) {
+        pkg.totals = {
+          passengerTotals: {
+            adult: 0,
+            child: 0,
+            infant: 0
+          }
+        };
+      } else if (pkg.totals.passengerTotals) {
+        // Ensure all three passenger types are present
+        pkg.totals.passengerTotals = {
+          adult: parseFloat(pkg.totals.passengerTotals.adult) || 0,
+          child: parseFloat(pkg.totals.passengerTotals.child) || 0,
+          infant: parseFloat(pkg.totals.passengerTotals.infant) || 0
+        };
+      }
+      return pkg;
+    });
+
     const total = await packages.countDocuments(filter);
 
     res.json({
       success: true,
-      data: packagesList,
+      data: normalizedPackages,
       pagination: {
         total,
         page: pageNum,
@@ -6148,6 +8387,30 @@ app.get('/haj-umrah/packages/:id', async (req, res) => {
       });
     }
 
+    // Ensure passengerTotals structure exists
+    if (package.totals && !package.totals.passengerTotals) {
+      package.totals.passengerTotals = {
+        adult: 0,
+        child: 0,
+        infant: 0
+      };
+    } else if (!package.totals) {
+      package.totals = {
+        passengerTotals: {
+          adult: 0,
+          child: 0,
+          infant: 0
+        }
+      };
+    } else if (package.totals.passengerTotals) {
+      // Ensure all three passenger types are present
+      package.totals.passengerTotals = {
+        adult: parseFloat(package.totals.passengerTotals.adult) || 0,
+        child: parseFloat(package.totals.passengerTotals.child) || 0,
+        infant: parseFloat(package.totals.passengerTotals.infant) || 0
+      };
+    }
+
     res.json({
       success: true,
       data: package
@@ -6173,10 +8436,43 @@ app.put('/haj-umrah/packages/:id', async (req, res) => {
       });
     }
 
+    // Get existing package to preserve structure
+    const existingPackage = await packages.findOne({ _id: new ObjectId(id) });
+    if (!existingPackage) {
+      return res.status(404).json({
+        success: false,
+        message: 'Package not found'
+      });
+    }
+
     const updateData = {
       ...req.body,
       updatedAt: new Date()
     };
+
+    // Ensure totals.passengerTotals structure exists if totals is being updated
+    if (updateData.totals) {
+      if (!updateData.totals.passengerTotals) {
+        // If passengerTotals not provided, check if existing package has it
+        const existingPassengerTotals = existingPackage.totals?.passengerTotals;
+        if (existingPassengerTotals) {
+          updateData.totals.passengerTotals = existingPassengerTotals;
+        } else {
+          updateData.totals.passengerTotals = {
+            adult: 0,
+            child: 0,
+            infant: 0
+          };
+        }
+      } else {
+        // Ensure all three passenger types are present
+        updateData.totals.passengerTotals = {
+          adult: parseFloat(updateData.totals.passengerTotals.adult) || 0,
+          child: parseFloat(updateData.totals.passengerTotals.child) || 0,
+          infant: parseFloat(updateData.totals.passengerTotals.infant) || 0
+        };
+      }
+    }
 
     const result = await packages.updateOne(
       { _id: new ObjectId(id) },
@@ -6241,7 +8537,177 @@ app.delete('/haj-umrah/packages/:id', async (req, res) => {
   }
 });
 
+// POST /haj-umrah/packages/:id/assign-passenger - Assign package to passenger with type selection
+app.post('/haj-umrah/packages/:id/assign-passenger', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { passengerId, passengerType, passengerCategory } = req.body;
 
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid package ID'
+      });
+    }
+
+    // Validation
+    if (!passengerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Passenger ID is required'
+      });
+    }
+
+    if (!passengerType || !['adult', 'child', 'infant'].includes(passengerType.toLowerCase())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Passenger type must be one of: adult, child, infant'
+      });
+    }
+
+    // Get package
+    const package = await packages.findOne({ _id: new ObjectId(id) });
+    if (!package) {
+      return res.status(404).json({
+        success: false,
+        message: 'Package not found'
+      });
+    }
+
+    // Get passengerTotals from package
+    const passengerTotals = package.totals?.passengerTotals || {};
+    const passengerTypeKey = passengerType.toLowerCase();
+    const selectedPrice = parseFloat(passengerTotals[passengerTypeKey]) || 0;
+
+    if (selectedPrice <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: `No price available for passenger type: ${passengerType}`
+      });
+    }
+
+    // Determine which collection to update (haji or umrah)
+    const isHajjPackage = package.customPackageType?.toLowerCase().includes('hajj') || 
+                         package.packageType?.toLowerCase().includes('hajj');
+    const isUmrahPackage = package.customPackageType?.toLowerCase().includes('umrah') || 
+                          package.packageType?.toLowerCase().includes('umrah');
+
+    // Use passengerCategory if provided, otherwise infer from package
+    let targetCollection = null;
+    let collectionName = '';
+
+    if (passengerCategory) {
+      if (passengerCategory.toLowerCase() === 'haji' || passengerCategory.toLowerCase() === 'hajj') {
+        targetCollection = haji;
+        collectionName = 'haji';
+      } else if (passengerCategory.toLowerCase() === 'umrah') {
+        targetCollection = umrah;
+        collectionName = 'umrah';
+      }
+    } else {
+      if (isHajjPackage) {
+        targetCollection = haji;
+        collectionName = 'haji';
+      } else if (isUmrahPackage) {
+        targetCollection = umrah;
+        collectionName = 'umrah';
+      }
+    }
+
+    if (!targetCollection) {
+      return res.status(400).json({
+        success: false,
+        message: 'Could not determine passenger category. Please specify passengerCategory (haji/umrah) or ensure package has valid type.'
+      });
+    }
+
+    // Find passenger
+    let passenger = null;
+    const passengerObjId = ObjectId.isValid(passengerId) ? new ObjectId(passengerId) : null;
+    
+    if (passengerObjId) {
+      passenger = await targetCollection.findOne({ 
+        $or: [
+          { _id: passengerObjId },
+          { customerId: passengerId }
+        ]
+      });
+    } else {
+      passenger = await targetCollection.findOne({ customerId: passengerId });
+    }
+
+    if (!passenger) {
+      return res.status(404).json({
+        success: false,
+        message: `Passenger not found in ${collectionName} collection`
+      });
+    }
+
+    // Update passenger profile with package information
+    const updateData = {
+      $set: {
+        totalAmount: selectedPrice,
+        packageInfo: {
+          packageId: new ObjectId(id),
+          packageName: package.packageName,
+          packageType: package.packageType || 'Regular',
+          customPackageType: package.customPackageType || '',
+          packageYear: package.packageYear,
+          packageMonth: package.packageMonth || '',
+          passengerType: passengerTypeKey,
+          passengerPrice: selectedPrice,
+          assignedAt: new Date()
+        },
+        updatedAt: new Date()
+      }
+    };
+
+    // If paidAmount doesn't exist or is 0, keep it at current value, otherwise preserve it
+    const currentPaidAmount = passenger.paidAmount || 0;
+    if (!passenger.paidAmount && passenger.paidAmount !== 0) {
+      updateData.$set.paidAmount = 0;
+    }
+
+    // Update payment status based on paid vs total
+    const finalTotal = selectedPrice;
+    const finalPaid = passenger.paidAmount || 0;
+    if (finalPaid >= finalTotal && finalTotal > 0) {
+      updateData.$set.paymentStatus = 'paid';
+    } else if (finalPaid > 0 && finalPaid < finalTotal) {
+      updateData.$set.paymentStatus = 'partial';
+    } else {
+      updateData.$set.paymentStatus = 'pending';
+    }
+
+    await targetCollection.updateOne(
+      { _id: passenger._id },
+      updateData
+    );
+
+    const updatedPassenger = await targetCollection.findOne({ _id: passenger._id });
+
+    res.json({
+      success: true,
+      message: `Package assigned successfully to ${passengerType}`,
+      data: {
+        passenger: updatedPassenger,
+        package: {
+          _id: package._id,
+          packageName: package.packageName,
+          passengerType: passengerTypeKey,
+          price: selectedPrice
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Assign passenger to package error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to assign passenger to package',
+      error: error.message
+    });
+  }
+});
 
 // ==================== BANK ACCOUNTS ROUTES ====================
 // Schema (MongoDB):
