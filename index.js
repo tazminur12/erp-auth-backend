@@ -645,8 +645,8 @@ const generateOrderId = async (db, branchCode) => {
   return `ORD${branchCode}${dateStr}${serial}`;
 };
 
-// Helper: Generate unique Loan ID
-const generateLoanId = async (db, branchCode, loanType = 'giving') => {
+// Helper: Generate unique Loan ID (per direction per day)
+const generateLoanId = async (db, loanDirection) => {
   const counterCollection = db.collection("counters");
 
   // Get current date in DDMMYY format
@@ -655,33 +655,23 @@ const generateLoanId = async (db, branchCode, loanType = 'giving') => {
     String(today.getMonth() + 1).padStart(2, '0') +
     today.getFullYear().toString().slice(-2);
 
-  // Create counter key for loan type and date
-  const counterKey = `loan_${loanType}_${branchCode}_${dateStr}`;
+  const dir = (loanDirection || '').toLowerCase() === 'giving' ? 'LG' : 'LR';
+  const counterKey = `loan_${dir}_${dateStr}`;
 
-  // Find or create counter
   let counter = await counterCollection.findOne({ counterKey });
-
   if (!counter) {
-    // Create new counter starting from 0
     await counterCollection.insertOne({ counterKey, sequence: 0 });
     counter = { sequence: 0 };
   }
 
-  // Increment sequence
   const newSequence = counter.sequence + 1;
-
-  // Update counter
   await counterCollection.updateOne(
     { counterKey },
     { $set: { sequence: newSequence } }
   );
 
-  // Format: LOAN + type prefix (G/R) + branchCode + DDMMYY + 0001
-  // giving: LOANGDH2508290001, receiving: LOANRDH2508290001
-  const typePrefix = loanType === 'giving' ? 'G' : 'R';
   const serial = String(newSequence).padStart(4, '0');
-
-  return `LOAN${typePrefix}${branchCode}${dateStr}${serial}`;
+  return `${dir}${dateStr}${serial}`; // e.g., LG2508290001 or LR2508290001
 };
 
 // Helper: Generate unique Vendor ID
@@ -822,6 +812,7 @@ async function initializeDatabase() {
     accounts = db.collection("accounts");
     vendorBills = db.collection("vendorBills");
     loans = db.collection("loans");
+   
 
 
 
@@ -831,6 +822,19 @@ async function initializeDatabase() {
 
     // Initialize default customer types
     await initializeDefaultCustomerTypes(db, customerTypes);
+
+    // Create useful indexes (non-blocking if already exist)
+    try {
+      await Promise.all([
+        // Transactions (kept)
+        transactions.createIndex({ loanId: 1, isActive: 1, createdAt: -1 }, { name: "tx_loan_active_createdAt" }),
+        // Loans collection indexes
+        loans.createIndex({ loanId: 1 }, { unique: true, name: "loans_loanId_unique" }),
+        loans.createIndex({ loanDirection: 1, status: 1, createdAt: -1 }, { name: "loans_direction_status_createdAt" }),
+      ]);
+    } catch (e) {
+      console.warn("⚠️ Index creation warning:", e.message);
+    }
   } catch (error) {
     console.error("❌ Database initialization error:", error);
     throw error;
@@ -2700,6 +2704,77 @@ app.get("/api/categories-summary", async (req, res) => {
   }
 });
 
+// ✅ GET: Transactions stats (aggregate by category/subcategory)
+// Example: /api/transactions/stats?groupBy=category,subcategory&fromDate=2025-01-01&toDate=2025-12-31
+app.get("/api/transactions/stats", async (req, res) => {
+  try {
+    const { groupBy = "category", fromDate, toDate, partyType, partyId } = req.query || {};
+
+    // Build match filter
+    const match = { isActive: { $ne: false } };
+    if (fromDate || toDate) {
+      match.date = {};
+      if (fromDate) match.date.$gte = new Date(fromDate);
+      if (toDate) {
+        const end = new Date(toDate);
+        if (!isNaN(end.getTime())) end.setHours(23, 59, 59, 999);
+        match.date.$lte = end;
+      }
+    }
+    if (partyType) match.partyType = String(partyType);
+    if (partyId) match.partyId = String(partyId);
+
+    // Determine grouping keys
+    const keys = String(groupBy || "").split(",").map(k => k.trim().toLowerCase()).filter(Boolean);
+    const byCategory = keys.includes("category") || keys.length === 0;
+    const bySubCategory = keys.includes("subcategory");
+
+    const groupId = {};
+    if (byCategory) groupId.category = "$serviceCategory";
+    if (bySubCategory) groupId.subcategory = "$subCategory"; // expects subCategory saved in transactions
+
+    const pipeline = [
+      { $match: match },
+      {
+        $group: {
+          _id: Object.keys(groupId).length ? groupId : null,
+          totalCredit: { $sum: { $cond: [{ $eq: ["$transactionType", "credit"] }, "$amount", 0] } },
+          totalDebit: { $sum: { $cond: [{ $eq: ["$transactionType", "debit"] }, "$amount", 0] } }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          category: "$_id.category",
+          subcategory: "$_id.subcategory",
+          totalCredit: { $round: ["$totalCredit", 2] },
+          totalDebit: { $round: ["$totalDebit", 2] },
+          netAmount: { $round: [{ $subtract: ["$totalCredit", "$totalDebit"] }, 2] }
+        }
+      },
+      { $sort: { category: 1, subcategory: 1 } }
+    ];
+
+    const data = await transactions.aggregate(pipeline).toArray();
+
+    // Grand totals
+    const totals = data.reduce((acc, r) => {
+      acc.totalCredit += Number(r.totalCredit || 0);
+      acc.totalDebit += Number(r.totalDebit || 0);
+      acc.netAmount += Number(r.netAmount || 0);
+      return acc;
+    }, { totalCredit: 0, totalDebit: 0, netAmount: 0 });
+    totals.totalCredit = Number(totals.totalCredit.toFixed(2));
+    totals.totalDebit = Number(totals.totalDebit.toFixed(2));
+    totals.netAmount = Number(totals.netAmount.toFixed(2));
+
+    return res.json({ success: true, data, totals, groupBy: keys.length ? keys : ["category"], period: { fromDate: fromDate || null, toDate: toDate || null } });
+  } catch (err) {
+    console.error("/api/transactions/stats GET error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load transactions stats" });
+  }
+});
+
 
 
 
@@ -3796,6 +3871,7 @@ app.post("/api/transactions", async (req, res) => {
     const finalFromAccountId = fromAccountId || debitAccount?.id;
     const finalToAccountId = toAccountId || creditAccount?.id;
     const finalServiceCategory = serviceCategory || category;
+    const finalSubCategory = typeof req.body?.subCategory !== 'undefined' ? String(req.body.subCategory || '').trim() : undefined;
     
     // Determine final party type defensively
     let finalPartyType = String(partyType || '').toLowerCase();
@@ -3878,6 +3954,11 @@ app.post("/api/transactions", async (req, res) => {
         ? { $or: [{ customerId: searchPartyId }, { _id: new ObjectId(searchPartyId) }] }
         : { $or: [{ customerId: searchPartyId }, { _id: searchPartyId }] };
       party = await umrah.findOne(umrahCondition);
+    } else if (finalPartyType === 'loan') {
+      const loanCondition = isValidObjectId
+        ? { $or: [{ loanId: searchPartyId }, { _id: new ObjectId(searchPartyId) }], isActive: { $ne: false } }
+        : { $or: [{ loanId: searchPartyId }, { _id: searchPartyId }], isActive: { $ne: false } };
+      party = await loans.findOne(loanCondition);
     }
 
     // Allow transactions even if party is not found in database
@@ -4060,9 +4141,10 @@ app.post("/api/transactions", async (req, res) => {
         transactionId,
         transactionType,
         serviceCategory: finalServiceCategory,
+        subCategory: finalSubCategory || null,
         partyType: finalPartyType,
         partyId: finalPartyId,
-        partyName: party?.name || party?.customerName || party?.agentName || party?.tradeName || party?.vendorName || 'Unknown',
+        partyName: party?.name || party?.customerName || party?.agentName || party?.tradeName || party?.vendorName || party?.fullName || 'Unknown',
         partyPhone: party?.phone || party?.customerPhone || party?.contactNo || party?.mobile || null,
         partyEmail: party?.email || party?.customerEmail || null,
         invoiceId,
@@ -4342,6 +4424,50 @@ app.post("/api/transactions", async (req, res) => {
         } catch (syncErr) {
           console.warn('Customer sync from umrah transaction failed:', syncErr?.message);
         }
+      }
+
+      // 8.6 If party is a loan, update loan profile amounts (totalAmount/paidAmount/totalDue)
+      if (finalPartyType === 'loan' && party && party._id) {
+        const isReceivingLoan = String(party.loanDirection || '').toLowerCase() === 'receiving';
+        let dueDelta = 0;
+        const loanUpdate = { $set: { updatedAt: new Date() }, $inc: { } };
+
+        if (isReceivingLoan) {
+          // Receiving loan perspective: credit = principal in, increases due; debit = repayment
+          if (transactionType === 'credit') {
+            dueDelta = numericAmount;
+            loanUpdate.$inc.totalAmount = (loanUpdate.$inc.totalAmount || 0) + numericAmount;
+          } else if (transactionType === 'debit') {
+            dueDelta = -numericAmount;
+            loanUpdate.$inc.paidAmount = (loanUpdate.$inc.paidAmount || 0) + numericAmount;
+          }
+        } else {
+          // Giving loan perspective (default): debit = principal out, increases due; credit = repayment
+          if (transactionType === 'debit') {
+            dueDelta = numericAmount;
+            loanUpdate.$inc.totalAmount = (loanUpdate.$inc.totalAmount || 0) + numericAmount;
+          } else if (transactionType === 'credit') {
+            dueDelta = -numericAmount;
+            loanUpdate.$inc.paidAmount = (loanUpdate.$inc.paidAmount || 0) + numericAmount;
+          }
+        }
+
+        loanUpdate.$inc.totalDue = dueDelta;
+        await loans.updateOne({ _id: party._id }, loanUpdate, { session });
+        const afterLoan = await loans.findOne({ _id: party._id }, { session });
+        const clampLoan = {};
+        if ((afterLoan.totalDue || 0) < 0) clampLoan.totalDue = 0;
+        if ((afterLoan.paidAmount || 0) < 0) clampLoan.paidAmount = 0;
+        if ((afterLoan.totalAmount || 0) < 0) clampLoan.totalAmount = 0;
+        if (typeof afterLoan.totalAmount === 'number' && typeof afterLoan.paidAmount === 'number' && afterLoan.paidAmount > afterLoan.totalAmount) {
+          clampLoan.paidAmount = afterLoan.totalAmount;
+        }
+        if (Object.keys(clampLoan).length) {
+          clampLoan.updatedAt = new Date();
+          await loans.updateOne({ _id: party._id }, { $set: clampLoan }, { session });
+        }
+      // Ensure loan is marked Active once any transaction is recorded against it
+      await loans.updateOne({ _id: party._id, status: { $ne: 'Active' } }, { $set: { status: 'Active', updatedAt: new Date() } }, { session });
       }
 
       transactionResult = await transactions.insertOne(transactionData, { session });
@@ -4772,1672 +4898,340 @@ app.delete("/orders/:orderId", async (req, res) => {
   }
 });
 
-// ==================== LOAN ROUTES ====================
+// Loan Routes      ////
 
-// ✅ POST: Create new loan giving
+// ✅ POST: Create Loan (Giving) – stores in 'loans' collection and returns generated id
 app.post("/loans/giving", async (req, res) => {
   try {
-    const {
-      // Personal Profile Information
-      fullName,
-      fatherName,
-      motherName,
-      dateOfBirth,
-      gender,
-      maritalStatus,
-      nidNumber,
-      nidFrontImage,
-      nidBackImage,
-      profilePhoto,
-      // Address Information
-      presentAddress,
-      permanentAddress,
-      district,
-      upazila,
-      postCode,
-      // Business Information
-      businessName,
-      businessType,
-      businessAddress,
-      businessRegistration,
-      businessExperience,
-      // Loan Details
-      loanType,
-      amount,
-      source,
-      purpose,
-      interestRate,
-      duration,
-      givenDate,
-      // Contact Information
-      contactPerson,
-      contactPhone,
-      contactEmail,
-      emergencyContact,
-      emergencyPhone,
-      // Additional Information
-      notes,
-      status = 'Active',
-      remainingAmount,
-      createdBy,
-      branchId
-    } = req.body;
-
-    // Validation
-    if (!fullName || !fatherName || !motherName || !dateOfBirth || !gender || 
-        !nidNumber || !presentAddress || !permanentAddress || !district || !upazila ||
-        !businessName || !businessType || !loanType || !amount || !source || 
-        !purpose || !interestRate || !duration || !contactPerson || !contactPhone ||
-        !emergencyContact || !emergencyPhone) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing required fields"
-      });
+    const body = req.body || {};
+    const firstName = (body.firstName || '').trim();
+    const lastName = (body.lastName || '').trim();
+    if (!firstName || !lastName) {
+      return res.status(400).json({ error: true, message: "firstName and lastName are required" });
     }
 
-    // Validate numeric fields
-    const numericAmount = parseFloat(amount);
-    const numericInterestRate = parseFloat(interestRate);
-    const numericDuration = parseInt(duration);
+    const loanDirection = 'giving';
+    const loanId = await generateLoanId(db, loanDirection);
+    const fullName = `${firstName} ${lastName}`.trim();
 
-    if (isNaN(numericAmount) || numericAmount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Amount must be greater than 0"
-      });
-    }
-
-    if (isNaN(numericInterestRate) || numericInterestRate <= 0 || numericInterestRate > 100) {
-      return res.status(400).json({
-        success: false,
-        message: "Interest rate must be between 0 and 100"
-      });
-    }
-
-    if (isNaN(numericDuration) || numericDuration <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Duration must be greater than 0"
-      });
-    }
-
-    // Validate phone number format
-    const phoneRegex = /^01[3-9]\d{8}$/;
-    if (!phoneRegex.test(contactPhone)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid phone number format"
-      });
-    }
-
-    if (emergencyPhone && !phoneRegex.test(emergencyPhone)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid emergency phone number format"
-      });
-    }
-
-    // Validate email if provided
-    if (contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid email format"
-      });
-    }
-
-    // Get branch information
-    const branch = await branches.findOne({ branchId: branchId || 'main', isActive: true });
-    if (!branch) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid branch ID"
-      });
-    }
-
-    // Generate unique loan ID
-    const loanId = await generateLoanId(db, branch.branchCode, 'giving');
-
-    // Calculate remaining amount if not provided
-    const finalRemainingAmount = remainingAmount !== undefined ? parseFloat(remainingAmount) : numericAmount;
-
-    // Create loan document
-    const newLoan = {
+    const loanDoc = {
       loanId,
-      loanDirection: 'giving', // This is a loan giving
-      // Personal Profile Information
-      fullName: fullName.trim(),
-      fatherName: fatherName.trim(),
-      motherName: motherName.trim(),
-      dateOfBirth: new Date(dateOfBirth),
-      gender,
-      maritalStatus: maritalStatus || null,
-      nidNumber: nidNumber.trim(),
-      nidFrontImage: nidFrontImage || null,
-      nidBackImage: nidBackImage || null,
-      profilePhoto: profilePhoto || null,
-      // Address Information
-      presentAddress: presentAddress.trim(),
-      permanentAddress: permanentAddress.trim(),
-      district: district.trim(),
-      upazila: upazila.trim(),
-      postCode: postCode || null,
-      // Business Information
-      businessName: businessName.trim(),
-      businessType: businessType.trim(),
-      businessAddress: businessAddress || null,
-      businessRegistration: businessRegistration || null,
-      businessExperience: businessExperience || null,
-      // Loan Details
-      loanType: loanType.trim(),
-      amount: numericAmount,
-      source: source.trim(),
-      purpose: purpose.trim(),
-      interestRate: numericInterestRate,
-      duration: numericDuration,
-      givenDate: new Date(givenDate || new Date()),
-      // Contact Information
-      contactPerson: contactPerson.trim(),
-      contactPhone: contactPhone.trim(),
-      contactEmail: contactEmail || null,
-      emergencyContact: emergencyContact.trim(),
-      emergencyPhone: emergencyPhone.trim(),
-      // Additional Information
-      notes: notes || null,
-      // Status and tracking
-      status: status,
-      remainingAmount: finalRemainingAmount,
-      // Metadata
-      createdBy: createdBy || 'unknown_user',
-      branchId: branch.branchId,
-      branchName: branch.branchName,
-      branchCode: branch.branchCode,
+      loanDirection, // 'giving'
+      status: 'Active',
+
+      // Personal
+      firstName,
+      lastName,
+      fullName,
+      fatherName: body.fatherName || '',
+      motherName: body.motherName || '',
+      dateOfBirth: body.dateOfBirth || '',
+      gender: body.gender || '',
+      maritalStatus: body.maritalStatus || '',
+      nidNumber: body.nidNumber || '',
+      nidFrontImage: body.nidFrontImage || '',
+      nidBackImage: body.nidBackImage || '',
+      profilePhoto: body.profilePhoto || '',
+
+      // Address
+      presentAddress: body.presentAddress || '',
+      permanentAddress: body.permanentAddress || '',
+      district: body.district || '',
+      upazila: body.upazila || '',
+      postCode: body.postCode || '',
+
+      // Contacts
+      contactPerson: body.contactPerson || '',
+      contactPhone: body.contactPhone || '',
+      contactEmail: body.contactEmail || '',
+      emergencyContact: body.emergencyContact || '',
+      emergencyPhone: body.emergencyPhone || '',
+
+      // Notes
+      notes: body.notes || '',
+
+      // Meta
+      isActive: true,
       createdAt: new Date(),
       updatedAt: new Date(),
-      isActive: true
+      createdBy: body.createdBy || 'unknown_user',
+      branchId: body.branchId || 'main_branch'
     };
 
-    // Insert loan into database
-    const result = await loans.insertOne(newLoan);
-
-    if (!result.insertedId) {
-      return res.status(500).json({
-        success: false,
-        message: "Failed to create loan"
-      });
-    }
-
-    // Get the created loan
-    const createdLoan = await loans.findOne({ _id: result.insertedId });
-
-    // Create transaction for loan giving (DEBIT - money going out)
-    // Note: Frontend should provide targetAccountId in request body for transaction
-    let transactionCreated = null;
-    const targetAccountId = req.body.targetAccountId; // Account from which money will be debited
-    
-    if (targetAccountId) {
-      try {
-        // Generate transaction ID
-        const transactionId = await generateTransactionId(db, branch.branchCode);
-
-        // Create transaction record for loan giving
-        const transactionData = {
-          transactionId,
-          transactionType: 'debit', // Money going out (আমাদের account থেকে money বের হচ্ছে)
-          serviceCategory: 'Loan Giving',
-          partyType: 'loan', // New party type for loans
-          partyId: result.insertedId.toString(),
-          partyName: createdLoan.fullName,
-          partyPhone: createdLoan.contactPhone,
-          partyEmail: createdLoan.contactEmail || null,
-          invoiceId: createdLoan.loanId, // Use loanId as reference
-          paymentMethod: 'bank-transfer',
-          targetAccountId: targetAccountId,
-          accountManagerId: null,
-          debitAccount: { id: targetAccountId },
-          creditAccount: null,
-          paymentDetails: {
-            amount: numericAmount,
-            reference: createdLoan.loanId,
-            loanId: createdLoan.loanId,
-            loanType: createdLoan.loanType
-          },
-          amount: numericAmount,
-          branchId: branch.branchId,
-          branchName: branch.branchName,
-          branchCode: branch.branchCode,
-          createdBy: createdBy || 'unknown_user',
-          notes: `Loan Given: ${createdLoan.loanType} - ${notes || 'No additional notes'}`,
-          reference: createdLoan.loanId,
-          employeeReference: null,
-          status: 'completed',
-          date: new Date(givenDate || new Date()),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          isActive: true,
-          loanId: createdLoan.loanId, // Link to loan document
-          loanDirection: 'giving'
-        };
-
-        // Insert transaction
-        await transactions.insertOne(transactionData);
-        transactionCreated = transactionId;
-
-        // Update bank account balance (debit)
-        const account = await bankAccounts.findOne({ _id: new ObjectId(targetAccountId) });
-        if (account) {
-          const newBalance = (account.currentBalance || 0) - numericAmount;
-          await bankAccounts.updateOne(
-            { _id: new ObjectId(targetAccountId) },
-            {
-              $set: { currentBalance: newBalance, updatedAt: new Date() },
-              $push: {
-                balanceHistory: {
-                  amount: numericAmount,
-                  type: 'withdrawal',
-                  note: `Loan Given: ${createdLoan.loanId} - ${createdLoan.fullName}`,
-                  at: new Date(),
-                  transactionId,
-                  loanId: createdLoan.loanId
-                }
-              }
-            }
-          );
-        }
-      } catch (transactionError) {
-        console.error('Transaction creation error for loan:', transactionError);
-        // Continue even if transaction creation fails - loan is already created
-      }
-    }
-
-    res.status(201).json({
-      success: true,
-      message: "Loan has been successfully given",
-      loan: {
-        loanId: createdLoan.loanId,
-        fullName: createdLoan.fullName,
-        loanDirection: createdLoan.loanDirection,
-        loanType: createdLoan.loanType,
-        amount: createdLoan.amount,
-        status: createdLoan.status,
-        remainingAmount: createdLoan.remainingAmount,
-        branchId: createdLoan.branchId,
-        createdAt: createdLoan.createdAt
-      },
-      transactionId: transactionCreated || null
-    });
-
+    await loans.insertOne(loanDoc);
+    return res.status(201).json({ success: true, id: loanId, loan: loanDoc });
   } catch (error) {
-    console.error('Loan giving error:', error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error while giving loan",
-      error: error.message
-    });
+    console.error('Create giving loan error:', error);
+    return res.status(500).json({ error: true, message: 'Failed to create giving loan' });
   }
 });
 
-// ✅ POST: Create new loan receiving (loan application)
+// ✅ POST: Create Loan (Receiving) – stores in 'loans' collection and returns generated id
 app.post("/loans/receiving", async (req, res) => {
   try {
-    const {
-      // Personal Profile Information
-      fullName,
-      fatherName,
-      motherName,
-      dateOfBirth,
-      gender,
-      maritalStatus,
-      nidNumber,
-      nidFrontImage,
-      nidBackImage,
-      profilePhoto,
-      // Address Information
-      presentAddress,
-      permanentAddress,
-      district,
-      upazila,
-      postCode,
-      // Business Information
-      businessName,
-      businessType,
-      businessAddress,
-      businessRegistration,
-      businessExperience,
-      // Loan Details
-      loanType,
-      amount,
-      source,
-      purpose,
-      interestRate,
-      duration,
-      appliedDate,
-      // Contact Information
-      contactPerson,
-      contactPhone,
-      contactEmail,
-      emergencyContact,
-      emergencyPhone,
-      // Additional Information
-      notes,
-      status = 'Pending',
-      createdBy,
-      branchId
-    } = req.body;
-
-    // Validation
-    if (!fullName || !fatherName || !dateOfBirth || !gender || 
-        !nidNumber || !presentAddress || !district || !upazila ||
-        !loanType || !amount || !source || !purpose || !interestRate || 
-        !duration || !contactPhone || !profilePhoto || !nidFrontImage || !nidBackImage) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing required fields"
-      });
+    const body = req.body || {};
+    const firstName = (body.firstName || '').trim();
+    const lastName = (body.lastName || '').trim();
+    if (!firstName || !lastName) {
+      return res.status(400).json({ error: true, message: "firstName and lastName are required" });
     }
 
-    // Validate numeric fields
-    const numericAmount = parseFloat(amount);
-    const numericInterestRate = parseFloat(interestRate);
-    const numericDuration = parseInt(duration);
+    const loanDirection = 'receiving';
+    const loanId = await generateLoanId(db, loanDirection);
+    const fullName = `${firstName} ${lastName}`.trim();
 
-    if (isNaN(numericAmount) || numericAmount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Amount must be greater than 0"
-      });
-    }
-
-    if (isNaN(numericInterestRate) || numericInterestRate <= 0 || numericInterestRate > 100) {
-      return res.status(400).json({
-        success: false,
-        message: "Interest rate must be between 0 and 100"
-      });
-    }
-
-    if (isNaN(numericDuration) || numericDuration <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Duration must be greater than 0"
-      });
-    }
-
-    // Validate NID number format
-    const nidRegex = /^\d{10}$|^\d{13}$|^\d{17}$/;
-    if (!nidRegex.test(nidNumber.replace(/\s/g, ''))) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid NID number format"
-      });
-    }
-
-    // Validate phone number format
-    const phoneRegex = /^01[3-9]\d{8}$/;
-    if (!phoneRegex.test(contactPhone)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid phone number format"
-      });
-    }
-
-    // Validate email if provided
-    if (contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid email format"
-      });
-    }
-
-    // Get branch information
-    const branch = await branches.findOne({ branchId: branchId || 'main', isActive: true });
-    if (!branch) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid branch ID"
-      });
-    }
-
-    // Generate unique loan ID
-    const loanId = await generateLoanId(db, branch.branchCode, 'receiving');
-
-    // Create loan document
-    const newLoan = {
+    const loanDoc = {
       loanId,
-      loanDirection: 'receiving', // This is a loan receiving/application
-      // Personal Profile Information
-      fullName: fullName.trim(),
-      fatherName: fatherName.trim(),
-      motherName: motherName ? motherName.trim() : null,
-      dateOfBirth: new Date(dateOfBirth),
-      gender,
-      maritalStatus: maritalStatus || null,
-      nidNumber: nidNumber.trim().replace(/\s/g, ''),
-      nidFrontImage: nidFrontImage || null,
-      nidBackImage: nidBackImage || null,
-      profilePhoto: profilePhoto || null,
-      // Address Information
-      presentAddress: presentAddress.trim(),
-      permanentAddress: permanentAddress || null,
-      district: district.trim(),
-      upazila: upazila.trim(),
-      postCode: postCode || null,
-      // Business Information
-      businessName: businessName || null,
-      businessType: businessType || null,
-      businessAddress: businessAddress || null,
-      businessRegistration: businessRegistration || null,
-      businessExperience: businessExperience || null,
-      // Loan Details
-      loanType: loanType.trim(),
-      amount: numericAmount,
-      source: source.trim(),
-      purpose: purpose.trim(),
-      interestRate: numericInterestRate,
-      duration: numericDuration,
-      appliedDate: new Date(appliedDate || new Date()),
-      // Contact Information
-      contactPerson: contactPerson || null,
-      contactPhone: contactPhone.trim(),
-      contactEmail: contactEmail || null,
-      emergencyContact: emergencyContact || null,
-      emergencyPhone: emergencyPhone || null,
-      // Additional Information
-      notes: notes || null,
-      // Status and tracking
-      status: status, // Pending by default for loan applications
-      remainingAmount: numericAmount, // Initially equal to loan amount
-      // Metadata
-      createdBy: createdBy || 'unknown_user',
-      branchId: branch.branchId,
-      branchName: branch.branchName,
-      branchCode: branch.branchCode,
+      loanDirection, // 'receiving'
+      status: 'Pending',
+
+      // Personal
+      firstName,
+      lastName,
+      fullName,
+      fatherName: body.fatherName || '',
+      motherName: body.motherName || '',
+      dateOfBirth: body.dateOfBirth || '',
+      gender: body.gender || '',
+      maritalStatus: body.maritalStatus || '',
+      nidNumber: body.nidNumber || '',
+      nidFrontImage: body.nidFrontImage || '',
+      nidBackImage: body.nidBackImage || '',
+      profilePhoto: body.profilePhoto || '',
+
+      // Address
+      presentAddress: body.presentAddress || '',
+      permanentAddress: body.permanentAddress || '',
+      district: body.district || '',
+      upazila: body.upazila || '',
+      postCode: body.postCode || '',
+
+      // Business (optional; provided by receiving form)
+      businessName: body.businessName || '',
+      businessType: body.businessType || '',
+      businessAddress: body.businessAddress || '',
+      businessRegistration: body.businessRegistration || '',
+      businessExperience: body.businessExperience || '',
+
+      // Contacts
+      contactPerson: body.contactPerson || '',
+      contactPhone: body.contactPhone || '',
+      contactEmail: body.contactEmail || '',
+      emergencyContact: body.emergencyContact || '',
+      emergencyPhone: body.emergencyPhone || '',
+
+      // Notes
+      notes: body.notes || '',
+
+      // Meta
+      isActive: true,
       createdAt: new Date(),
       updatedAt: new Date(),
-      isActive: true
+      createdBy: body.createdBy || 'unknown_user',
+      branchId: body.branchId || 'main_branch'
     };
 
-    // Insert loan into database
-    const result = await loans.insertOne(newLoan);
+    await loans.insertOne(loanDoc);
+    return res.status(201).json({ success: true, id: loanId, loan: loanDoc });
+  } catch (error) {
+    console.error('Create receiving loan error:', error);
+    return res.status(500).json({ error: true, message: 'Failed to create receiving loan' });
+  }
+});
 
-    if (!result.insertedId) {
-      return res.status(500).json({
-        success: false,
-        message: "Failed to create loan application"
-      });
+// ✅ GET: List Loans (optional filters: loanDirection, status)
+app.get("/loans", async (req, res) => {
+  try {
+    const { loanDirection, status } = req.query || {};
+    const filter = { isActive: { $ne: false } };
+    if (loanDirection && typeof loanDirection === 'string') {
+      filter.loanDirection = loanDirection.toLowerCase();
+    }
+    if (status && typeof status === 'string') {
+      filter.status = status;
     }
 
-    // Get the created loan
-    const createdLoan = await loans.findOne({ _id: result.insertedId });
+    const results = await loans
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .toArray();
 
-    // Create transaction for loan receiving if status is 'Active' (approved)
-    // Note: Frontend should provide targetAccountId if loan is being approved directly
-    let transactionCreated = null;
-    const targetAccountId = req.body.targetAccountId; // Account where money will be credited
-    
-    // If loan is approved (status = 'Active') and targetAccountId is provided
-    if (status === 'Active' && targetAccountId) {
+    return res.json({ success: true, loans: results });
+  } catch (error) {
+    console.error('List loans error:', error);
+    return res.status(500).json({ error: true, message: 'Failed to fetch loans' });
+  }
+});
+
+// ✅ GET: Single Loan by loanId
+app.get("/loans/:loanId", async (req, res) => {
+  try {
+    const { loanId } = req.params;
+    const loan = await loans.findOne({ loanId, isActive: { $ne: false } });
+    if (!loan) {
+      return res.status(404).json({ error: true, message: 'Loan not found' });
+    }
+
+    // Compute up-to-date amounts
+    let totalAmount = Number(loan.totalAmount || 0) || 0;
+    let paidAmount = Number(loan.paidAmount || 0) || 0;
+    let totalDue = Number(loan.totalDue || 0) || 0;
+
+    // If amounts are missing, derive from transactions
+    if (totalAmount === 0 && paidAmount === 0 && totalDue === 0) {
       try {
-        // Generate transaction ID
-        const transactionId = await generateTransactionId(db, branch.branchCode);
-
-        // Create transaction record for loan receiving
-        const transactionData = {
-          transactionId,
-          transactionType: 'credit', // Money coming in (আমাদের account এ money আসছে)
-          serviceCategory: 'Loan Receiving',
-          partyType: 'loan', // New party type for loans
-          partyId: result.insertedId.toString(),
-          partyName: createdLoan.fullName,
-          partyPhone: createdLoan.contactPhone,
-          partyEmail: createdLoan.contactEmail || null,
-          invoiceId: createdLoan.loanId, // Use loanId as reference
-          paymentMethod: 'bank-transfer',
-          targetAccountId: targetAccountId,
-          accountManagerId: null,
-          debitAccount: null,
-          creditAccount: { id: targetAccountId },
-          paymentDetails: {
-            amount: numericAmount,
-            reference: createdLoan.loanId,
-            loanId: createdLoan.loanId,
-            loanType: createdLoan.loanType
+        const partyIdOptions = [String(loan.loanId)].filter(Boolean);
+        if (loan._id) partyIdOptions.push(String(loan._id));
+        const agg = await transactions.aggregate([
+          {
+            $match: {
+              isActive: { $ne: false },
+              status: 'completed',
+              partyType: 'loan',
+              partyId: { $in: partyIdOptions }
+            }
           },
-          amount: numericAmount,
-          branchId: branch.branchId,
-          branchName: branch.branchName,
-          branchCode: branch.branchCode,
-          createdBy: createdBy || 'unknown_user',
-          notes: `Loan Received: ${createdLoan.loanType} - ${notes || 'No additional notes'}`,
-          reference: createdLoan.loanId,
-          employeeReference: null,
-          status: 'completed',
-          date: new Date(appliedDate || new Date()),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          isActive: true,
-          loanId: createdLoan.loanId, // Link to loan document
-          loanDirection: 'receiving'
-        };
-
-        // Insert transaction
-        await transactions.insertOne(transactionData);
-        transactionCreated = transactionId;
-
-        // Update bank account balance (credit)
-        const account = await bankAccounts.findOne({ _id: new ObjectId(targetAccountId) });
-        if (account) {
-          const newBalance = (account.currentBalance || 0) + numericAmount;
-          await bankAccounts.updateOne(
-            { _id: new ObjectId(targetAccountId) },
-            {
-              $set: { currentBalance: newBalance, updatedAt: new Date() },
-              $push: {
-                balanceHistory: {
-                  amount: numericAmount,
-                  type: 'deposit',
-                  note: `Loan Received: ${createdLoan.loanId} - ${createdLoan.fullName}`,
-                  at: new Date(),
-                  transactionId,
-                  loanId: createdLoan.loanId
+          {
+            $group: {
+              _id: null,
+              sumDebit: {
+                $sum: {
+                  $cond: [{ $eq: ["$transactionType", 'debit'] }, "$amount", 0]
+                }
+              },
+              sumCredit: {
+                $sum: {
+                  $cond: [{ $eq: ["$transactionType", 'credit'] }, "$amount", 0]
                 }
               }
             }
-          );
-        }
-      } catch (transactionError) {
-        console.error('Transaction creation error for loan receiving:', transactionError);
-        // Continue even if transaction creation fails - loan is already created
-      }
-    }
-
-    res.status(201).json({
-      success: true,
-      message: status === 'Active' 
-        ? "Loan has been received successfully" 
-        : "Loan application has been submitted successfully",
-      loan: {
-        loanId: createdLoan.loanId,
-        fullName: createdLoan.fullName,
-        loanDirection: createdLoan.loanDirection,
-        loanType: createdLoan.loanType,
-        amount: createdLoan.amount,
-        status: createdLoan.status,
-        remainingAmount: createdLoan.remainingAmount,
-        branchId: createdLoan.branchId,
-        createdAt: createdLoan.createdAt
-      },
-      transactionId: transactionCreated || null,
-      note: status === 'Pending' 
-        ? "Transaction will be created when loan is approved" 
-        : null
-    });
-
-  } catch (error) {
-    console.error('Loan application error:', error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error while submitting loan application",
-      error: error.message
-    });
-  }
-});
-
-// ✅ GET: Get all loans with filters
-app.get("/loans", async (req, res) => {
-  try {
-    const {
-      loanDirection, // 'giving' or 'receiving'
-      status,
-      branchId,
-      dateFrom,
-      dateTo,
-      search,
-      page = 1,
-      limit = 20
-    } = req.query;
-
-    let filter = { isActive: true };
-
-    // Apply filters
-    if (loanDirection) {
-      filter.loanDirection = loanDirection;
-    }
-    if (status) {
-      filter.status = status;
-    }
-    if (branchId) {
-      filter.branchId = branchId;
-    }
-
-    // Date range filter
-    if (dateFrom || dateTo) {
-      filter.createdAt = {};
-      if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
-      if (dateTo) {
-        const endDate = new Date(dateTo);
-        endDate.setHours(23, 59, 59, 999);
-        filter.createdAt.$lte = endDate;
-      }
-    }
-
-    // Search filter
-    if (search) {
-      filter.$or = [
-        { loanId: { $regex: search, $options: 'i' } },
-        { fullName: { $regex: search, $options: 'i' } },
-        { nidNumber: { $regex: search, $options: 'i' } },
-        { contactPhone: { $regex: search, $options: 'i' } },
-        { loanType: { $regex: search, $options: 'i' } },
-        { businessName: { $regex: search, $options: 'i' } }
-      ];
-    }
-
-    // Calculate pagination
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-
-    // Get total count
-    const totalCount = await loans.countDocuments(filter);
-
-    // Get loans with pagination
-    const allLoans = await loans.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .toArray();
-
-    // Optionally add transaction count for each loan (if needed)
-    // This can be slow for large lists, so make it optional
-    const includeTransactionCount = req.query.includeTransactionCount === 'true';
-
-    if (includeTransactionCount) {
-      // Add transaction count for each loan
-      const loansWithTransactionCount = await Promise.all(
-        allLoans.map(async (loan) => {
-          try {
-            const txCount = await transactions.countDocuments({
-              loanId: loan.loanId,
-              isActive: true
-            });
-            return {
-              ...loan,
-              transactionCount: txCount
-            };
-          } catch (error) {
-            return {
-              ...loan,
-              transactionCount: 0
-            };
           }
-        })
-      );
-
-      return res.json({
-        success: true,
-        count: loansWithTransactionCount.length,
-        totalCount,
-        currentPage: parseInt(page),
-        totalPages: Math.ceil(totalCount / parseInt(limit)),
-        loans: loansWithTransactionCount
-      });
-    }
-
-    res.json({
-      success: true,
-      count: allLoans.length,
-      totalCount,
-      currentPage: parseInt(page),
-      totalPages: Math.ceil(totalCount / parseInt(limit)),
-      loans: allLoans,
-      note: "Add ?includeTransactionCount=true to include transaction count for each loan"
-    });
-
-  } catch (error) {
-    console.error('Get loans error:', error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error while fetching loans",
-      error: error.message
-    });
-  }
-});
-
-// ✅ GET: Get loan by ID
-app.get("/loans/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // Try to find by loanId first
-    let loan = await loans.findOne({
-      loanId: id,
-      isActive: true
-    });
-
-    // If not found by loanId, try by MongoDB ObjectId
-    if (!loan && ObjectId.isValid(id)) {
-      loan = await loans.findOne({
-        _id: new ObjectId(id),
-        isActive: true
-      });
-    }
-
-    if (!loan) {
-      return res.status(404).json({
-        success: false,
-        message: "Loan not found"
-      });
-    }
-
-    // Get related transactions for this loan
-    let relatedTransactions = [];
-    let transactionCount = 0;
-    let totalPaid = 0;
-    let totalReceived = 0;
-
-    try {
-      // Fetch transactions related to this loan
-      const transactionsList = await transactions.find({
-        loanId: loan.loanId,
-        isActive: true
-      })
-      .sort({ createdAt: -1 })
-      .limit(50) // Limit to recent 50 transactions
-      .toArray();
-
-      relatedTransactions = transactionsList;
-      transactionCount = transactionsList.length;
-
-      // Calculate totals
-      transactionsList.forEach(tx => {
-        if (tx.transactionType === 'credit') {
-          totalReceived += parseFloat(tx.amount || 0);
-        } else if (tx.transactionType === 'debit') {
-          totalPaid += parseFloat(tx.amount || 0);
+        ]).toArray();
+        const rec = agg && agg[0];
+        if (rec) {
+          totalAmount = Number(rec.sumDebit || 0);
+          paidAmount = Number(rec.sumCredit || 0);
         }
-      });
-    } catch (transactionError) {
-      console.error('Error fetching loan transactions:', transactionError);
-      // Continue without transaction data
+      } catch (_) {}
     }
 
-    // Prepare response with loan and transaction summary
-    res.json({
+    // Clamp and compute due
+    if (!Number.isFinite(totalAmount) || totalAmount < 0) totalAmount = 0;
+    if (!Number.isFinite(paidAmount) || paidAmount < 0) paidAmount = 0;
+    if (paidAmount > totalAmount) paidAmount = totalAmount;
+    totalDue = Math.max(0, totalAmount - paidAmount);
+
+    return res.json({
       success: true,
-      loan: loan,
-      transactionSummary: {
-        count: transactionCount,
-        totalPaid: totalPaid,
-        totalReceived: totalReceived,
-        transactions: relatedTransactions // Include transaction list
+      loan: {
+        ...loan,
+        totalAmount,
+        paidAmount,
+        totalDue
       }
     });
-
   } catch (error) {
     console.error('Get loan error:', error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error while fetching loan",
-      error: error.message
-    });
+    return res.status(500).json({ error: true, message: 'Failed to fetch loan' });
   }
 });
 
-// ✅ POST: Record loan payment/installment (কিস্তি)
-app.post("/loans/:loanId/payment", async (req, res) => {
+// ✅ PUT: Update Loan by loanId (or _id)
+app.put("/loans/:loanId", async (req, res) => {
   try {
     const { loanId } = req.params;
-    const {
-      amount,
-      paymentDate,
-      paymentMethod = 'bank-transfer',
-      targetAccountId, // কোন account এ money credit হবে
-      notes,
-      createdBy,
-      branchId
-    } = req.body;
+    const body = req.body || {};
 
-    // Validation
-    if (!amount || !targetAccountId) {
-      return res.status(400).json({
-        success: false,
-        message: "Amount and targetAccountId are required"
-      });
+    const condition = ObjectId.isValid(loanId)
+      ? { $or: [{ loanId: String(loanId) }, { _id: new ObjectId(loanId) }], isActive: { $ne: false } }
+      : { loanId: String(loanId), isActive: { $ne: false } };
+
+    const existing = await loans.findOne(condition);
+    if (!existing) {
+      return res.status(404).json({ error: true, message: "Loan not found" });
     }
 
-    const numericAmount = parseFloat(amount);
-    if (isNaN(numericAmount) || numericAmount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Amount must be greater than 0"
-      });
+    const allowedString = (v) => (v === undefined || v === null) ? undefined : String(v).trim();
+
+    const update = { $set: { updatedAt: new Date() } };
+
+    // Personal
+    const firstName = allowedString(body.firstName);
+    const lastName = allowedString(body.lastName);
+    if (firstName !== undefined) update.$set.firstName = firstName;
+    if (lastName !== undefined) update.$set.lastName = lastName;
+    // fullName derived if any name changed
+    if (firstName !== undefined || lastName !== undefined) {
+      const fn = firstName !== undefined ? firstName : existing.firstName || '';
+      const ln = lastName !== undefined ? lastName : existing.lastName || '';
+      update.$set.fullName = `${fn || ''} ${ln || ''}`.trim();
+    }
+    const fields = [
+      'fatherName','motherName','dateOfBirth','gender','maritalStatus','nidNumber',
+      'nidFrontImage','nidBackImage','profilePhoto',
+      'presentAddress','permanentAddress','district','upazila','postCode',
+      'contactPerson','contactPhone','contactEmail','emergencyContact','emergencyPhone',
+      'notes',
+      // Receiving/business fields
+      'businessName','businessType','businessAddress','businessRegistration','businessExperience',
+      // Meta edits
+      'status','branchId','createdBy'
+    ];
+    for (const key of fields) {
+      const val = allowedString(body[key]);
+      if (val !== undefined) update.$set[key] = val;
     }
 
-    // Find loan by loanId or MongoDB ObjectId
-    let loan = await loans.findOne({
-      loanId: loanId,
-      isActive: true
-    });
-
-    if (!loan && ObjectId.isValid(loanId)) {
-      loan = await loans.findOne({
-        _id: new ObjectId(loanId),
-        isActive: true
-      });
+    // Optional: isActive boolean toggle
+    if (typeof body.isActive === 'boolean') {
+      update.$set.isActive = body.isActive;
     }
 
-    if (!loan) {
-      return res.status(404).json({
-        success: false,
-        message: "Loan not found"
-      });
-    }
-
-    // Check if loan is giving type (borrower payment)
-    if (loan.loanDirection !== 'giving') {
-      return res.status(400).json({
-        success: false,
-        message: "This endpoint is only for loan giving (borrower payment). Use /loans/:loanId/repayment for loan receiving repayment."
-      });
-    }
-
-    // Check if loan is active
-    if (loan.status !== 'Active') {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot process payment for loan with status: ${loan.status}`
-      });
-    }
-
-    // Check if payment amount exceeds remaining amount
-    const currentRemaining = parseFloat(loan.remainingAmount || loan.amount || 0);
-    if (numericAmount > currentRemaining) {
-      return res.status(400).json({
-        success: false,
-        message: `Payment amount (${numericAmount}) exceeds remaining amount (${currentRemaining})`
-      });
-    }
-
-    // Get branch information
-    const branch = await branches.findOne({ branchId: branchId || loan.branchId || 'main', isActive: true });
-    if (!branch) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid branch ID"
-      });
-    }
-
-    // Calculate new remaining amount
-    const newRemainingAmount = currentRemaining - numericAmount;
-    const isFullyPaid = newRemainingAmount <= 0;
-
-    // Generate transaction ID
-    const transactionId = await generateTransactionId(db, branch.branchCode);
-
-    // Create transaction record for loan payment (CREDIT - money coming in)
-    const transactionData = {
-      transactionId,
-      transactionType: 'credit', // Money coming in (আমাদের account এ money আসছে)
-      serviceCategory: 'Loan Payment',
-      partyType: 'loan',
-      partyId: loan._id.toString(),
-      partyName: loan.fullName,
-      partyPhone: loan.contactPhone,
-      partyEmail: loan.contactEmail || null,
-      invoiceId: loan.loanId,
-      paymentMethod: paymentMethod,
-      targetAccountId: targetAccountId,
-      accountManagerId: null,
-      debitAccount: null,
-      creditAccount: { id: targetAccountId },
-      paymentDetails: {
-        amount: numericAmount,
-        reference: loan.loanId,
-        loanId: loan.loanId,
-        loanType: loan.loanType,
-        paymentType: 'installment'
-      },
-      amount: numericAmount,
-      branchId: branch.branchId,
-      branchName: branch.branchName,
-      branchCode: branch.branchCode,
-      createdBy: createdBy || 'unknown_user',
-      notes: `Loan Payment/Installment: ${loan.loanType} - ${notes || 'No additional notes'}`,
-      reference: loan.loanId,
-      employeeReference: null,
-      status: 'completed',
-      date: new Date(paymentDate || new Date()),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      isActive: true,
-      loanId: loan.loanId,
-      loanDirection: loan.loanDirection
-    };
-
-    // Start transaction session for atomic updates
-    const session = db.client.startSession();
-    session.startTransaction();
-
-    try {
-      // 1. Insert transaction
-      await transactions.insertOne(transactionData, { session });
-
-      // 2. Update loan (remaining amount and status if fully paid)
-      const loanUpdate = {
-        remainingAmount: isFullyPaid ? 0 : newRemainingAmount,
-        updatedAt: new Date()
-      };
-
-      if (isFullyPaid) {
-        loanUpdate.status = 'Closed';
-        loanUpdate.closedDate = new Date();
-      }
-
-      await loans.updateOne(
-        { _id: loan._id },
-        { $set: loanUpdate },
-        { session }
-      );
-
-      // 3. Update bank account balance (credit)
-      const account = await bankAccounts.findOne({ _id: new ObjectId(targetAccountId) }, { session });
-      if (!account) {
-        throw new Error('Bank account not found');
-      }
-
-      const newBalance = (account.currentBalance || 0) + numericAmount;
-      await bankAccounts.updateOne(
-        { _id: new ObjectId(targetAccountId) },
-        {
-          $set: { currentBalance: newBalance, updatedAt: new Date() },
-          $push: {
-            balanceHistory: {
-              amount: numericAmount,
-              type: 'deposit',
-              note: `Loan Payment: ${loan.loanId} - ${loan.fullName}${isFullyPaid ? ' (Fully Paid)' : ''}`,
-              at: new Date(),
-              transactionId,
-              loanId: loan.loanId
-            }
-          }
-        },
-        { session }
-      );
-
-      // Commit transaction
-      await session.commitTransaction();
-
-      // Get updated loan
-      const updatedLoan = await loans.findOne({ _id: loan._id });
-
-      res.status(200).json({
-        success: true,
-        message: isFullyPaid 
-          ? "Loan payment recorded successfully. Loan is now fully paid." 
-          : "Loan payment/installment recorded successfully",
-        payment: {
-          transactionId,
-          loanId: loan.loanId,
-          amount: numericAmount,
-          remainingAmount: isFullyPaid ? 0 : newRemainingAmount,
-          isFullyPaid,
-          paymentDate: new Date(paymentDate || new Date())
-        },
-        loan: {
-          loanId: updatedLoan.loanId,
-          status: updatedLoan.status,
-          remainingAmount: updatedLoan.remainingAmount,
-          amount: updatedLoan.amount
-        }
-      });
-
-    } catch (transactionError) {
-      // Rollback transaction
-      await session.abortTransaction();
-      throw transactionError;
-    } finally {
-      await session.endSession();
-    }
-
-  } catch (error) {
-    console.error('Loan payment error:', error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error while recording loan payment",
-      error: error.message
-    });
-  }
-});
-
-// ✅ PATCH: Approve loan receiving application
-app.patch("/loans/:loanId/approve", async (req, res) => {
-  try {
-    const { loanId } = req.params;
-    const {
-      targetAccountId, // কোন account এ money credit হবে
-      approvedBy,
-      notes
-    } = req.body;
-
-    // Validation
-    if (!targetAccountId) {
-      return res.status(400).json({
-        success: false,
-        message: "targetAccountId is required"
-      });
-    }
-
-    // Find loan by loanId or MongoDB ObjectId
-    let loan = await loans.findOne({
-      loanId: loanId,
-      isActive: true
-    });
-
-    if (!loan && ObjectId.isValid(loanId)) {
-      loan = await loans.findOne({
-        _id: new ObjectId(loanId),
-        isActive: true
-      });
-    }
-
-    if (!loan) {
-      return res.status(404).json({
-        success: false,
-        message: "Loan not found"
-      });
-    }
-
-    // Check if loan is receiving type
-    if (loan.loanDirection !== 'receiving') {
-      return res.status(400).json({
-        success: false,
-        message: "This endpoint is only for loan receiving applications"
-      });
-    }
-
-    // Check if loan is already approved
-    if (loan.status === 'Active') {
-      return res.status(400).json({
-        success: false,
-        message: "Loan is already approved"
-      });
-    }
-
-    // Check if loan is in Pending status
-    if (loan.status !== 'Pending') {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot approve loan with status: ${loan.status}`
-      });
-    }
-
-    // Get branch information
-    const branch = await branches.findOne({ 
-      branchId: loan.branchId || 'main', 
-      isActive: true 
-    });
-    if (!branch) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid branch ID"
-      });
-    }
-
-    // Validate bank account exists
-    const account = await bankAccounts.findOne({ 
-      _id: new ObjectId(targetAccountId),
-      isDeleted: { $ne: true }
-    });
-    if (!account) {
-      return res.status(404).json({
-        success: false,
-        message: "Bank account not found"
-      });
-    }
-
-    const numericAmount = parseFloat(loan.amount || 0);
-
-    // Generate transaction ID
-    const transactionId = await generateTransactionId(db, branch.branchCode);
-
-    // Create transaction record for loan approval (CREDIT - money coming in)
-    const transactionData = {
-      transactionId,
-      transactionType: 'credit', // Money coming in (আমাদের account এ money আসছে)
-      serviceCategory: 'Loan Receiving',
-      partyType: 'loan',
-      partyId: loan._id.toString(),
-      partyName: loan.fullName,
-      partyPhone: loan.contactPhone,
-      partyEmail: loan.contactEmail || null,
-      invoiceId: loan.loanId,
-      paymentMethod: 'bank-transfer',
-      targetAccountId: targetAccountId,
-      accountManagerId: null,
-      debitAccount: null,
-      creditAccount: { id: targetAccountId },
-      paymentDetails: {
-        amount: numericAmount,
-        reference: loan.loanId,
-        loanId: loan.loanId,
-        loanType: loan.loanType
-      },
-      amount: numericAmount,
-      branchId: branch.branchId,
-      branchName: branch.branchName,
-      branchCode: branch.branchCode,
-      createdBy: approvedBy || 'unknown_user',
-      notes: `Loan Approved: ${loan.loanType} - ${notes || 'No additional notes'}`,
-      reference: loan.loanId,
-      employeeReference: null,
-      status: 'completed',
-      date: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      isActive: true,
-      loanId: loan.loanId,
-      loanDirection: 'receiving'
-    };
-
-    // Start transaction session for atomic updates
-    const session = db.client.startSession();
-    session.startTransaction();
-
-    try {
-      // 1. Insert transaction
-      await transactions.insertOne(transactionData, { session });
-
-      // 2. Update loan status to Active
-      await loans.updateOne(
-        { _id: loan._id },
-        {
-          $set: {
-            status: 'Active',
-            approvedBy: approvedBy || null,
-            approvalDate: new Date(),
-            updatedAt: new Date()
-          }
-        },
-        { session }
-      );
-
-      // 3. Update bank account balance (credit)
-      const newBalance = (account.currentBalance || 0) + numericAmount;
-      await bankAccounts.updateOne(
-        { _id: new ObjectId(targetAccountId) },
-        {
-          $set: { currentBalance: newBalance, updatedAt: new Date() },
-          $push: {
-            balanceHistory: {
-              amount: numericAmount,
-              type: 'deposit',
-              note: `Loan Approved: ${loan.loanId} - ${loan.fullName}`,
-              at: new Date(),
-              transactionId,
-              loanId: loan.loanId
-            }
-          }
-        },
-        { session }
-      );
-
-      // Commit transaction
-      await session.commitTransaction();
-
-      // Get updated loan
-      const updatedLoan = await loans.findOne({ _id: loan._id });
-
-      res.status(200).json({
-        success: true,
-        message: "Loan approved successfully",
-        loan: {
-          loanId: updatedLoan.loanId,
-          status: updatedLoan.status,
-          approvedBy: updatedLoan.approvedBy,
-          approvalDate: updatedLoan.approvalDate
-        },
-        transactionId
-      });
-
-    } catch (transactionError) {
-      // Rollback transaction
-      await session.abortTransaction();
-      throw transactionError;
-    } finally {
-      await session.endSession();
-    }
-
-  } catch (error) {
-    console.error('Loan approval error:', error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error while approving loan",
-      error: error.message
-    });
-  }
-});
-
-// ✅ POST: Record loan repayment (Loan Receiving এর জন্য)
-app.post("/loans/:loanId/repayment", async (req, res) => {
-  try {
-    const { loanId } = req.params;
-    const {
-      amount,
-      repaymentDate,
-      paymentMethod = 'bank-transfer',
-      sourceAccountId, // কোন account থেকে money debit হবে
-      notes,
-      createdBy,
-      branchId
-    } = req.body;
-
-    // Validation
-    if (!amount || !sourceAccountId) {
-      return res.status(400).json({
-        success: false,
-        message: "Amount and sourceAccountId are required"
-      });
-    }
-
-    const numericAmount = parseFloat(amount);
-    if (isNaN(numericAmount) || numericAmount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Amount must be greater than 0"
-      });
-    }
-
-    // Find loan by loanId or MongoDB ObjectId
-    let loan = await loans.findOne({
-      loanId: loanId,
-      isActive: true
-    });
-
-    if (!loan && ObjectId.isValid(loanId)) {
-      loan = await loans.findOne({
-        _id: new ObjectId(loanId),
-        isActive: true
-      });
-    }
-
-    if (!loan) {
-      return res.status(404).json({
-        success: false,
-        message: "Loan not found"
-      });
-    }
-
-    // Check if loan is receiving type
-    if (loan.loanDirection !== 'receiving') {
-      return res.status(400).json({
-        success: false,
-        message: "This endpoint is only for loan receiving"
-      });
-    }
-
-    // Check if loan is active
-    if (loan.status !== 'Active') {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot process repayment for loan with status: ${loan.status}`
-      });
-    }
-
-    // Check if payment amount exceeds remaining amount
-    const currentRemaining = parseFloat(loan.remainingAmount || loan.amount || 0);
-    if (numericAmount > currentRemaining) {
-      return res.status(400).json({
-        success: false,
-        message: `Repayment amount (${numericAmount}) exceeds remaining amount (${currentRemaining})`
-      });
-    }
-
-    // Get branch information
-    const branch = await branches.findOne({ 
-      branchId: branchId || loan.branchId || 'main', 
-      isActive: true 
-    });
-    if (!branch) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid branch ID"
-      });
-    }
-
-    // Validate bank account exists and has sufficient balance
-    const account = await bankAccounts.findOne({ 
-      _id: new ObjectId(sourceAccountId),
-      isDeleted: { $ne: true }
-    });
-    if (!account) {
-      return res.status(404).json({
-        success: false,
-        message: "Bank account not found"
-      });
-    }
-
-    if (account.currentBalance < numericAmount) {
-      return res.status(400).json({
-        success: false,
-        message: "Insufficient balance in bank account"
-      });
-    }
-
-    // Calculate new remaining amount
-    const newRemainingAmount = currentRemaining - numericAmount;
-    const isFullyRepaid = newRemainingAmount <= 0;
-
-    // Generate transaction ID
-    const transactionId = await generateTransactionId(db, branch.branchCode);
-
-    // Create transaction record for loan repayment (DEBIT - money going out)
-    const transactionData = {
-      transactionId,
-      transactionType: 'debit', // Money going out (আমাদের account থেকে money বের হচ্ছে)
-      serviceCategory: 'Loan Repayment',
-      partyType: 'loan',
-      partyId: loan._id.toString(),
-      partyName: loan.fullName,
-      partyPhone: loan.contactPhone,
-      partyEmail: loan.contactEmail || null,
-      invoiceId: loan.loanId,
-      paymentMethod: paymentMethod,
-      targetAccountId: sourceAccountId,
-      accountManagerId: null,
-      debitAccount: { id: sourceAccountId },
-      creditAccount: null,
-      paymentDetails: {
-        amount: numericAmount,
-        reference: loan.loanId,
-        loanId: loan.loanId,
-        loanType: loan.loanType,
-        paymentType: 'repayment'
-      },
-      amount: numericAmount,
-      branchId: branch.branchId,
-      branchName: branch.branchName,
-      branchCode: branch.branchCode,
-      createdBy: createdBy || 'unknown_user',
-      notes: `Loan Repayment: ${loan.loanType} - ${notes || 'No additional notes'}`,
-      reference: loan.loanId,
-      employeeReference: null,
-      status: 'completed',
-      date: new Date(repaymentDate || new Date()),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      isActive: true,
-      loanId: loan.loanId,
-      loanDirection: 'receiving'
-    };
-
-    // Start transaction session for atomic updates
-    const session = db.client.startSession();
-    session.startTransaction();
-
-    try {
-      // 1. Insert transaction
-      await transactions.insertOne(transactionData, { session });
-
-      // 2. Update loan (remaining amount and status if fully repaid)
-      const loanUpdate = {
-        remainingAmount: isFullyRepaid ? 0 : newRemainingAmount,
-        updatedAt: new Date()
-      };
-
-      if (isFullyRepaid) {
-        loanUpdate.status = 'Closed';
-        loanUpdate.closedDate = new Date();
-      }
-
-      await loans.updateOne(
-        { _id: loan._id },
-        { $set: loanUpdate },
-        { session }
-      );
-
-      // 3. Update bank account balance (debit)
-      const newBalance = (account.currentBalance || 0) - numericAmount;
-      await bankAccounts.updateOne(
-        { _id: new ObjectId(sourceAccountId) },
-        {
-          $set: { currentBalance: newBalance, updatedAt: new Date() },
-          $push: {
-            balanceHistory: {
-              amount: numericAmount,
-              type: 'withdrawal',
-              note: `Loan Repayment: ${loan.loanId} - ${loan.fullName}${isFullyRepaid ? ' (Fully Repaid)' : ''}`,
-              at: new Date(),
-              transactionId,
-              loanId: loan.loanId
-            }
-          }
-        },
-        { session }
-      );
-
-      // Commit transaction
-      await session.commitTransaction();
-
-      // Get updated loan
-      const updatedLoan = await loans.findOne({ _id: loan._id });
-
-      res.status(200).json({
-        success: true,
-        message: isFullyRepaid 
-          ? "Loan repayment recorded successfully. Loan is now fully repaid." 
-          : "Loan repayment recorded successfully",
-        repayment: {
-          transactionId,
-          loanId: loan.loanId,
-          amount: numericAmount,
-          remainingAmount: isFullyRepaid ? 0 : newRemainingAmount,
-          isFullyRepaid,
-          repaymentDate: new Date(repaymentDate || new Date())
-        },
-        loan: {
-          loanId: updatedLoan.loanId,
-          status: updatedLoan.status,
-          remainingAmount: updatedLoan.remainingAmount,
-          amount: updatedLoan.amount
-        }
-      });
-
-    } catch (transactionError) {
-      // Rollback transaction
-      await session.abortTransaction();
-      throw transactionError;
-    } finally {
-      await session.endSession();
-    }
-
-  } catch (error) {
-    console.error('Loan repayment error:', error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error while recording loan repayment",
-      error: error.message
-    });
-  }
-});
-
-// ✅ PATCH: Update loan details
-app.patch("/loans/:loanId", async (req, res) => {
-  try {
-    const { loanId } = req.params;
-    const updateData = req.body;
-
-    // Find loan by loanId or MongoDB ObjectId
-    let loan = await loans.findOne({
-      loanId: loanId,
-      isActive: true
-    });
-
-    if (!loan && ObjectId.isValid(loanId)) {
-      loan = await loans.findOne({
-        _id: new ObjectId(loanId),
-        isActive: true
-      });
-    }
-
-    if (!loan) {
-      return res.status(404).json({
-        success: false,
-        message: "Loan not found"
-      });
-    }
-
-    // Don't allow updates if loan is closed
-    if (loan.status === 'Closed') {
-      return res.status(400).json({
-        success: false,
-        message: "Cannot update closed loan"
-      });
-    }
-
-    // Remove fields that shouldn't be updated
-    const restrictedFields = ['loanId', 'createdAt', '_id', 'loanDirection', 'amount', 'remainingAmount'];
-    restrictedFields.forEach(field => {
-      delete updateData[field];
-    });
-
-    // Validate numeric fields if being updated
-    if (updateData.interestRate !== undefined) {
-      const numericInterestRate = parseFloat(updateData.interestRate);
-      if (isNaN(numericInterestRate) || numericInterestRate <= 0 || numericInterestRate > 100) {
-        return res.status(400).json({
-          success: false,
-          message: "Interest rate must be between 0 and 100"
-        });
-      }
-      updateData.interestRate = numericInterestRate;
-    }
-
-    if (updateData.duration !== undefined) {
-      const numericDuration = parseInt(updateData.duration);
-      if (isNaN(numericDuration) || numericDuration <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Duration must be greater than 0"
-        });
-      }
-      updateData.duration = numericDuration;
-    }
-
-    // Add updatedAt timestamp
-    updateData.updatedAt = new Date();
-
-    // Update loan
-    const result = await loans.updateOne(
-      { _id: loan._id },
-      { $set: updateData }
+    const result = await loans.findOneAndUpdate(
+      { _id: existing._id },
+      update,
+      { returnDocument: 'after' }
     );
+    const updated = result && (result.value || result);
 
-    if (result.matchedCount === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Loan not found"
-      });
+    // Compute live totals similar to GET
+    let totalAmount = Number(updated.totalAmount || 0) || 0;
+    let paidAmount = Number(updated.paidAmount || 0) || 0;
+    let totalDue = Number(updated.totalDue || 0) || 0;
+
+    if (totalAmount === 0 && paidAmount === 0 && totalDue === 0) {
+      try {
+        const partyIdOptions = [String(updated.loanId)].filter(Boolean);
+        if (updated._id) partyIdOptions.push(String(updated._id));
+        const agg = await transactions.aggregate([
+          { $match: { isActive: { $ne: false }, status: 'completed', partyType: 'loan', partyId: { $in: partyIdOptions } } },
+          { $group: {
+              _id: null,
+              sumDebit: { $sum: { $cond: [{ $eq: ["$transactionType", 'debit'] }, "$amount", 0] } },
+              sumCredit:{ $sum: { $cond: [{ $eq: ["$transactionType", 'credit'] }, "$amount", 0] } }
+          } }
+        ]).toArray();
+        const rec = agg && agg[0];
+        if (rec) {
+          totalAmount = Number(rec.sumDebit || 0);
+          paidAmount = Number(rec.sumCredit || 0);
+        }
+      } catch (_) {}
     }
 
-    // Get updated loan
-    const updatedLoan = await loans.findOne({ _id: loan._id });
+    if (!Number.isFinite(totalAmount) || totalAmount < 0) totalAmount = 0;
+    if (!Number.isFinite(paidAmount) || paidAmount < 0) paidAmount = 0;
+    if (paidAmount > totalAmount) paidAmount = totalAmount;
+    totalDue = Math.max(0, totalAmount - paidAmount);
 
-    res.json({
-      success: true,
-      message: "Loan updated successfully",
-      loan: updatedLoan
-    });
-
+    return res.json({ success: true, message: "Loan updated successfully", loan: { ...updated, totalAmount, paidAmount, totalDue } });
   } catch (error) {
     console.error('Update loan error:', error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error while updating loan",
-      error: error.message
-    });
+    return res.status(500).json({ error: true, message: 'Failed to update loan' });
   }
 });
 
-// ✅ PATCH: Reject loan application
-app.patch("/loans/:loanId/reject", async (req, res) => {
-  try {
-    const { loanId } = req.params;
-    const {
-      rejectionReason,
-      rejectedBy,
-      notes
-    } = req.body;
 
-    // Find loan by loanId or MongoDB ObjectId
-    let loan = await loans.findOne({
-      loanId: loanId,
-      isActive: true
-    });
-
-    if (!loan && ObjectId.isValid(loanId)) {
-      loan = await loans.findOne({
-        _id: new ObjectId(loanId),
-        isActive: true
-      });
-    }
-
-    if (!loan) {
-      return res.status(404).json({
-        success: false,
-        message: "Loan not found"
-      });
-    }
-
-    // Check if loan is in Pending status
-    if (loan.status !== 'Pending') {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot reject loan with status: ${loan.status}. Only pending loans can be rejected.`
-      });
-    }
-
-    // Update loan status to Rejected
-    const result = await loans.updateOne(
-      { _id: loan._id },
-      {
-        $set: {
-          status: 'Rejected',
-          rejectionReason: rejectionReason || null,
-          rejectedBy: rejectedBy || null,
-          rejectionDate: new Date(),
-          updatedAt: new Date()
-        }
-      }
-    );
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Loan not found"
-      });
-    }
-
-    // Get updated loan
-    const updatedLoan = await loans.findOne({ _id: loan._id });
-
-    res.json({
-      success: true,
-      message: "Loan application rejected successfully",
-      loan: {
-        loanId: updatedLoan.loanId,
-        status: updatedLoan.status,
-        rejectionReason: updatedLoan.rejectionReason,
-        rejectedBy: updatedLoan.rejectedBy,
-        rejectionDate: updatedLoan.rejectionDate
-      }
-    });
-
-  } catch (error) {
-    console.error('Loan rejection error:', error);
-    res.status(500).json({
-      success: false,
-      message: "Internal server error while rejecting loan",
-      error: error.message
-    });
-  }
-});
 
 // ✅ GET: Vendor Analytics (Enhanced)
 app.get("/vendors/analytics", async (req, res) => {
