@@ -781,7 +781,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, services, sales, vendors, orders, bankAccounts, categories, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans;
+let db, users, branches, counters, customers, customerTypes, services, sales, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -801,6 +801,9 @@ async function initializeDatabase() {
     orders = db.collection("orders");
     bankAccounts = db.collection("bankAccounts");
     categories = db.collection("categories");
+    operatingExpenseCategories = db.collection("operatingExpenseCategories");
+    personalExpenseCategories = db.collection("personalExpenseCategories");
+    personalExpenseTransactions = db.collection("personalExpenseTransactions");
     agents = db.collection("agents");
     hrManagement = db.collection("hr_management");
     haji = db.collection("haji");
@@ -812,6 +815,15 @@ async function initializeDatabase() {
     accounts = db.collection("accounts");
     vendorBills = db.collection("vendorBills");
     loans = db.collection("loans");
+    // Miraj vai Section 
+    cattle = db.collection("cattle");
+    milkProductions = db.collection("milkProductions");
+    feedTypes = db.collection("feedTypes");
+    feedStocks = db.collection("feedStocks");
+    feedUsages = db.collection("feedUsages");
+    healthRecords = db.collection("healthRecords");
+    vaccinations = db.collection("vaccinations");
+    vetVisits = db.collection("vetVisits");
    
 
 
@@ -831,6 +843,33 @@ async function initializeDatabase() {
         // Loans collection indexes
         loans.createIndex({ loanId: 1 }, { unique: true, name: "loans_loanId_unique" }),
         loans.createIndex({ loanDirection: 1, status: 1, createdAt: -1 }, { name: "loans_direction_status_createdAt" }),
+        // Personal expense categories: unique name (case-insensitive)
+        personalExpenseCategories.createIndex(
+          { name: 1 },
+          { unique: true, name: "personalExpenseCategories_name_unique", collation: { locale: "en", strength: 2 } }
+        ),
+        // Personal expense transactions helpful indexes (debit only)
+        personalExpenseTransactions.createIndex({ date: 1 }, { name: "pet_date" }),
+        personalExpenseTransactions.createIndex({ categoryId: 1, date: -1 }, { name: "pet_category_date" }),
+        personalExpenseTransactions.createIndex({ createdAt: -1 }, { name: "pet_createdAt_desc" })
+        ,
+        // Cattle helpful indexes
+        cattle.createIndex({ createdAt: -1 }, { name: "cattle_createdAt_desc" }),
+        cattle.createIndex({ tagNumber: 1 }, { sparse: true, name: "cattle_tagNumber" }),
+        // Milk production indexes
+        milkProductions.createIndex({ cattleId: 1, date: -1 }, { name: "milk_cattleId_date_desc" }),
+        milkProductions.createIndex({ date: -1 }, { name: "milk_date_desc" }),
+        // Feed management indexes
+        feedTypes.createIndex({ name: 1 }, { unique: true, name: "feedTypes_name_unique", collation: { locale: "en", strength: 2 } }),
+        feedStocks.createIndex({ feedTypeId: 1, purchaseDate: -1 }, { name: "feedStocks_type_purchaseDate_desc" }),
+        feedStocks.createIndex({ expiryDate: 1 }, { name: "feedStocks_expiry" }),
+        feedUsages.createIndex({ feedTypeId: 1, date: -1 }, { name: "feedUsages_type_date_desc" }),
+        feedUsages.createIndex({ date: -1 }, { name: "feedUsages_date_desc" }),
+        // Health/Vaccinations/VetVisits indexes
+        healthRecords.createIndex({ cattleId: 1, date: -1 }, { name: "health_cattleId_date_desc" }),
+        vaccinations.createIndex({ cattleId: 1, date: -1 }, { name: "vacc_cattleId_date_desc" }),
+        vaccinations.createIndex({ nextDueDate: 1 }, { name: "vacc_nextDueDate" }),
+        vetVisits.createIndex({ cattleId: 1, date: -1 }, { name: "visit_cattleId_date_desc" })
       ]);
     } catch (e) {
       console.warn("⚠️ Index creation warning:", e.message);
@@ -2704,6 +2743,456 @@ app.get("/api/categories-summary", async (req, res) => {
   }
 });
 
+
+
+// ==================== OPERATING EXPENSE CATEGORIES (CRUD) ====================
+// Normalizer for operating expense category
+const normalizeOpExCategory = (doc) => ({
+  id: String(doc._id || doc.id || ""),
+  name: doc.name || "",
+  banglaName: doc.banglaName || "",
+  description: doc.description || "",
+  iconKey: doc.iconKey || "FileText",
+  color: doc.color || "",
+  bgColor: doc.bgColor || "",
+  iconColor: doc.iconColor || "",
+  totalAmount: Number(doc.totalAmount || 0),
+  lastUpdated: doc.lastUpdated || null,
+  itemCount: Number(doc.itemCount || 0),
+  subcategories: Array.isArray(doc.subcategories) ? doc.subcategories : []
+});
+
+// GET all operating expense categories
+app.get("/api/operating-expenses/categories", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    const list = await operatingExpenseCategories.find({}).toArray();
+    return res.json(list.map(normalizeOpExCategory));
+  } catch (err) {
+    console.error("GET /api/operating-expenses/categories error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load operating expense categories" });
+  }
+});
+
+// GET one operating expense category by id
+app.get("/api/operating-expenses/categories/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+    const doc = await operatingExpenseCategories.findOne({ _id: new ObjectId(id) });
+    if (!doc) return res.status(404).json({ error: true, message: "Category not found" });
+    return res.json(normalizeOpExCategory(doc));
+  } catch (err) {
+    console.error("GET /api/operating-expenses/categories/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load category" });
+  }
+});
+
+// CREATE operating expense category
+app.post("/api/operating-expenses/categories", async (req, res) => {
+  try {
+    const {
+      name,
+      banglaName = "",
+      description = "",
+      iconKey = "FileText",
+      color = "",
+      bgColor = "",
+      iconColor = "",
+      totalAmount = 0,
+      lastUpdated,
+      itemCount = 0,
+      subcategories = []
+    } = req.body || {};
+
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: true, message: "Name is required" });
+    }
+
+    // Prevent duplicate name (case-insensitive)
+    const existing = await operatingExpenseCategories.findOne({
+      name: { $regex: `^${String(name).trim().replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}$`, $options: "i" }
+    });
+    if (existing) {
+      return res.status(409).json({ error: true, message: "A category with this name already exists" });
+    }
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const doc = {
+      name: String(name).trim(),
+      banglaName: String(banglaName || ""),
+      description: String(description || ""),
+      iconKey: String(iconKey || "FileText"),
+      color: String(color || ""),
+      bgColor: String(bgColor || ""),
+      iconColor: String(iconColor || ""),
+      totalAmount: Number(totalAmount || 0),
+      lastUpdated: lastUpdated || todayStr,
+      itemCount: Number(itemCount || 0),
+      subcategories: Array.isArray(subcategories) ? subcategories : []
+    };
+
+    const result = await operatingExpenseCategories.insertOne(doc);
+    const created = await operatingExpenseCategories.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizeOpExCategory(created));
+  } catch (err) {
+    console.error("POST /api/operating-expenses/categories error:", err);
+    return res.status(500).json({ error: true, message: "Failed to create category" });
+  }
+});
+
+// UPDATE operating expense category
+app.put("/api/operating-expenses/categories/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+
+    const allowed = [
+      "name",
+      "banglaName",
+      "description",
+      "iconKey",
+      "color",
+      "bgColor",
+      "iconColor",
+      "totalAmount",
+      "lastUpdated",
+      "itemCount",
+      "subcategories"
+    ];
+    const updates = Object.fromEntries(
+      Object.entries(req.body || {}).filter(([k]) => allowed.includes(k))
+    );
+
+    if (typeof updates.name !== "undefined") {
+      const newName = String(updates.name).trim();
+      if (!newName) {
+        return res.status(400).json({ error: true, message: "Name cannot be empty" });
+      }
+      // Ensure uniqueness if name changed
+      const existing = await operatingExpenseCategories.findOne({
+        _id: { $ne: new ObjectId(id) },
+        name: { $regex: `^${newName.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}$`, $options: "i" }
+      });
+      if (existing) {
+        return res.status(409).json({ error: true, message: "A category with this name already exists" });
+      }
+      updates.name = newName;
+    }
+
+    if (typeof updates.totalAmount !== "undefined") {
+      updates.totalAmount = Number(updates.totalAmount || 0);
+    }
+    if (typeof updates.itemCount !== "undefined") {
+      updates.itemCount = Number(updates.itemCount || 0);
+    }
+    if (typeof updates.subcategories !== "undefined" && !Array.isArray(updates.subcategories)) {
+      updates.subcategories = [];
+    }
+
+    // Auto-update lastUpdated to today if not explicitly provided
+    if (typeof updates.lastUpdated === "undefined") {
+      updates.lastUpdated = new Date().toISOString().slice(0, 10);
+    }
+
+    const result = await operatingExpenseCategories.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: updates },
+      { returnDocument: "after" }
+    );
+    const updatedDoc = result && (result.value || result);
+    if (!updatedDoc) return res.status(404).json({ error: true, message: "Category not found" });
+    return res.json(normalizeOpExCategory(updatedDoc));
+  } catch (err) {
+    console.error("PUT /api/operating-expenses/categories/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to update category" });
+  }
+});
+
+// DELETE operating expense category
+app.delete("/api/operating-expenses/categories/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+    const result = await operatingExpenseCategories.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: true, message: "Category not found" });
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /api/operating-expenses/categories/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete category" });
+  }
+});
+
+
+
+// ==================== PERSONAL EXPENSE CATEGORIES (CRUD) ====================
+// Normalizer for personal expense category
+const normalizePersonalCategory = (doc) => ({
+  id: String(doc._id || doc.id || ""),
+  name: doc.name || "",
+  icon: doc.icon || "DollarSign",
+  description: doc.description || "",
+  totalAmount: Number(doc.totalAmount || 0),
+  lastUpdated: doc.lastUpdated || null,
+  createdAt: doc.createdAt || null
+});
+
+// GET all personal expense categories
+app.get("/api/personal-expenses/categories", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    const list = await personalExpenseCategories.find({}).sort({ name: 1 }).toArray();
+
+    // Compute live totals from main transactions collection
+    const idStrings = list.map((c) => String(c._id));
+    const sums = await transactions.aggregate([
+      { $match: { scope: "personal-expense", type: "expense", categoryId: { $in: idStrings } } },
+      { $group: { _id: "$categoryId", total: { $sum: "$amount" }, last: { $max: "$date" } } }
+    ]).toArray();
+    const aggMap = Object.fromEntries(sums.map((s) => [String(s._id), { total: Number(s.total || 0), last: s.last || null }]));
+
+    const withTotals = list.map((doc) => {
+      const key = String(doc._id);
+      const agg = aggMap[key] || { total: Number(doc.totalAmount || 0), last: doc.lastUpdated || null };
+      const normalized = normalizePersonalCategory(doc);
+      return { ...normalized, totalAmount: agg.total, lastUpdated: agg.last };
+    });
+
+    return res.json(withTotals);
+  } catch (err) {
+    console.error("GET /api/personal-expenses/categories error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load personal expense categories" });
+  }
+});
+
+// GET one personal expense category by id
+app.get("/api/personal-expenses/categories/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+    const doc = await personalExpenseCategories.findOne({ _id: new ObjectId(id) });
+    if (!doc) return res.status(404).json({ error: true, message: "Category not found" });
+
+    // Live aggregate for this category
+    const sum = await transactions.aggregate([
+      { $match: { scope: "personal-expense", type: "expense", categoryId: String(doc._id) } },
+      { $group: { _id: "$categoryId", total: { $sum: "$amount" }, last: { $max: "$date" } } }
+    ]).toArray();
+    const agg = sum && sum[0] ? { total: Number(sum[0].total || 0), last: sum[0].last || null } : { total: Number(doc.totalAmount || 0), last: doc.lastUpdated || null };
+
+    const normalized = normalizePersonalCategory(doc);
+    return res.json({ ...normalized, totalAmount: agg.total, lastUpdated: agg.last });
+  } catch (err) {
+    console.error("GET /api/personal-expenses/categories/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load category" });
+  }
+});
+
+// CREATE personal expense category
+app.post("/api/personal-expenses/categories", async (req, res) => {
+  try {
+    const { name, icon = "DollarSign", description = "" } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: true, message: "Name is required" });
+    }
+
+    // Prevent duplicate name (case-insensitive)
+    const existing = await personalExpenseCategories.findOne(
+      { name: String(name).trim() },
+      { collation: { locale: "en", strength: 2 } }
+    );
+    if (existing) {
+      return res.status(409).json({ error: true, message: "A category with this name already exists" });
+    }
+
+    const doc = {
+      name: String(name).trim(),
+      icon: String(icon || "DollarSign"),
+      description: String(description || "").trim(),
+      createdAt: new Date().toISOString()
+    };
+
+    const result = await personalExpenseCategories.insertOne(doc);
+    const created = await personalExpenseCategories.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizePersonalCategory(created));
+  } catch (err) {
+    console.error("POST /api/personal-expenses/categories error:", err);
+    if (err && err.code === 11000) {
+      return res.status(409).json({ error: true, message: "A category with this name already exists" });
+    }
+    return res.status(500).json({ error: true, message: "Failed to create category" });
+  }
+});
+
+// DELETE personal expense category by id
+app.delete("/api/personal-expenses/categories/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+    const result = await personalExpenseCategories.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: true, message: "Category not found" });
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /api/personal-expenses/categories/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete category" });
+  }
+});
+
+// DELETE personal expense category by name (case-insensitive)
+app.delete("/api/personal-expenses/categories/by-name/:name", async (req, res) => {
+  try {
+    const { name } = req.params;
+    const result = await personalExpenseCategories.deleteOne(
+      { name: String(name) },
+      { collation: { locale: "en", strength: 2 } }
+    );
+    if (!result || result.deletedCount === 0) {
+      return res.status(404).json({ error: true, message: "Category not found" });
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /api/personal-expenses/categories/by-name/:name error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete category" });
+  }
+});
+
+
+
+
+// -------------------- OPERATING EXPENSE SUBCATEGORIES --------------------
+// GET subcategories list for a category
+app.get("/api/operating-expenses/categories/:id/subcategories", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+    const doc = await operatingExpenseCategories.findOne({ _id: new ObjectId(id) });
+    if (!doc) return res.status(404).json({ error: true, message: "Category not found" });
+    return res.json(Array.isArray(doc.subcategories) ? doc.subcategories : []);
+  } catch (err) {
+    console.error("GET /api/operating-expenses/categories/:id/subcategories error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load subcategories" });
+  }
+});
+
+// CREATE subcategory
+app.post("/api/operating-expenses/categories/:id/subcategories", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description = "", iconKey = "FileText", banglaName = "" } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: true, message: "Subcategory name is required" });
+    }
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+
+    const filter = { _id: new ObjectId(id) };
+    const cat = await operatingExpenseCategories.findOne(filter);
+    if (!cat) return res.status(404).json({ error: true, message: "Category not found" });
+
+    const currentSubs = Array.isArray(cat.subcategories) ? cat.subcategories : [];
+    const exists = currentSubs.some(
+      (s) => String(s.name || "").trim().toLowerCase() === String(name).trim().toLowerCase()
+    );
+    if (exists) {
+      return res.status(409).json({ error: true, message: "A subcategory with this name already exists" });
+    }
+
+    const sub = {
+      id: new ObjectId().toString(),
+      name: String(name).trim(),
+      banglaName: String(banglaName || ""),
+      description: String(description || ""),
+      iconKey: String(iconKey || "FileText")
+    };
+
+    await operatingExpenseCategories.updateOne(filter, { $push: { subcategories: sub } });
+    const updated = await operatingExpenseCategories.findOne(filter);
+    return res.status(201).json(normalizeOpExCategory(updated));
+  } catch (err) {
+    console.error("POST /api/operating-expenses/categories/:id/subcategories error:", err);
+    return res.status(500).json({ error: true, message: "Failed to add subcategory" });
+  }
+});
+
+// UPDATE subcategory fields
+app.patch("/api/operating-expenses/categories/:id/subcategories/:subId", async (req, res) => {
+  try {
+    const { id, subId } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+    const allowed = ["name", "banglaName", "description", "iconKey"];
+    const updates = Object.fromEntries(
+      Object.entries(req.body || {}).filter(([k]) => allowed.includes(k))
+    );
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: true, message: "No valid fields to update" });
+    }
+
+    const filter = { _id: new ObjectId(id) };
+    const cat = await operatingExpenseCategories.findOne(filter);
+    if (!cat) return res.status(404).json({ error: true, message: "Category not found" });
+
+    const nextSubs = (Array.isArray(cat.subcategories) ? cat.subcategories : []).map((s) => {
+      if (String(s.id || s._id) === String(subId)) {
+        const merged = { ...s, ...updates };
+        if (typeof merged.name === "string") merged.name = merged.name.trim();
+        return merged;
+      }
+      return s;
+    });
+
+    await operatingExpenseCategories.updateOne(filter, { $set: { subcategories: nextSubs } });
+    const updated = await operatingExpenseCategories.findOne(filter);
+    return res.json(normalizeOpExCategory(updated));
+  } catch (err) {
+    console.error("PATCH /api/operating-expenses/categories/:id/subcategories/:subId error:", err);
+    return res.status(500).json({ error: true, message: "Failed to update subcategory" });
+  }
+});
+
+// DELETE subcategory
+app.delete("/api/operating-expenses/categories/:id/subcategories/:subId", async (req, res) => {
+  try {
+    const { id, subId } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+    const result = await operatingExpenseCategories.updateOne(
+      { _id: new ObjectId(id) },
+      { $pull: { subcategories: { id: String(subId) } } }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: true, message: "Category not found" });
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /api/operating-expenses/categories/:id/subcategories/:subId error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete subcategory" });
+  }
+});
+
 // ✅ GET: Transactions stats (aggregate by category/subcategory)
 // Example: /api/transactions/stats?groupBy=category,subcategory&fromDate=2025-01-01&toDate=2025-12-31
 app.get("/api/transactions/stats", async (req, res) => {
@@ -2823,84 +3312,6 @@ app.get("/sales/:saleId", async (req, res) => {
 });
 
 
-//     // ✅ POST: Add new vendor
-// app.post("/vendors", async (req, res) => {
-//   try {
-//     const {
-//       tradeName,
-//       tradeLocation,
-//       ownerName,
-//       contactNo,
-//       dob,
-//       nid,
-//       passport
-//     } = req.body;
-
-//     if (!tradeName || !tradeLocation || !ownerName || !contactNo) {
-//       return res.status(400).json({
-//         error: true,
-//         message: "Trade Name, Location, Owner Name & Contact No are required",
-//       });
-//     }
-
-//     // Normalize and validate contact number
-//     let normalizedContact = String(contactNo || '').trim();
-//     const contactDigits = normalizedContact.replace(/\D/g, '');
-//     if (contactDigits.startsWith('8801') && contactDigits.length >= 13) {
-//       normalizedContact = '0' + contactDigits.slice(3, 13);
-//     } else if (contactDigits.startsWith('01') && contactDigits.length >= 11) {
-//       normalizedContact = contactDigits.slice(0, 11);
-//     } else {
-//       normalizedContact = contactDigits;
-//     }
-//     if (!/^01[3-9]\d{8}$/.test(normalizedContact)) {
-//       return res.status(400).json({
-//         error: true,
-//         message: "Invalid contact number format. Please use 01XXXXXXXXX format"
-//       });
-//     }
-
-//     // Handle DOB: treat empty string as null; validate if provided
-//     let dobToStore = (dob === '' ? null : (dob || null));
-//     if (dobToStore !== null) {
-//       if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dobToStore)) || Number.isNaN(new Date(dobToStore).getTime())) {
-//         return res.status(400).json({ error: true, message: 'Invalid date format. Please use YYYY-MM-DD format' });
-//       }
-//     }
-
-//     // Generate unique vendor ID
-//     const vendorId = await generateVendorId(db);
-
-//     const newVendor = {
-//       vendorId: vendorId,
-//       tradeName: tradeName.trim(),
-//       tradeLocation: tradeLocation.trim(),
-//       ownerName: ownerName.trim(),
-//       contactNo: normalizedContact,
-//       dob: dobToStore,
-//       nid: nid?.trim() || "",
-//       passport: passport?.trim() || "",
-//       isActive: true,
-//       createdAt: new Date(),
-//     };
-
-//     const result = await vendors.insertOne(newVendor);
-
-//     res.status(201).json({
-//       success: true,
-//       message: "Vendor added successfully",
-//       vendorId: result.insertedId,
-//       vendorUniqueId: vendorId,
-//       vendor: { _id: result.insertedId, ...newVendor },
-//     });
-//   } catch (error) {
-//     console.error("Error adding vendor:", error);
-//     res.status(500).json({
-//       error: true,
-//       message: "Internal server error while adding vendor",
-//     });
-//   }
-// });
 
 // Vendor add and list
 
@@ -4518,6 +4929,8 @@ app.get("/api/transactions", async (req, res) => {
       serviceCategory,
       branchId,
       accountId,
+      scope,
+      categoryId,
       fromDate,
       toDate,
       page = 1,
@@ -4527,6 +4940,52 @@ app.get("/api/transactions", async (req, res) => {
 
     const pageNum = Math.max(parseInt(page) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+
+    // Special branch: Personal expense transactions (stored with string dates and custom fields)
+    if (String(scope) === "personal-expense") {
+      const peFilter = { scope: "personal-expense", type: "expense" };
+      if (fromDate || toDate) {
+        peFilter.date = {};
+        if (fromDate) peFilter.date.$gte = String(fromDate).slice(0, 10);
+        if (toDate) peFilter.date.$lte = String(toDate).slice(0, 10);
+      }
+      if (categoryId && ObjectId.isValid(String(categoryId))) {
+        peFilter.categoryId = String(categoryId);
+      }
+
+      const cursor = transactions
+        .find(peFilter)
+        .sort({ date: -1, createdAt: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum);
+
+      const [items, total] = await Promise.all([
+        cursor.toArray(),
+        transactions.countDocuments(peFilter)
+      ]);
+
+      const data = items.map((doc) => ({
+        id: String(doc._id || doc.id || ""),
+        date: doc.date || new Date().toISOString().slice(0, 10),
+        amount: Number(doc.amount || 0),
+        categoryId: String(doc.categoryId || ""),
+        categoryName: String(doc.categoryName || ""),
+        description: String(doc.description || ""),
+        tags: Array.isArray(doc.tags) ? doc.tags : [],
+        createdAt: doc.createdAt || null
+      }));
+
+      return res.json({
+        success: true,
+        data,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          totalPages: Math.ceil(total / limitNum)
+        }
+      });
+    }
 
     const filter = { isActive: { $ne: false } };
 
@@ -4587,6 +5046,1124 @@ app.get("/api/transactions", async (req, res) => {
   } catch (error) {
     console.error('List transactions error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch transactions', error: error.message });
+  }
+});
+
+// ==================== DIRECT TRANSACTIONS API: PERSONAL EXPENSE ====================
+// Use main `transactions` collection, but mark as scope: "personal-expense" and type: "expense"
+
+// GET transactions (filters: from, to, categoryId)
+app.get("/api/transactions/personal-expense", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    const { from, to, categoryId } = req.query || {};
+    const filter = { scope: "personal-expense", type: "expense" };
+    if (from || to) {
+      filter.date = {};
+      if (from) filter.date.$gte = String(from);
+      if (to) filter.date.$lte = String(to);
+    }
+    if (categoryId && ObjectId.isValid(String(categoryId))) {
+      filter.categoryId = String(categoryId);
+    }
+    const list = await transactions.find(filter).sort({ date: -1, createdAt: -1 }).toArray();
+    return res.json(list.map((doc) => ({
+      id: String(doc._id || doc.id || ""),
+      date: doc.date || new Date().toISOString().slice(0, 10),
+      amount: Number(doc.amount || 0),
+      categoryId: String(doc.categoryId || ""),
+      categoryName: String(doc.categoryName || ""),
+      description: String(doc.description || ""),
+      tags: Array.isArray(doc.tags) ? doc.tags : [],
+      createdAt: doc.createdAt || null
+    })));
+  } catch (err) {
+    console.error("GET /api/transactions/personal-expense error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load transactions" });
+  }
+});
+
+// CREATE transaction (debit-only: increase category totals, no account balance effect)
+app.post("/api/transactions/personal-expense", async (req, res) => {
+  try {
+    const { date, amount, categoryId, description = "", tags = [] } = req.body || {};
+
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const txDate = String(date || todayStr).slice(0, 10);
+    const numericAmount = Number(amount || 0);
+    if (!(numericAmount > 0)) {
+      return res.status(400).json({ error: true, message: "Amount must be greater than 0" });
+    }
+    if (!categoryId || !ObjectId.isValid(String(categoryId))) {
+      return res.status(400).json({ error: true, message: "Valid categoryId is required" });
+    }
+
+    const cat = await personalExpenseCategories.findOne({ _id: new ObjectId(String(categoryId)) });
+    if (!cat) {
+      return res.status(404).json({ error: true, message: "Category not found" });
+    }
+
+    const doc = {
+      scope: "personal-expense",
+      type: "expense",
+      date: txDate,
+      amount: numericAmount,
+      categoryId: String(categoryId),
+      categoryName: String(cat.name || ""),
+      description: String(description || ""),
+      tags: Array.isArray(tags) ? tags.map((t) => String(t)) : [],
+      createdAt: new Date().toISOString()
+    };
+
+    // Effect: increase category totals
+    await personalExpenseCategories.updateOne(
+      { _id: new ObjectId(String(categoryId)) },
+      { $inc: { totalAmount: numericAmount }, $set: { lastUpdated: txDate } }
+    );
+
+    const result = await transactions.insertOne(doc);
+    const created = await transactions.findOne({ _id: result.insertedId });
+    return res.status(201).json({
+      id: String(created._id),
+      date: created.date,
+      amount: created.amount,
+      categoryId: created.categoryId,
+      categoryName: created.categoryName,
+      description: created.description,
+      tags: created.tags,
+      createdAt: created.createdAt
+    });
+  } catch (err) {
+    console.error("POST /api/transactions/personal-expense error:", err);
+    return res.status(500).json({ error: true, message: "Failed to create transaction" });
+  }
+});
+
+// DELETE transaction (reverse category totals)
+app.delete("/api/transactions/personal-expense/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid transaction id" });
+    }
+    const tx = await transactions.findOne({ _id: new ObjectId(id), scope: "personal-expense", type: "expense" });
+    if (!tx) {
+      return res.status(404).json({ error: true, message: "Transaction not found" });
+    }
+
+    const amount = Number(tx.amount || 0);
+    const categoryId = tx.categoryId ? String(tx.categoryId) : null;
+    const txDate = tx.date || new Date().toISOString().slice(0, 10);
+
+    if (categoryId && ObjectId.isValid(categoryId) && amount > 0) {
+      await personalExpenseCategories.updateOne(
+        { _id: new ObjectId(categoryId) },
+        { $inc: { totalAmount: -amount }, $set: { lastUpdated: txDate } }
+      );
+    }
+
+    const result = await transactions.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: true, message: "Transaction not found" });
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /api/transactions/personal-expense/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete transaction" });
+  }
+});
+
+// ==================== CATTLE MANAGEMENT (CRUD) ====================
+const normalizeCattle = (doc) => ({
+  id: String(doc._id || doc.id || ""),
+  cattleId: doc.id || "",
+  name: doc.name || "",
+  breed: doc.breed || "",
+  age: typeof doc.age === 'number' ? doc.age : Number(doc.age || 0),
+  weight: typeof doc.weight === 'number' ? doc.weight : Number(doc.weight || 0),
+  purchaseDate: doc.purchaseDate || "",
+  healthStatus: doc.healthStatus || "healthy",
+  image: doc.image || null,
+  imagePublicId: doc.imagePublicId || "",
+  gender: doc.gender || "female",
+  color: doc.color || "",
+  tagNumber: doc.tagNumber || "",
+  purchasePrice: typeof doc.purchasePrice === 'number' ? doc.purchasePrice : Number(doc.purchasePrice || 0),
+  vendor: doc.vendor || "",
+  notes: doc.notes || "",
+  createdAt: doc.createdAt || null,
+  updatedAt: doc.updatedAt || null
+});
+
+// CREATE cattle
+app.post("/api/cattle", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+
+    const {
+      id,
+      name,
+      breed = "",
+      age = 0,
+      weight = 0,
+      purchaseDate = "",
+      healthStatus = "healthy",
+      image = null,
+      imagePublicId = "",
+      gender = "female",
+      color = "",
+      tagNumber = "",
+      purchasePrice = 0,
+      vendor = "",
+      notes = ""
+    } = req.body || {};
+
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: true, message: "Name is required" });
+    }
+
+    const now = new Date().toISOString();
+    const doc = {
+      id: id ? String(id) : undefined,
+      name: String(name).trim(),
+      breed: String(breed || ""),
+      age: Number(age || 0),
+      weight: Number(weight || 0),
+      purchaseDate: String(purchaseDate || ""),
+      healthStatus: String(healthStatus || "healthy"),
+      image: image || null,
+      imagePublicId: String(imagePublicId || ""),
+      gender: String(gender || "female"),
+      color: String(color || ""),
+      tagNumber: String(tagNumber || ""),
+      purchasePrice: Number(purchasePrice || 0),
+      vendor: String(vendor || ""),
+      notes: String(notes || ""),
+      createdAt: now,
+      updatedAt: now
+    };
+
+    const result = await cattle.insertOne(doc);
+    const created = await cattle.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizeCattle(created));
+  } catch (err) {
+    console.error("POST /api/cattle error:", err);
+    return res.status(500).json({ error: true, message: "Failed to create cattle" });
+  }
+});
+
+// GET all cattle (simple, can be extended with filters later)
+app.get("/api/cattle", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    const list = await cattle.find({}).sort({ createdAt: -1 }).toArray();
+    return res.json(list.map(normalizeCattle));
+  } catch (err) {
+    console.error("GET /api/cattle error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load cattle" });
+  }
+});
+
+// GET one cattle by id
+app.get("/api/cattle/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid cattle id" });
+    }
+    const doc = await cattle.findOne({ _id: new ObjectId(id) });
+    if (!doc) return res.status(404).json({ error: true, message: "Cattle not found" });
+    // Attach milk data for this cattle (recent first)
+    const records = await milkProductions.find({ cattleId: String(doc._id) }).sort({ date: -1 }).limit(200).toArray();
+    const milk = records.map((r) => ({
+      id: String(r._id || r.id || ""),
+      cattleId: String(r.cattleId || ""),
+      cattleName: r.cattleName || doc.name || "",
+      date: r.date || new Date().toISOString().slice(0, 10),
+      morningQuantity: Number(r.morningQuantity || 0),
+      afternoonQuantity: Number(r.afternoonQuantity || 0),
+      eveningQuantity: Number(r.eveningQuantity || 0),
+      totalQuantity: Number(r.totalQuantity || 0),
+      quality: r.quality || "good",
+      notes: r.notes || ""
+    }));
+    // Attach health, vaccinations, vet visits (recent first)
+    const [healthDocs, vaccDocs, visitDocs] = await Promise.all([
+      healthRecords.find({ cattleId: String(doc._id) }).sort({ date: -1 }).limit(200).toArray(),
+      vaccinations.find({ cattleId: String(doc._id) }).sort({ date: -1 }).limit(200).toArray(),
+      vetVisits.find({ cattleId: String(doc._id) }).sort({ date: -1 }).limit(200).toArray()
+    ]);
+    const health = healthDocs.map((h) => ({
+      id: String(h._id || h.id || ""),
+      cattleId: String(h.cattleId || ""),
+      cattleName: doc.name || "",
+      date: h.date || new Date().toISOString().slice(0, 10),
+      condition: h.condition || "",
+      symptoms: h.symptoms || "",
+      treatment: h.treatment || "",
+      medication: h.medication || "",
+      dosage: h.dosage || "",
+      duration: h.duration || "",
+      vetName: h.vetName || "",
+      notes: h.notes || "",
+      status: h.status || "under_treatment"
+    }));
+    const vaccinationRecords = vaccDocs.map((v) => ({
+      id: String(v._id || v.id || ""),
+      cattleId: String(v.cattleId || ""),
+      cattleName: doc.name || "",
+      vaccineName: v.vaccineName || "",
+      date: v.date || new Date().toISOString().slice(0, 10),
+      nextDueDate: v.nextDueDate || "",
+      batchNumber: v.batchNumber || "",
+      vetName: v.vetName || "",
+      notes: v.notes || "",
+      status: v.status || "completed"
+    }));
+    const vetVisitRecords = visitDocs.map((vv) => ({
+      id: String(vv._id || vv.id || ""),
+      cattleId: String(vv.cattleId || ""),
+      cattleName: doc.name || "",
+      date: vv.date || new Date().toISOString().slice(0, 10),
+      visitType: vv.visitType || "",
+      vetName: vv.vetName || "",
+      clinic: vv.clinic || "",
+      purpose: vv.purpose || "",
+      diagnosis: vv.diagnosis || "",
+      treatment: vv.treatment || "",
+      followUpDate: vv.followUpDate || "",
+      cost: Number(vv.cost || 0),
+      notes: vv.notes || ""
+    }));
+    return res.json({ ...normalizeCattle(doc), milkRecords: milk, healthRecords: health, vaccinationRecords, vetVisitRecords });
+  } catch (err) {
+    console.error("GET /api/cattle/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load cattle" });
+  }
+});
+
+// UPDATE cattle
+app.put("/api/cattle/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid cattle id" });
+    }
+
+    const allowed = [
+      "id","name","breed","age","weight","purchaseDate","healthStatus","image","imagePublicId","gender","color","tagNumber","purchasePrice","vendor","notes"
+    ];
+    const updates = Object.fromEntries(
+      Object.entries(req.body || {}).filter(([k]) => allowed.includes(k))
+    );
+
+    if (Object.prototype.hasOwnProperty.call(updates, 'name') && !String(updates.name).trim()) {
+      return res.status(400).json({ error: true, message: "Name cannot be empty" });
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: true, message: "No valid fields to update" });
+    }
+
+    if (typeof updates.age !== 'undefined') updates.age = Number(updates.age || 0);
+    if (typeof updates.weight !== 'undefined') updates.weight = Number(updates.weight || 0);
+    if (typeof updates.purchasePrice !== 'undefined') updates.purchasePrice = Number(updates.purchasePrice || 0);
+
+    updates.updatedAt = new Date().toISOString();
+
+    const result = await cattle.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: updates },
+      { returnDocument: 'after' }
+    );
+
+    if (!result || !result.value) {
+      return res.status(404).json({ error: true, message: "Cattle not found" });
+    }
+
+    return res.json(normalizeCattle(result.value));
+  } catch (err) {
+    console.error("PUT /api/cattle/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to update cattle" });
+  }
+});
+
+// DELETE cattle
+app.delete("/api/cattle/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid cattle id" });
+    }
+    const result = await cattle.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: true, message: "Cattle not found" });
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /api/cattle/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete cattle" });
+  }
+});
+
+// ==================== MILK PRODUCTION (CRUD) ====================
+const normalizeMilkRecord = (doc) => ({
+  id: String(doc._id || doc.id || ""),
+  cattleId: String(doc.cattleId || ""),
+  cattleName: doc.cattleName || "",
+  date: doc.date || new Date().toISOString().slice(0, 10),
+  morningQuantity: Number(doc.morningQuantity || 0),
+  afternoonQuantity: Number(doc.afternoonQuantity || 0),
+  eveningQuantity: Number(doc.eveningQuantity || 0),
+  totalQuantity: Number(doc.totalQuantity || 0),
+  quality: doc.quality || "good",
+  notes: doc.notes || "",
+  createdAt: doc.createdAt || null,
+  updatedAt: doc.updatedAt || null
+});
+
+// CREATE milk record
+app.post("/api/milk", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+
+    const { cattleId, date, morningQuantity = 0, afternoonQuantity = 0, eveningQuantity = 0, quality = "good", notes = "" } = req.body || {};
+
+    if (!cattleId || !ObjectId.isValid(String(cattleId))) {
+      return res.status(400).json({ error: true, message: "Valid cattleId is required" });
+    }
+
+    const cow = await cattle.findOne({ _id: new ObjectId(String(cattleId)) });
+    if (!cow) {
+      return res.status(404).json({ error: true, message: "Cattle not found" });
+    }
+
+    const d = String(date || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    const m = Number(morningQuantity || 0);
+    const a = Number(afternoonQuantity || 0);
+    const e = Number(eveningQuantity || 0);
+    const total = Number((m + a + e).toFixed(1));
+
+    const now = new Date().toISOString();
+    const doc = {
+      cattleId: String(cow._id),
+      cattleName: String(cow.name || ""),
+      date: d,
+      morningQuantity: m,
+      afternoonQuantity: a,
+      eveningQuantity: e,
+      totalQuantity: total,
+      quality: String(quality || "good"),
+      notes: String(notes || ""),
+      createdAt: now,
+      updatedAt: now
+    };
+
+    const result = await milkProductions.insertOne(doc);
+    const created = await milkProductions.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizeMilkRecord(created));
+  } catch (err) {
+    console.error("POST /api/milk error:", err);
+    return res.status(500).json({ error: true, message: "Failed to create milk record" });
+  }
+});
+
+// GET milk records (filters: cattleId, from, to)
+app.get("/api/milk", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    const { cattleId, from, to } = req.query || {};
+    const filter = {};
+    if (cattleId && ObjectId.isValid(String(cattleId))) filter.cattleId = String(cattleId);
+    if (from || to) {
+      filter.date = {};
+      if (from) filter.date.$gte = String(from).slice(0, 10);
+      if (to) filter.date.$lte = String(to).slice(0, 10);
+    }
+    const list = await milkProductions.find(filter).sort({ date: -1, createdAt: -1 }).toArray();
+    return res.json(list.map(normalizeMilkRecord));
+  } catch (err) {
+    console.error("GET /api/milk error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load milk records" });
+  }
+});
+
+// GET one milk record by id
+app.get("/api/milk/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid record id" });
+    }
+    const doc = await milkProductions.findOne({ _id: new ObjectId(id) });
+    if (!doc) return res.status(404).json({ error: true, message: "Record not found" });
+    return res.json(normalizeMilkRecord(doc));
+  } catch (err) {
+    console.error("GET /api/milk/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load record" });
+  }
+});
+
+// UPDATE milk record
+app.put("/api/milk/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid record id" });
+    }
+
+    const allowed = ["date","morningQuantity","afternoonQuantity","eveningQuantity","quality","notes"];
+    const updates = Object.fromEntries(
+      Object.entries(req.body || {}).filter(([k]) => allowed.includes(k))
+    );
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: true, message: "No valid fields to update" });
+    }
+
+    if (typeof updates.morningQuantity !== 'undefined') updates.morningQuantity = Number(updates.morningQuantity || 0);
+    if (typeof updates.afternoonQuantity !== 'undefined') updates.afternoonQuantity = Number(updates.afternoonQuantity || 0);
+    if (typeof updates.eveningQuantity !== 'undefined') updates.eveningQuantity = Number(updates.eveningQuantity || 0);
+    if (typeof updates.date !== 'undefined') updates.date = String(updates.date).slice(0, 10);
+
+    // recompute total
+    const existing = await milkProductions.findOne({ _id: new ObjectId(id) });
+    if (!existing) return res.status(404).json({ error: true, message: "Record not found" });
+    const m = typeof updates.morningQuantity !== 'undefined' ? updates.morningQuantity : Number(existing.morningQuantity || 0);
+    const a = typeof updates.afternoonQuantity !== 'undefined' ? updates.afternoonQuantity : Number(existing.afternoonQuantity || 0);
+    const e = typeof updates.eveningQuantity !== 'undefined' ? updates.eveningQuantity : Number(existing.eveningQuantity || 0);
+    updates.totalQuantity = Number((m + a + e).toFixed(1));
+    updates.updatedAt = new Date().toISOString();
+
+    const result = await milkProductions.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: updates },
+      { returnDocument: 'after' }
+    );
+    if (!result || !result.value) {
+      return res.status(404).json({ error: true, message: "Record not found" });
+    }
+    return res.json(normalizeMilkRecord(result.value));
+  } catch (err) {
+    console.error("PUT /api/milk/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to update record" });
+  }
+});
+
+// DELETE milk record
+app.delete("/api/milk/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid record id" });
+    }
+    const result = await milkProductions.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: true, message: "Record not found" });
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /api/milk/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete record" });
+  }
+});
+
+// ==================== HEALTH RECORDS / VACCINATIONS / VET VISITS (CRUD) ====================
+const normalizeHealth = (doc) => ({
+  id: String(doc._id || doc.id || ""),
+  cattleId: String(doc.cattleId || ""),
+  cattleName: doc.cattleName || "",
+  date: doc.date || new Date().toISOString().slice(0, 10),
+  condition: doc.condition || "",
+  symptoms: doc.symptoms || "",
+  treatment: doc.treatment || "",
+  medication: doc.medication || "",
+  dosage: doc.dosage || "",
+  duration: doc.duration || "",
+  vetName: doc.vetName || "",
+  notes: doc.notes || "",
+  status: doc.status || "under_treatment",
+  createdAt: doc.createdAt || null,
+  updatedAt: doc.updatedAt || null
+});
+
+const normalizeVaccination = (doc) => ({
+  id: String(doc._id || doc.id || ""),
+  cattleId: String(doc.cattleId || ""),
+  cattleName: doc.cattleName || "",
+  vaccineName: doc.vaccineName || "",
+  date: doc.date || new Date().toISOString().slice(0, 10),
+  nextDueDate: doc.nextDueDate || "",
+  batchNumber: doc.batchNumber || "",
+  vetName: doc.vetName || "",
+  notes: doc.notes || "",
+  status: doc.status || "completed",
+  createdAt: doc.createdAt || null,
+  updatedAt: doc.updatedAt || null
+});
+
+const normalizeVetVisit = (doc) => ({
+  id: String(doc._id || doc.id || ""),
+  cattleId: String(doc.cattleId || ""),
+  cattleName: doc.cattleName || "",
+  date: doc.date || new Date().toISOString().slice(0, 10),
+  visitType: doc.visitType || "",
+  vetName: doc.vetName || "",
+  clinic: doc.clinic || "",
+  purpose: doc.purpose || "",
+  diagnosis: doc.diagnosis || "",
+  treatment: doc.treatment || "",
+  followUpDate: doc.followUpDate || "",
+  cost: Number(doc.cost || 0),
+  notes: doc.notes || "",
+  createdAt: doc.createdAt || null,
+  updatedAt: doc.updatedAt || null
+});
+
+// CREATE Health record
+app.post("/api/health", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    const { cattleId, date, condition = "", symptoms = "", treatment = "", medication = "", dosage = "", duration = "", vetName = "", notes = "", status = "under_treatment" } = req.body || {};
+    if (!cattleId || !ObjectId.isValid(String(cattleId))) {
+      return res.status(400).json({ error: true, message: "Valid cattleId is required" });
+    }
+    if (!date) {
+      return res.status(400).json({ error: true, message: "date is required" });
+    }
+    const cow = await cattle.findOne({ _id: new ObjectId(String(cattleId)) });
+    if (!cow) return res.status(404).json({ error: true, message: "Cattle not found" });
+    const now = new Date().toISOString();
+    const doc = {
+      cattleId: String(cow._id),
+      cattleName: String(cow.name || ""),
+      date: String(date).slice(0, 10),
+      condition: String(condition || ""),
+      symptoms: String(symptoms || ""),
+      treatment: String(treatment || ""),
+      medication: String(medication || ""),
+      dosage: String(dosage || ""),
+      duration: String(duration || ""),
+      vetName: String(vetName || ""),
+      notes: String(notes || ""),
+      status: String(status || "under_treatment"),
+      createdAt: now,
+      updatedAt: now
+    };
+    const result = await healthRecords.insertOne(doc);
+    const created = await healthRecords.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizeHealth(created));
+  } catch (err) {
+    console.error("POST /api/health error:", err);
+    return res.status(500).json({ error: true, message: "Failed to create health record" });
+  }
+});
+
+app.get("/api/health", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    const { cattleId, from, to, status, q } = req.query || {};
+    const filter = {};
+    if (cattleId && ObjectId.isValid(String(cattleId))) filter.cattleId = String(cattleId);
+    if (from || to) {
+      filter.date = {};
+      if (from) filter.date.$gte = String(from).slice(0, 10);
+      if (to) filter.date.$lte = String(to).slice(0, 10);
+    }
+    if (status) filter.status = String(status);
+    if (q) {
+      const text = String(q).trim();
+      filter.$or = [
+        { condition: { $regex: text, $options: 'i' } },
+        { symptoms: { $regex: text, $options: 'i' } },
+        { vetName: { $regex: text, $options: 'i' } }
+      ];
+    }
+    const list = await healthRecords.find(filter).sort({ date: -1, createdAt: -1 }).toArray();
+    return res.json(list.map(normalizeHealth));
+  } catch (err) {
+    console.error("GET /api/health error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load health records" });
+  }
+});
+
+app.put("/api/health/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: true, message: "Invalid record id" });
+    const allowed = ["date","condition","symptoms","treatment","medication","dosage","duration","vetName","notes","status"];
+    const updates = Object.fromEntries(Object.entries(req.body || {}).filter(([k]) => allowed.includes(k)));
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: true, message: "No valid fields to update" });
+    if (typeof updates.date !== 'undefined') updates.date = String(updates.date).slice(0, 10);
+    updates.updatedAt = new Date().toISOString();
+    const result = await healthRecords.findOneAndUpdate({ _id: new ObjectId(id) }, { $set: updates }, { returnDocument: 'after' });
+    if (!result || !result.value) return res.status(404).json({ error: true, message: "Record not found" });
+    return res.json(normalizeHealth(result.value));
+  } catch (err) {
+    console.error("PUT /api/health/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to update health record" });
+  }
+});
+
+app.delete("/api/health/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: true, message: "Invalid record id" });
+    const result = await healthRecords.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) return res.status(404).json({ error: true, message: "Record not found" });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /api/health/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete health record" });
+  }
+});
+
+// VACCINATIONS
+app.post("/api/vaccinations", async (req, res) => {
+  try {
+    if (dbConnectionError) return res.status(500).json({ error: true, message: "Database not initialized" });
+    const { cattleId, vaccineName, date, nextDueDate = "", batchNumber = "", vetName = "", notes = "", status = "completed" } = req.body || {};
+    if (!cattleId || !ObjectId.isValid(String(cattleId))) return res.status(400).json({ error: true, message: "Valid cattleId is required" });
+    if (!vaccineName || !String(vaccineName).trim()) return res.status(400).json({ error: true, message: "vaccineName is required" });
+    if (!date) return res.status(400).json({ error: true, message: "date is required" });
+    const cow = await cattle.findOne({ _id: new ObjectId(String(cattleId)) });
+    if (!cow) return res.status(404).json({ error: true, message: "Cattle not found" });
+    const now = new Date().toISOString();
+    const doc = {
+      cattleId: String(cow._id),
+      cattleName: String(cow.name || ""),
+      vaccineName: String(vaccineName).trim(),
+      date: String(date).slice(0, 10),
+      nextDueDate: String(nextDueDate || ""),
+      batchNumber: String(batchNumber || ""),
+      vetName: String(vetName || ""),
+      notes: String(notes || ""),
+      status: String(status || "completed"),
+      createdAt: now,
+      updatedAt: now
+    };
+    const result = await vaccinations.insertOne(doc);
+    const created = await vaccinations.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizeVaccination(created));
+  } catch (err) {
+    console.error("POST /api/vaccinations error:", err);
+    return res.status(500).json({ error: true, message: "Failed to create vaccination" });
+  }
+});
+
+app.get("/api/vaccinations", async (req, res) => {
+  try {
+    if (dbConnectionError) return res.status(500).json({ error: true, message: "Database not initialized" });
+    const { cattleId, from, to, dueBefore } = req.query || {};
+    const filter = {};
+    if (cattleId && ObjectId.isValid(String(cattleId))) filter.cattleId = String(cattleId);
+    if (from || to) {
+      filter.date = {};
+      if (from) filter.date.$gte = String(from).slice(0, 10);
+      if (to) filter.date.$lte = String(to).slice(0, 10);
+    }
+    if (dueBefore) {
+      filter.nextDueDate = { $ne: "" };
+      filter.nextDueDate.$lte = String(dueBefore).slice(0, 10);
+    }
+    const list = await vaccinations.find(filter).sort({ date: -1, createdAt: -1 }).toArray();
+    return res.json(list.map(normalizeVaccination));
+  } catch (err) {
+    console.error("GET /api/vaccinations error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load vaccinations" });
+  }
+});
+
+app.put("/api/vaccinations/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: true, message: "Invalid record id" });
+    const allowed = ["vaccineName","date","nextDueDate","batchNumber","vetName","notes","status"];
+    const updates = Object.fromEntries(Object.entries(req.body || {}).filter(([k]) => allowed.includes(k)));
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: true, message: "No valid fields to update" });
+    if (typeof updates.date !== 'undefined') updates.date = String(updates.date).slice(0, 10);
+    if (typeof updates.nextDueDate !== 'undefined') updates.nextDueDate = String(updates.nextDueDate || "");
+    updates.updatedAt = new Date().toISOString();
+    const result = await vaccinations.findOneAndUpdate({ _id: new ObjectId(id) }, { $set: updates }, { returnDocument: 'after' });
+    if (!result || !result.value) return res.status(404).json({ error: true, message: "Record not found" });
+    return res.json(normalizeVaccination(result.value));
+  } catch (err) {
+    console.error("PUT /api/vaccinations/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to update vaccination" });
+  }
+});
+
+app.delete("/api/vaccinations/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: true, message: "Invalid record id" });
+    const result = await vaccinations.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) return res.status(404).json({ error: true, message: "Record not found" });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /api/vaccinations/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete vaccination" });
+  }
+});
+
+// VET VISITS
+app.post("/api/vet-visits", async (req, res) => {
+  try {
+    if (dbConnectionError) return res.status(500).json({ error: true, message: "Database not initialized" });
+    const { cattleId, date, visitType, vetName, clinic = "", purpose = "", diagnosis = "", treatment = "", followUpDate = "", cost = 0, notes = "" } = req.body || {};
+    if (!cattleId || !ObjectId.isValid(String(cattleId))) return res.status(400).json({ error: true, message: "Valid cattleId is required" });
+    if (!date) return res.status(400).json({ error: true, message: "date is required" });
+    if (!visitType || !String(visitType).trim()) return res.status(400).json({ error: true, message: "visitType is required" });
+    if (!vetName || !String(vetName).trim()) return res.status(400).json({ error: true, message: "vetName is required" });
+    const cow = await cattle.findOne({ _id: new ObjectId(String(cattleId)) });
+    if (!cow) return res.status(404).json({ error: true, message: "Cattle not found" });
+    const now = new Date().toISOString();
+    const doc = {
+      cattleId: String(cow._id),
+      cattleName: String(cow.name || ""),
+      date: String(date).slice(0, 10),
+      visitType: String(visitType).trim(),
+      vetName: String(vetName).trim(),
+      clinic: String(clinic || ""),
+      purpose: String(purpose || ""),
+      diagnosis: String(diagnosis || ""),
+      treatment: String(treatment || ""),
+      followUpDate: String(followUpDate || ""),
+      cost: Number(cost || 0),
+      notes: String(notes || ""),
+      createdAt: now,
+      updatedAt: now
+    };
+    const result = await vetVisits.insertOne(doc);
+    const created = await vetVisits.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizeVetVisit(created));
+  } catch (err) {
+    console.error("POST /api/vet-visits error:", err);
+    return res.status(500).json({ error: true, message: "Failed to create vet visit" });
+  }
+});
+
+app.get("/api/vet-visits", async (req, res) => {
+  try {
+    if (dbConnectionError) return res.status(500).json({ error: true, message: "Database not initialized" });
+    const { cattleId, from, to, q } = req.query || {};
+    const filter = {};
+    if (cattleId && ObjectId.isValid(String(cattleId))) filter.cattleId = String(cattleId);
+    if (from || to) {
+      filter.date = {};
+      if (from) filter.date.$gte = String(from).slice(0, 10);
+      if (to) filter.date.$lte = String(to).slice(0, 10);
+    }
+    if (q) {
+      const text = String(q).trim();
+      filter.$or = [
+        { visitType: { $regex: text, $options: 'i' } },
+        { vetName: { $regex: text, $options: 'i' } },
+        { clinic: { $regex: text, $options: 'i' } }
+      ];
+    }
+    const list = await vetVisits.find(filter).sort({ date: -1, createdAt: -1 }).toArray();
+    return res.json(list.map(normalizeVetVisit));
+  } catch (err) {
+    console.error("GET /api/vet-visits error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load vet visits" });
+  }
+});
+
+app.put("/api/vet-visits/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: true, message: "Invalid record id" });
+    const allowed = ["date","visitType","vetName","clinic","purpose","diagnosis","treatment","followUpDate","cost","notes"];
+    const updates = Object.fromEntries(Object.entries(req.body || {}).filter(([k]) => allowed.includes(k)));
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: true, message: "No valid fields to update" });
+    if (typeof updates.date !== 'undefined') updates.date = String(updates.date).slice(0, 10);
+    if (typeof updates.followUpDate !== 'undefined') updates.followUpDate = String(updates.followUpDate || "");
+    if (typeof updates.cost !== 'undefined') updates.cost = Number(updates.cost || 0);
+    updates.updatedAt = new Date().toISOString();
+    const result = await vetVisits.findOneAndUpdate({ _id: new ObjectId(id) }, { $set: updates }, { returnDocument: 'after' });
+    if (!result || !result.value) return res.status(404).json({ error: true, message: "Record not found" });
+    return res.json(normalizeVetVisit(result.value));
+  } catch (err) {
+    console.error("PUT /api/vet-visits/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to update vet visit" });
+  }
+});
+
+app.delete("/api/vet-visits/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: true, message: "Invalid record id" });
+    const result = await vetVisits.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) return res.status(404).json({ error: true, message: "Record not found" });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /api/vet-visits/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete vet visit" });
+  }
+});
+
+
+// ==================== FEED MANAGEMENT (TYPES, STOCK, USAGE) ====================
+const normalizeFeedType = (doc) => ({
+  id: String(doc._id || doc.id || ""),
+  name: doc.name || "",
+  type: doc.type || "",
+  unit: doc.unit || "kg",
+  costPerUnit: Number(doc.costPerUnit || 0),
+  supplier: doc.supplier || "",
+  description: doc.description || "",
+  createdAt: doc.createdAt || null,
+  updatedAt: doc.updatedAt || null
+});
+
+const normalizeFeedStock = (doc) => ({
+  id: String(doc._id || doc.id || ""),
+  feedTypeId: String(doc.feedTypeId || ""),
+  feedName: doc.feedName || "",
+  currentStock: Number(doc.currentStock || 0),
+  minStock: Number(doc.minStock || 0),
+  purchaseDate: doc.purchaseDate || "",
+  expiryDate: doc.expiryDate || "",
+  supplier: doc.supplier || "",
+  cost: Number(doc.cost || 0),
+  notes: doc.notes || "",
+  createdAt: doc.createdAt || null,
+  updatedAt: doc.updatedAt || null
+});
+
+const normalizeFeedUsage = (doc) => ({
+  id: String(doc._id || doc.id || ""),
+  feedTypeId: String(doc.feedTypeId || ""),
+  feedName: doc.feedName || "",
+  date: doc.date || new Date().toISOString().slice(0, 10),
+  quantity: Number(doc.quantity || 0),
+  cattleId: doc.cattleId || "",
+  purpose: doc.purpose || "",
+  notes: doc.notes || "",
+  createdAt: doc.createdAt || null,
+  updatedAt: doc.updatedAt || null
+});
+
+// FEED TYPES
+app.post("/api/feeds/types", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    const { name, type = "", unit = "kg", costPerUnit = 0, supplier = "", description = "" } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: true, message: "Feed name is required" });
+    }
+    const exists = await feedTypes.findOne({ name: String(name).trim() }, { collation: { locale: "en", strength: 2 } });
+    if (exists) {
+      return res.status(409).json({ error: true, message: "A feed with this name already exists" });
+    }
+    const now = new Date().toISOString();
+    const doc = {
+      name: String(name).trim(),
+      type: String(type || ""),
+      unit: String(unit || "kg"),
+      costPerUnit: Number(costPerUnit || 0),
+      supplier: String(supplier || ""),
+      description: String(description || ""),
+      createdAt: now,
+      updatedAt: now
+    };
+    const result = await feedTypes.insertOne(doc);
+    const created = await feedTypes.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizeFeedType(created));
+  } catch (err) {
+    console.error("POST /api/feeds/types error:", err);
+    if (err && err.code === 11000) {
+      return res.status(409).json({ error: true, message: "A feed with this name already exists" });
+    }
+    return res.status(500).json({ error: true, message: "Failed to create feed type" });
+  }
+});
+
+app.get("/api/feeds/types", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    const list = await feedTypes.find({}).sort({ name: 1 }).toArray();
+    return res.json(list.map(normalizeFeedType));
+  } catch (err) {
+    console.error("GET /api/feeds/types error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load feed types" });
+  }
+});
+
+// FEED STOCKS
+app.post("/api/feeds/stocks", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    const { feedTypeId, quantity = 0, purchaseDate, expiryDate = "", supplier = "", cost = 0, notes = "" } = req.body || {};
+    if (!feedTypeId || !ObjectId.isValid(String(feedTypeId))) {
+      return res.status(400).json({ error: true, message: "Valid feedTypeId is required" });
+    }
+    const feed = await feedTypes.findOne({ _id: new ObjectId(String(feedTypeId)) });
+    if (!feed) {
+      return res.status(404).json({ error: true, message: "Feed type not found" });
+    }
+    if (!purchaseDate) {
+      return res.status(400).json({ error: true, message: "purchaseDate is required" });
+    }
+    const qty = Number(quantity || 0);
+    const minStock = Number((qty * 0.3).toFixed(2));
+    const now = new Date().toISOString();
+    const doc = {
+      feedTypeId: String(feed._id),
+      feedName: String(feed.name || ""),
+      currentStock: qty,
+      minStock,
+      purchaseDate: String(purchaseDate),
+      expiryDate: String(expiryDate || ""),
+      supplier: String(supplier || ""),
+      cost: Number(cost || 0),
+      notes: String(notes || ""),
+      createdAt: now,
+      updatedAt: now
+    };
+    const result = await feedStocks.insertOne(doc);
+    const created = await feedStocks.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizeFeedStock(created));
+  } catch (err) {
+    console.error("POST /api/feeds/stocks error:", err);
+    return res.status(500).json({ error: true, message: "Failed to add feed stock" });
+  }
+});
+
+app.get("/api/feeds/stocks", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    const list = await feedStocks.find({}).sort({ purchaseDate: -1, createdAt: -1 }).toArray();
+    return res.json(list.map(normalizeFeedStock));
+  } catch (err) {
+    console.error("GET /api/feeds/stocks error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load feed stocks" });
+  }
+});
+
+// FEED USAGES
+app.post("/api/feeds/usages", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    const { feedTypeId, date, quantity = 0, cattleId = "", purpose = "", notes = "" } = req.body || {};
+    if (!feedTypeId || !ObjectId.isValid(String(feedTypeId))) {
+      return res.status(400).json({ error: true, message: "Valid feedTypeId is required" });
+    }
+    if (!date) {
+      return res.status(400).json({ error: true, message: "date is required" });
+    }
+    const feed = await feedTypes.findOne({ _id: new ObjectId(String(feedTypeId)) });
+    if (!feed) {
+      return res.status(404).json({ error: true, message: "Feed type not found" });
+    }
+    const now = new Date().toISOString();
+    const doc = {
+      feedTypeId: String(feed._id),
+      feedName: String(feed.name || ""),
+      date: String(date).slice(0, 10),
+      quantity: Number(quantity || 0),
+      cattleId: String(cattleId || ""),
+      purpose: String(purpose || ""),
+      notes: String(notes || ""),
+      createdAt: now,
+      updatedAt: now
+    };
+
+    // Decrease stock for the latest stock entry for this feed type (simple approach)
+    const latestStock = await feedStocks.findOne({ feedTypeId: String(feed._id) }, { sort: { purchaseDate: -1, createdAt: -1 } });
+    if (latestStock) {
+      const newStock = Math.max(0, Number(latestStock.currentStock || 0) - Number(doc.quantity));
+      await feedStocks.updateOne({ _id: latestStock._id }, { $set: { currentStock: newStock, updatedAt: now } });
+    }
+
+    const result = await feedUsages.insertOne(doc);
+    const created = await feedUsages.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizeFeedUsage(created));
+  } catch (err) {
+    console.error("POST /api/feeds/usages error:", err);
+    return res.status(500).json({ error: true, message: "Failed to add feed usage" });
+  }
+});
+
+app.get("/api/feeds/usages", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    const { feedTypeId, date, from, to, q } = req.query || {};
+    const filter = {};
+    if (feedTypeId && ObjectId.isValid(String(feedTypeId))) filter.feedTypeId = String(feedTypeId);
+    if (date) filter.date = String(date).slice(0, 10);
+    if (from || to) {
+      filter.date = filter.date || {};
+      if (from) filter.date.$gte = String(from).slice(0, 10);
+      if (to) filter.date.$lte = String(to).slice(0, 10);
+    }
+    if (q) {
+      const text = String(q).trim();
+      filter.$or = [
+        { feedName: { $regex: text, $options: 'i' } },
+        { cattleId: { $regex: text, $options: 'i' } },
+        { purpose: { $regex: text, $options: 'i' } }
+      ];
+    }
+    const list = await feedUsages.find(filter).sort({ date: -1, createdAt: -1 }).toArray();
+    return res.json(list.map(normalizeFeedUsage));
+  } catch (err) {
+    console.error("GET /api/feeds/usages error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load feed usages" });
+  }
+});
+
+app.delete("/api/feeds/usages/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid usage id" });
+    }
+    const usage = await feedUsages.findOne({ _id: new ObjectId(id) });
+    if (!usage) {
+      return res.status(404).json({ error: true, message: "Usage record not found" });
+    }
+    // Optionally revert stock (best effort on the latest stock batch)
+    const latestStock = await feedStocks.findOne({ feedTypeId: String(usage.feedTypeId) }, { sort: { purchaseDate: -1, createdAt: -1 } });
+    if (latestStock) {
+      const now = new Date().toISOString();
+      const newStock = Number(latestStock.currentStock || 0) + Number(usage.quantity || 0);
+      await feedStocks.updateOne({ _id: latestStock._id }, { $set: { currentStock: newStock, updatedAt: now } });
+    }
+    const result = await feedUsages.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: true, message: "Usage record not found" });
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /api/feeds/usages/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete feed usage" });
   }
 });
 
