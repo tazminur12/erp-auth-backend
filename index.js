@@ -781,7 +781,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, services, sales, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes;
+let db, users, branches, counters, customers, customerTypes, services, sales, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -832,6 +832,8 @@ async function initializeDatabase() {
     // Farm Finance (for FinancialReport frontend)
     farmExpenses = db.collection("farmExpenses");
     farmIncomes = db.collection("farmIncomes");
+    // Currency Exchange
+    exchanges = db.collection("exchanges");
   
    
 
@@ -11391,6 +11393,451 @@ process.on('SIGINT', async () => {
 });
 
 
+
+// ==================== CURRENCY EXCHANGE ROUTES ====================
+
+// POST: Create new currency exchange
+app.post("/api/exchanges", async (req, res) => {
+  try {
+    const {
+      date,
+      fullName,
+      mobileNumber,
+      nid,
+      type,
+      currencyCode,
+      currencyName,
+      exchangeRate,
+      quantity,
+      amount_bdt
+    } = req.body;
+
+    // Validation
+    if (!date || !fullName || !mobileNumber || !type || !currencyCode || !currencyName || !exchangeRate || !quantity) {
+      return res.status(400).json({
+        success: false,
+        error: 'Validation error',
+        message: 'Date, full name, mobile number, type, currency code, currency name, exchange rate, and quantity are required'
+      });
+    }
+
+    // Validate date format
+    if (!isValidDate(date)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Validation error',
+        message: 'Invalid date format. Please use YYYY-MM-DD format'
+      });
+    }
+
+    // Validate type
+    if (!['Buy', 'Sell'].includes(type)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Validation error',
+        message: 'Type must be either "Buy" or "Sell"'
+      });
+    }
+
+    // Validate exchange rate and quantity
+    const rate = Number(exchangeRate);
+    const qty = Number(quantity);
+
+    if (!Number.isFinite(rate) || rate <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Validation error',
+        message: 'Exchange rate must be a positive number'
+      });
+    }
+
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Validation error',
+        message: 'Quantity must be a positive number'
+      });
+    }
+
+    // Calculate amount if not provided
+    const calculatedAmount = rate * qty;
+
+    // Create exchange document
+    const exchangeData = {
+      date,
+      fullName: fullName.trim(),
+      mobileNumber: mobileNumber.trim(),
+      nid: nid ? nid.trim() : '',
+      type,
+      currencyCode,
+      currencyName,
+      exchangeRate: rate,
+      quantity: qty,
+      amount_bdt: amount_bdt || calculatedAmount,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await exchanges.insertOne(exchangeData);
+
+    res.status(201).json({
+      success: true,
+      message: 'Exchange created successfully',
+      exchange: { ...exchangeData, _id: result.insertedId }
+    });
+
+  } catch (error) {
+    console.error('Create exchange error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to create exchange'
+    });
+  }
+});
+
+// GET: Get all exchanges with pagination and filters
+app.get("/api/exchanges", async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 10,
+      type,
+      currencyCode,
+      dateFrom,
+      dateTo,
+      search
+    } = req.query;
+
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build query
+    const query = { isActive: { $ne: false } };
+
+    if (type && ['Buy', 'Sell'].includes(type)) {
+      query.type = type;
+    }
+
+    if (currencyCode) {
+      query.currencyCode = currencyCode;
+    }
+
+    if (dateFrom || dateTo) {
+      query.date = {};
+      if (dateFrom) query.date.$gte = dateFrom;
+      if (dateTo) query.date.$lte = dateTo;
+    }
+
+    if (search) {
+      query.$or = [
+        { fullName: { $regex: search, $options: 'i' } },
+        { mobileNumber: { $regex: search, $options: 'i' } },
+        { nid: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // Get total count
+    const total = await exchanges.countDocuments(query);
+
+    // Get exchanges
+    const exchangesList = await exchanges
+      .find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .toArray();
+
+    res.json({
+      success: true,
+      data: exchangesList,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get exchanges error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to fetch exchanges'
+    });
+  }
+});
+
+// GET: Get single exchange by ID
+app.get("/api/exchanges/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid ID',
+        message: 'Invalid exchange ID format'
+      });
+    }
+
+    const exchange = await exchanges.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!exchange) {
+      return res.status(404).json({
+        success: false,
+        error: 'Not found',
+        message: 'Exchange not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      exchange
+    });
+
+  } catch (error) {
+    console.error('Get exchange error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to fetch exchange'
+    });
+  }
+});
+
+// PUT: Update exchange by ID
+app.put("/api/exchanges/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      date,
+      fullName,
+      mobileNumber,
+      nid,
+      type,
+      currencyCode,
+      currencyName,
+      exchangeRate,
+      quantity,
+      amount_bdt
+    } = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid ID',
+        message: 'Invalid exchange ID format'
+      });
+    }
+
+    // Check if exchange exists
+    const existingExchange = await exchanges.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!existingExchange) {
+      return res.status(404).json({
+        success: false,
+        error: 'Not found',
+        message: 'Exchange not found'
+      });
+    }
+
+    // Build update object
+    const updateData = {
+      updatedAt: new Date()
+    };
+
+    if (date !== undefined) {
+      if (!isValidDate(date)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'Invalid date format. Please use YYYY-MM-DD format'
+        });
+      }
+      updateData.date = date;
+    }
+
+    if (fullName !== undefined) {
+      if (!fullName || fullName.trim() === '') {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'Full name is required'
+        });
+      }
+      updateData.fullName = fullName.trim();
+    }
+
+    if (mobileNumber !== undefined) {
+      if (!mobileNumber || mobileNumber.trim() === '') {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'Mobile number is required'
+        });
+      }
+      updateData.mobileNumber = mobileNumber.trim();
+    }
+
+    if (nid !== undefined) {
+      updateData.nid = nid ? nid.trim() : '';
+    }
+
+    if (type !== undefined) {
+      if (!['Buy', 'Sell'].includes(type)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'Type must be either "Buy" or "Sell"'
+        });
+      }
+      updateData.type = type;
+    }
+
+    if (currencyCode !== undefined) {
+      updateData.currencyCode = currencyCode;
+    }
+
+    if (currencyName !== undefined) {
+      updateData.currencyName = currencyName;
+    }
+
+    if (exchangeRate !== undefined) {
+      const rate = Number(exchangeRate);
+      if (!Number.isFinite(rate) || rate <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'Exchange rate must be a positive number'
+        });
+      }
+      updateData.exchangeRate = rate;
+    }
+
+    if (quantity !== undefined) {
+      const qty = Number(quantity);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'Quantity must be a positive number'
+        });
+      }
+      updateData.quantity = qty;
+    }
+
+    // Recalculate amount if exchangeRate or quantity changed
+    if (updateData.exchangeRate !== undefined || updateData.quantity !== undefined) {
+      const finalRate = updateData.exchangeRate !== undefined ? updateData.exchangeRate : existingExchange.exchangeRate;
+      const finalQty = updateData.quantity !== undefined ? updateData.quantity : existingExchange.quantity;
+      updateData.amount_bdt = finalRate * finalQty;
+    } else if (amount_bdt !== undefined) {
+      updateData.amount_bdt = Number(amount_bdt);
+    }
+
+    // Update exchange
+    const result = await exchanges.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Not found',
+        message: 'Exchange not found'
+      });
+    }
+
+    // Get updated exchange
+    const updatedExchange = await exchanges.findOne({ _id: new ObjectId(id) });
+
+    res.json({
+      success: true,
+      message: 'Exchange updated successfully',
+      exchange: updatedExchange
+    });
+
+  } catch (error) {
+    console.error('Update exchange error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to update exchange'
+    });
+  }
+});
+
+// DELETE: Delete exchange by ID (soft delete)
+app.delete("/api/exchanges/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid ID',
+        message: 'Invalid exchange ID format'
+      });
+    }
+
+    // Check if exchange exists
+    const existingExchange = await exchanges.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!existingExchange) {
+      return res.status(404).json({
+        success: false,
+        error: 'Not found',
+        message: 'Exchange not found'
+      });
+    }
+
+    // Soft delete
+    const result = await exchanges.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Not found',
+        message: 'Exchange not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Exchange deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete exchange error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to delete exchange'
+    });
+  }
+});
 
 // Error handling middleware
 app.use((err, req, res, next) => {
