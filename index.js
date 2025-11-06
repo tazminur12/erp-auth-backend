@@ -781,7 +781,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, services, sales, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits;
+let db, users, branches, counters, customers, customerTypes, services, sales, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -824,6 +824,15 @@ async function initializeDatabase() {
     healthRecords = db.collection("healthRecords");
     vaccinations = db.collection("vaccinations");
     vetVisits = db.collection("vetVisits");
+    breedings = db.collection("breedings");
+    calvings = db.collection("calvings");
+    // Farm HR (for EmployeeManagement frontend)
+    farmEmployees = db.collection("farmEmployees");
+    attendanceRecords = db.collection("attendanceRecords");
+    // Farm Finance (for FinancialReport frontend)
+    farmExpenses = db.collection("farmExpenses");
+    farmIncomes = db.collection("farmIncomes");
+  
    
 
 
@@ -870,6 +879,27 @@ async function initializeDatabase() {
         vaccinations.createIndex({ cattleId: 1, date: -1 }, { name: "vacc_cattleId_date_desc" }),
         vaccinations.createIndex({ nextDueDate: 1 }, { name: "vacc_nextDueDate" }),
         vetVisits.createIndex({ cattleId: 1, date: -1 }, { name: "visit_cattleId_date_desc" })
+        ,
+        // Breeding & Calving indexes
+        breedings.createIndex({ cowId: 1, breedingDate: -1 }, { name: "breed_cow_breedingDate_desc" }),
+        breedings.createIndex({ expectedCalvingDate: 1 }, { name: "breed_expectedCalvingDate" }),
+        calvings.createIndex({ cowId: 1, calvingDate: -1 }, { name: "calv_cow_calvingDate_desc" })
+        ,
+        // Farm HR helpful indexes
+        farmEmployees.createIndex({ id: 1 }, { unique: true, name: "farmEmployees_id_unique" }),
+        farmEmployees.createIndex({ status: 1, createdAt: -1 }, { name: "farmEmployees_status_createdAt" }),
+        farmEmployees.createIndex({ name: 1 }, { name: "farmEmployees_name" }),
+        farmEmployees.createIndex({ phone: 1 }, { name: "farmEmployees_phone" }),
+        attendanceRecords.createIndex({ employeeId: 1, date: -1 }, { name: "attendance_employee_date_desc" }),
+        attendanceRecords.createIndex({ date: -1, status: 1 }, { name: "attendance_date_status" })
+        ,
+        // Farm finance indexes
+        farmExpenses.createIndex({ id: 1 }, { unique: true, name: "farmExpenses_id_unique" }),
+        farmExpenses.createIndex({ createdAt: -1 }, { name: "farmExpenses_createdAt_desc" }),
+        farmExpenses.createIndex({ category: 1, createdAt: -1 }, { name: "farmExpenses_category_createdAt" }),
+        farmIncomes.createIndex({ id: 1 }, { unique: true, name: "farmIncomes_id_unique" }),
+        farmIncomes.createIndex({ date: -1 }, { name: "farmIncomes_date_desc" }),
+        farmIncomes.createIndex({ source: 1, date: -1 }, { name: "farmIncomes_source_date" })
       ]);
     } catch (e) {
       console.warn("⚠️ Index creation warning:", e.message);
@@ -2746,20 +2776,22 @@ app.get("/api/categories-summary", async (req, res) => {
 
 
 // ==================== OPERATING EXPENSE CATEGORIES (CRUD) ====================
+// Valid icon keys matching frontend component
+const VALID_ICON_KEYS = ["FileText", "Scale", "Megaphone", "Laptop", "CreditCard", "Package", "Receipt", "RotateCcw"];
+
 // Normalizer for operating expense category
 const normalizeOpExCategory = (doc) => ({
   id: String(doc._id || doc.id || ""),
   name: doc.name || "",
   banglaName: doc.banglaName || "",
   description: doc.description || "",
-  iconKey: doc.iconKey || "FileText",
+  iconKey: VALID_ICON_KEYS.includes(doc.iconKey) ? doc.iconKey : "FileText",
   color: doc.color || "",
   bgColor: doc.bgColor || "",
   iconColor: doc.iconColor || "",
   totalAmount: Number(doc.totalAmount || 0),
   lastUpdated: doc.lastUpdated || null,
-  itemCount: Number(doc.itemCount || 0),
-  subcategories: Array.isArray(doc.subcategories) ? doc.subcategories : []
+  itemCount: Number(doc.itemCount || 0)
 });
 
 // GET all operating expense categories
@@ -2805,13 +2837,15 @@ app.post("/api/operating-expenses/categories", async (req, res) => {
       iconColor = "",
       totalAmount = 0,
       lastUpdated,
-      itemCount = 0,
-      subcategories = []
+      itemCount = 0
     } = req.body || {};
 
     if (!name || !String(name).trim()) {
       return res.status(400).json({ error: true, message: "Name is required" });
     }
+
+    // Validate iconKey
+    const validIconKey = VALID_ICON_KEYS.includes(String(iconKey || "")) ? String(iconKey) : "FileText";
 
     // Prevent duplicate name (case-insensitive)
     const existing = await operatingExpenseCategories.findOne({
@@ -2824,16 +2858,15 @@ app.post("/api/operating-expenses/categories", async (req, res) => {
     const todayStr = new Date().toISOString().slice(0, 10);
     const doc = {
       name: String(name).trim(),
-      banglaName: String(banglaName || ""),
-      description: String(description || ""),
-      iconKey: String(iconKey || "FileText"),
+      banglaName: String(banglaName || "").trim(),
+      description: String(description || "").trim(),
+      iconKey: validIconKey,
       color: String(color || ""),
       bgColor: String(bgColor || ""),
       iconColor: String(iconColor || ""),
       totalAmount: Number(totalAmount || 0),
       lastUpdated: lastUpdated || todayStr,
-      itemCount: Number(itemCount || 0),
-      subcategories: Array.isArray(subcategories) ? subcategories : []
+      itemCount: Number(itemCount || 0)
     };
 
     const result = await operatingExpenseCategories.insertOne(doc);
@@ -2863,8 +2896,7 @@ app.put("/api/operating-expenses/categories/:id", async (req, res) => {
       "iconColor",
       "totalAmount",
       "lastUpdated",
-      "itemCount",
-      "subcategories"
+      "itemCount"
     ];
     const updates = Object.fromEntries(
       Object.entries(req.body || {}).filter(([k]) => allowed.includes(k))
@@ -2886,14 +2918,24 @@ app.put("/api/operating-expenses/categories/:id", async (req, res) => {
       updates.name = newName;
     }
 
+    // Validate iconKey if provided
+    if (typeof updates.iconKey !== "undefined") {
+      updates.iconKey = VALID_ICON_KEYS.includes(String(updates.iconKey || "")) ? String(updates.iconKey) : "FileText";
+    }
+
+    // Trim string fields
+    if (typeof updates.banglaName !== "undefined") {
+      updates.banglaName = String(updates.banglaName || "").trim();
+    }
+    if (typeof updates.description !== "undefined") {
+      updates.description = String(updates.description || "").trim();
+    }
+
     if (typeof updates.totalAmount !== "undefined") {
       updates.totalAmount = Number(updates.totalAmount || 0);
     }
     if (typeof updates.itemCount !== "undefined") {
       updates.itemCount = Number(updates.itemCount || 0);
-    }
-    if (typeof updates.subcategories !== "undefined" && !Array.isArray(updates.subcategories)) {
-      updates.subcategories = [];
     }
 
     // Auto-update lastUpdated to today if not explicitly provided
@@ -2932,8 +2974,6 @@ app.delete("/api/operating-expenses/categories/:id", async (req, res) => {
     return res.status(500).json({ error: true, message: "Failed to delete category" });
   }
 });
-
-
 
 // ==================== PERSONAL EXPENSE CATEGORIES (CRUD) ====================
 // Normalizer for personal expense category
@@ -3056,142 +3096,8 @@ app.delete("/api/personal-expenses/categories/:id", async (req, res) => {
   }
 });
 
-// DELETE personal expense category by name (case-insensitive)
-app.delete("/api/personal-expenses/categories/by-name/:name", async (req, res) => {
-  try {
-    const { name } = req.params;
-    const result = await personalExpenseCategories.deleteOne(
-      { name: String(name) },
-      { collation: { locale: "en", strength: 2 } }
-    );
-    if (!result || result.deletedCount === 0) {
-      return res.status(404).json({ error: true, message: "Category not found" });
-    }
-    return res.json({ success: true });
-  } catch (err) {
-    console.error("DELETE /api/personal-expenses/categories/by-name/:name error:", err);
-    return res.status(500).json({ error: true, message: "Failed to delete category" });
-  }
-});
 
 
-
-
-// -------------------- OPERATING EXPENSE SUBCATEGORIES --------------------
-// GET subcategories list for a category
-app.get("/api/operating-expenses/categories/:id/subcategories", async (req, res) => {
-  try {
-    const { id } = req.params;
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: true, message: "Invalid category id" });
-    }
-    const doc = await operatingExpenseCategories.findOne({ _id: new ObjectId(id) });
-    if (!doc) return res.status(404).json({ error: true, message: "Category not found" });
-    return res.json(Array.isArray(doc.subcategories) ? doc.subcategories : []);
-  } catch (err) {
-    console.error("GET /api/operating-expenses/categories/:id/subcategories error:", err);
-    return res.status(500).json({ error: true, message: "Failed to load subcategories" });
-  }
-});
-
-// CREATE subcategory
-app.post("/api/operating-expenses/categories/:id/subcategories", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { name, description = "", iconKey = "FileText", banglaName = "" } = req.body || {};
-    if (!name || !String(name).trim()) {
-      return res.status(400).json({ error: true, message: "Subcategory name is required" });
-    }
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: true, message: "Invalid category id" });
-    }
-
-    const filter = { _id: new ObjectId(id) };
-    const cat = await operatingExpenseCategories.findOne(filter);
-    if (!cat) return res.status(404).json({ error: true, message: "Category not found" });
-
-    const currentSubs = Array.isArray(cat.subcategories) ? cat.subcategories : [];
-    const exists = currentSubs.some(
-      (s) => String(s.name || "").trim().toLowerCase() === String(name).trim().toLowerCase()
-    );
-    if (exists) {
-      return res.status(409).json({ error: true, message: "A subcategory with this name already exists" });
-    }
-
-    const sub = {
-      id: new ObjectId().toString(),
-      name: String(name).trim(),
-      banglaName: String(banglaName || ""),
-      description: String(description || ""),
-      iconKey: String(iconKey || "FileText")
-    };
-
-    await operatingExpenseCategories.updateOne(filter, { $push: { subcategories: sub } });
-    const updated = await operatingExpenseCategories.findOne(filter);
-    return res.status(201).json(normalizeOpExCategory(updated));
-  } catch (err) {
-    console.error("POST /api/operating-expenses/categories/:id/subcategories error:", err);
-    return res.status(500).json({ error: true, message: "Failed to add subcategory" });
-  }
-});
-
-// UPDATE subcategory fields
-app.patch("/api/operating-expenses/categories/:id/subcategories/:subId", async (req, res) => {
-  try {
-    const { id, subId } = req.params;
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: true, message: "Invalid category id" });
-    }
-    const allowed = ["name", "banglaName", "description", "iconKey"];
-    const updates = Object.fromEntries(
-      Object.entries(req.body || {}).filter(([k]) => allowed.includes(k))
-    );
-    if (Object.keys(updates).length === 0) {
-      return res.status(400).json({ error: true, message: "No valid fields to update" });
-    }
-
-    const filter = { _id: new ObjectId(id) };
-    const cat = await operatingExpenseCategories.findOne(filter);
-    if (!cat) return res.status(404).json({ error: true, message: "Category not found" });
-
-    const nextSubs = (Array.isArray(cat.subcategories) ? cat.subcategories : []).map((s) => {
-      if (String(s.id || s._id) === String(subId)) {
-        const merged = { ...s, ...updates };
-        if (typeof merged.name === "string") merged.name = merged.name.trim();
-        return merged;
-      }
-      return s;
-    });
-
-    await operatingExpenseCategories.updateOne(filter, { $set: { subcategories: nextSubs } });
-    const updated = await operatingExpenseCategories.findOne(filter);
-    return res.json(normalizeOpExCategory(updated));
-  } catch (err) {
-    console.error("PATCH /api/operating-expenses/categories/:id/subcategories/:subId error:", err);
-    return res.status(500).json({ error: true, message: "Failed to update subcategory" });
-  }
-});
-
-// DELETE subcategory
-app.delete("/api/operating-expenses/categories/:id/subcategories/:subId", async (req, res) => {
-  try {
-    const { id, subId } = req.params;
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: true, message: "Invalid category id" });
-    }
-    const result = await operatingExpenseCategories.updateOne(
-      { _id: new ObjectId(id) },
-      { $pull: { subcategories: { id: String(subId) } } }
-    );
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ error: true, message: "Category not found" });
-    }
-    return res.json({ success: true });
-  } catch (err) {
-    console.error("DELETE /api/operating-expenses/categories/:id/subcategories/:subId error:", err);
-    return res.status(500).json({ error: true, message: "Failed to delete subcategory" });
-  }
-});
 
 // ✅ GET: Transactions stats (aggregate by category/subcategory)
 // Example: /api/transactions/stats?groupBy=category,subcategory&fromDate=2025-01-01&toDate=2025-12-31
@@ -4272,7 +4178,8 @@ app.post("/api/transactions", async (req, res) => {
       customerId,
       category,
       customerBankAccount,
-      employeeReference
+      employeeReference,
+      operatingExpenseCategoryId
     } = req.body;
 
     // Extract values from nested objects if provided
@@ -4283,6 +4190,7 @@ app.post("/api/transactions", async (req, res) => {
     const finalToAccountId = toAccountId || creditAccount?.id;
     const finalServiceCategory = serviceCategory || category;
     const finalSubCategory = typeof req.body?.subCategory !== 'undefined' ? String(req.body.subCategory || '').trim() : undefined;
+    const finalOperatingExpenseCategoryId = operatingExpenseCategoryId || req.body?.operatingExpenseCategory?.id;
     
     // Determine final party type defensively
     let finalPartyType = String(partyType || '').toLowerCase();
@@ -4341,7 +4249,36 @@ app.post("/api/transactions", async (req, res) => {
       ? { $or: [{ customerId: searchPartyId }, { _id: new ObjectId(searchPartyId) }], isActive: true }
       : { $or: [{ customerId: searchPartyId }, { _id: searchPartyId }], isActive: true };
 
-    if (finalPartyType === 'customer') {
+    // Special-case detection: Miraj Industries farm incomes/expenses by numeric id
+    let mirajType = null; // 'miraj-income' | 'miraj-expense'
+    let mirajDoc = null;
+    const numericPartyId = Number(searchPartyId);
+    if (!isNaN(numericPartyId)) {
+      try {
+        const fi = await farmIncomes.findOne({ id: numericPartyId });
+        if (fi) {
+          mirajType = 'miraj-income';
+          mirajDoc = fi;
+        } else {
+          const fe = await farmExpenses.findOne({ id: numericPartyId });
+          if (fe) {
+            mirajType = 'miraj-expense';
+            mirajDoc = fe;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (mirajType) {
+      // Treat as virtual party; skip regular party lookups
+      finalPartyType = mirajType;
+      party = {
+        _id: null,
+        name: mirajType === 'miraj-income' ? (mirajDoc.customer || mirajDoc.source || 'Income') : (mirajDoc.vendor || 'Expense'),
+        phone: null,
+        email: null
+      };
+    } else if (finalPartyType === 'customer') {
       party = await customers.findOne(searchCondition);
     } else if (finalPartyType === 'agent') {
       const agentCondition = isValidObjectId
@@ -4576,6 +4513,7 @@ app.post("/api/transactions", async (req, res) => {
         notes: notes || '',
         reference: reference || paymentDetails?.reference || transactionId,
         employeeReference: employeeReference || null,
+        operatingExpenseCategoryId: finalOperatingExpenseCategoryId && ObjectId.isValid(String(finalOperatingExpenseCategoryId)) ? String(finalOperatingExpenseCategoryId) : null,
         status: 'completed',
         date: new Date(),
         createdAt: new Date(),
@@ -4882,6 +4820,37 @@ app.post("/api/transactions", async (req, res) => {
       }
 
       transactionResult = await transactions.insertOne(transactionData, { session });
+
+      // 8.7 If Miraj (farm) income/expense, sync the corresponding doc's amount to transaction amount
+      if (finalPartyType === 'miraj-income' && mirajDoc) {
+        await farmIncomes.updateOne(
+          { id: Number(finalPartyId) },
+          { $set: { amount: numericAmount, updatedAt: new Date() } },
+          { session }
+        );
+      } else if (finalPartyType === 'miraj-expense' && mirajDoc) {
+        await farmExpenses.updateOne(
+          { id: Number(finalPartyId) },
+          { $set: { amount: numericAmount, updatedAt: new Date() } },
+          { session }
+        );
+      }
+
+      // 8.8 If operating expense category is provided, update category totals
+      if (finalOperatingExpenseCategoryId && ObjectId.isValid(String(finalOperatingExpenseCategoryId))) {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        // Only update for debit transactions (expenses)
+        if (transactionType === 'debit') {
+          await operatingExpenseCategories.updateOne(
+            { _id: new ObjectId(String(finalOperatingExpenseCategoryId)) },
+            { 
+              $inc: { totalAmount: numericAmount, itemCount: 1 }, 
+              $set: { lastUpdated: todayStr } 
+            },
+            { session }
+          );
+        }
+      }
 
       // 9. Commit transaction
       await session.commitTransaction();
@@ -5341,7 +5310,37 @@ app.get("/api/cattle/:id", async (req, res) => {
       cost: Number(vv.cost || 0),
       notes: vv.notes || ""
     }));
-    return res.json({ ...normalizeCattle(doc), milkRecords: milk, healthRecords: health, vaccinationRecords, vetVisitRecords });
+    // Attach breeding and calving
+    const [breedingDocs, calvingDocs] = await Promise.all([
+      breedings.find({ cowId: String(doc._id) }).sort({ breedingDate: -1 }).limit(200).toArray(),
+      calvings.find({ cowId: String(doc._id) }).sort({ calvingDate: -1 }).limit(200).toArray()
+    ]);
+    const breedingRecords = breedingDocs.map((b) => ({
+      id: String(b._id || b.id || ""),
+      cowId: String(b.cowId || ""),
+      cowName: doc.name || "",
+      bullId: b.bullId || "",
+      bullName: b.bullName || "",
+      breedingDate: b.breedingDate || "",
+      method: b.method || "natural",
+      success: b.success || "pending",
+      notes: b.notes || "",
+      expectedCalvingDate: b.expectedCalvingDate || ""
+    }));
+    const calvingRecords = calvingDocs.map((c) => ({
+      id: String(c._id || c.id || ""),
+      cowId: String(c.cowId || ""),
+      cowName: doc.name || "",
+      calvingDate: c.calvingDate || "",
+      calfGender: c.calfGender || "",
+      calfWeight: Number(c.calfWeight || 0),
+      calfHealth: c.calfHealth || "healthy",
+      calvingType: c.calvingType || "normal",
+      complications: c.complications || "",
+      notes: c.notes || "",
+      calfId: c.calfId || ""
+    }));
+    return res.json({ ...normalizeCattle(doc), milkRecords: milk, healthRecords: health, vaccinationRecords, vetVisitRecords, breedingRecords, calvingRecords });
   } catch (err) {
     console.error("GET /api/cattle/:id error:", err);
     return res.status(500).json({ error: true, message: "Failed to load cattle" });
@@ -6166,6 +6165,238 @@ app.delete("/api/feeds/usages/:id", async (req, res) => {
     return res.status(500).json({ error: true, message: "Failed to delete feed usage" });
   }
 });
+
+// ==================== BREEDINGS (CRUD) ====================
+const normalizeBreeding = (doc) => ({
+  id: String(doc._id || doc.id || ""),
+  cowId: String(doc.cowId || ""),
+  cowName: doc.cowName || "",
+  bullId: doc.bullId || "",
+  bullName: doc.bullName || "",
+  breedingDate: doc.breedingDate || "",
+  method: doc.method || "natural",
+  success: doc.success || "pending",
+  notes: doc.notes || "",
+  expectedCalvingDate: doc.expectedCalvingDate || "",
+  createdAt: doc.createdAt || null,
+  updatedAt: doc.updatedAt || null
+});
+
+app.post("/api/breedings", async (req, res) => {
+  try {
+    if (dbConnectionError) return res.status(500).json({ error: true, message: "Database not initialized" });
+    const { cowId, bullId = "", bullName = "", breedingDate, method = "natural", success = "pending", notes = "", expectedCalvingDate = "" } = req.body || {};
+    if (!cowId || !ObjectId.isValid(String(cowId))) return res.status(400).json({ error: true, message: "Valid cowId is required" });
+    if (!breedingDate) return res.status(400).json({ error: true, message: "breedingDate is required" });
+    const cow = await cattle.findOne({ _id: new ObjectId(String(cowId)) });
+    if (!cow) return res.status(404).json({ error: true, message: "Cow not found" });
+    const d = String(breedingDate).slice(0, 10);
+    const now = new Date().toISOString();
+    let expected = String(expectedCalvingDate || "");
+    if (!expected) {
+      const base = new Date(d);
+      if (!isNaN(base.getTime())) {
+        const exp = new Date(base.getTime() + 280 * 24 * 60 * 60 * 1000);
+        expected = exp.toISOString().slice(0, 10);
+      }
+    }
+    const doc = {
+      cowId: String(cow._id),
+      cowName: String(cow.name || ""),
+      bullId: String(bullId || ""),
+      bullName: String(bullName || ""),
+      breedingDate: d,
+      method: String(method || "natural"),
+      success: String(success || "pending"),
+      notes: String(notes || ""),
+      expectedCalvingDate: expected,
+      createdAt: now,
+      updatedAt: now
+    };
+    const result = await breedings.insertOne(doc);
+    const created = await breedings.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizeBreeding(created));
+  } catch (err) {
+    console.error("POST /api/breedings error:", err);
+    return res.status(500).json({ error: true, message: "Failed to create breeding" });
+  }
+});
+
+app.get("/api/breedings", async (req, res) => {
+  try {
+    if (dbConnectionError) return res.status(500).json({ error: true, message: "Database not initialized" });
+    const { cowId, from, to, method, success, q } = req.query || {};
+    const filter = {};
+    if (cowId && ObjectId.isValid(String(cowId))) filter.cowId = String(cowId);
+    if (from || to) {
+      filter.breedingDate = {};
+      if (from) filter.breedingDate.$gte = String(from).slice(0, 10);
+      if (to) filter.breedingDate.$lte = String(to).slice(0, 10);
+    }
+    if (method) filter.method = String(method);
+    if (success) filter.success = String(success);
+    if (q) {
+      const text = String(q).trim();
+      filter.$or = [
+        { cowName: { $regex: text, $options: 'i' } },
+        { bullName: { $regex: text, $options: 'i' } },
+        { notes: { $regex: text, $options: 'i' } }
+      ];
+    }
+    const list = await breedings.find(filter).sort({ breedingDate: -1, createdAt: -1 }).toArray();
+    return res.json(list.map(normalizeBreeding));
+  } catch (err) {
+    console.error("GET /api/breedings error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load breedings" });
+  }
+});
+
+app.put("/api/breedings/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: true, message: "Invalid breeding id" });
+    const allowed = ["bullId","bullName","breedingDate","method","success","notes","expectedCalvingDate"];
+    const updates = Object.fromEntries(Object.entries(req.body || {}).filter(([k]) => allowed.includes(k)));
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: true, message: "No valid fields to update" });
+    if (typeof updates.breedingDate !== 'undefined') updates.breedingDate = String(updates.breedingDate).slice(0, 10);
+    if (typeof updates.expectedCalvingDate !== 'undefined') updates.expectedCalvingDate = String(updates.expectedCalvingDate || "");
+    updates.updatedAt = new Date().toISOString();
+    const result = await breedings.findOneAndUpdate({ _id: new ObjectId(id) }, { $set: updates }, { returnDocument: 'after' });
+    if (!result || !result.value) return res.status(404).json({ error: true, message: "Breeding not found" });
+    return res.json(normalizeBreeding(result.value));
+  } catch (err) {
+    console.error("PUT /api/breedings/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to update breeding" });
+  }
+});
+
+app.delete("/api/breedings/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: true, message: "Invalid breeding id" });
+    const result = await breedings.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) return res.status(404).json({ error: true, message: "Breeding not found" });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /api/breedings/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete breeding" });
+  }
+});
+
+// ==================== CALVINGS (CRUD) ====================
+const normalizeCalving = (doc) => ({
+  id: String(doc._id || doc.id || ""),
+  cowId: String(doc.cowId || ""),
+  cowName: doc.cowName || "",
+  calvingDate: doc.calvingDate || "",
+  calfGender: doc.calfGender || "",
+  calfWeight: Number(doc.calfWeight || 0),
+  calfHealth: doc.calfHealth || "healthy",
+  calvingType: doc.calvingType || "normal",
+  complications: doc.complications || "",
+  notes: doc.notes || "",
+  calfId: doc.calfId || "",
+  createdAt: doc.createdAt || null,
+  updatedAt: doc.updatedAt || null
+});
+
+app.post("/api/calvings", async (req, res) => {
+  try {
+    if (dbConnectionError) return res.status(500).json({ error: true, message: "Database not initialized" });
+    const { cowId, calvingDate, calfGender, calfWeight = 0, calfHealth = "healthy", calvingType = "normal", complications = "", notes = "", calfId = "" } = req.body || {};
+    if (!cowId || !ObjectId.isValid(String(cowId))) return res.status(400).json({ error: true, message: "Valid cowId is required" });
+    if (!calvingDate) return res.status(400).json({ error: true, message: "calvingDate is required" });
+    if (!calfGender) return res.status(400).json({ error: true, message: "calfGender is required" });
+    const cow = await cattle.findOne({ _id: new ObjectId(String(cowId)) });
+    if (!cow) return res.status(404).json({ error: true, message: "Cow not found" });
+    const d = String(calvingDate).slice(0, 10);
+    const now = new Date().toISOString();
+    const doc = {
+      cowId: String(cow._id),
+      cowName: String(cow.name || ""),
+      calvingDate: d,
+      calfGender: String(calfGender),
+      calfWeight: Number(calfWeight || 0),
+      calfHealth: String(calfHealth || "healthy"),
+      calvingType: String(calvingType || "normal"),
+      complications: String(complications || ""),
+      notes: String(notes || ""),
+      calfId: String(calfId || ""),
+      createdAt: now,
+      updatedAt: now
+    };
+    const result = await calvings.insertOne(doc);
+    const created = await calvings.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizeCalving(created));
+  } catch (err) {
+    console.error("POST /api/calvings error:", err);
+    return res.status(500).json({ error: true, message: "Failed to create calving" });
+  }
+});
+
+app.get("/api/calvings", async (req, res) => {
+  try {
+    if (dbConnectionError) return res.status(500).json({ error: true, message: "Database not initialized" });
+    const { cowId, from, to, calfHealth, calvingType, q } = req.query || {};
+    const filter = {};
+    if (cowId && ObjectId.isValid(String(cowId))) filter.cowId = String(cowId);
+    if (from || to) {
+      filter.calvingDate = {};
+      if (from) filter.calvingDate.$gte = String(from).slice(0, 10);
+      if (to) filter.calvingDate.$lte = String(to).slice(0, 10);
+    }
+    if (calfHealth) filter.calfHealth = String(calfHealth);
+    if (calvingType) filter.calvingType = String(calvingType);
+    if (q) {
+      const text = String(q).trim();
+      filter.$or = [
+        { cowName: { $regex: text, $options: 'i' } },
+        { calfId: { $regex: text, $options: 'i' } },
+        { notes: { $regex: text, $options: 'i' } }
+      ];
+    }
+    const list = await calvings.find(filter).sort({ calvingDate: -1, createdAt: -1 }).toArray();
+    return res.json(list.map(normalizeCalving));
+  } catch (err) {
+    console.error("GET /api/calvings error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load calvings" });
+  }
+});
+
+app.put("/api/calvings/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: true, message: "Invalid calving id" });
+    const allowed = ["calvingDate","calfGender","calfWeight","calfHealth","calvingType","complications","notes","calfId"];
+    const updates = Object.fromEntries(Object.entries(req.body || {}).filter(([k]) => allowed.includes(k)));
+    if (Object.keys(updates).length === 0) return res.status(400).json({ error: true, message: "No valid fields to update" });
+    if (typeof updates.calvingDate !== 'undefined') updates.calvingDate = String(updates.calvingDate).slice(0, 10);
+    if (typeof updates.calfWeight !== 'undefined') updates.calfWeight = Number(updates.calfWeight || 0);
+    updates.updatedAt = new Date().toISOString();
+    const result = await calvings.findOneAndUpdate({ _id: new ObjectId(id) }, { $set: updates }, { returnDocument: 'after' });
+    if (!result || !result.value) return res.status(404).json({ error: true, message: "Calving not found" });
+    return res.json(normalizeCalving(result.value));
+  } catch (err) {
+    console.error("PUT /api/calvings/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to update calving" });
+  }
+});
+
+app.delete("/api/calvings/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) return res.status(400).json({ error: true, message: "Invalid calving id" });
+    const result = await calvings.deleteOne({ _id: new ObjectId(id) });
+    if (result.deletedCount === 0) return res.status(404).json({ error: true, message: "Calving not found" });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE /api/calvings/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete calving" });
+  }
+});
+
+
+
 
 // ==================== ORDER ROUTES ====================
 
@@ -10637,6 +10868,481 @@ app.get("/hr/employers/stats/overview", async (req, res) => {
       error: "Internal server error",
       message: "Failed to fetch employee statistics"
     });
+  }
+});
+
+// ==================== FARM EMPLOYEE MANAGEMENT (Simple API) ====================
+
+// Helper to generate simple sequential IDs with prefix (stored in counters)
+async function generateSequentialId(prefix) {
+  const key = `seq_${prefix}`;
+  const result = await counters.findOneAndUpdate(
+    { counterKey: key },
+    { $inc: { sequence: 1 } },
+    { upsert: true, returnDocument: 'after' }
+  );
+  const seq = String((result.value?.sequence) || 1).padStart(3, '0');
+  return `${prefix}${seq}`;
+}
+
+// POST: Create employee
+app.post("/api/employees", async (req, res) => {
+  try {
+    const {
+      name,
+      position,
+      phone,
+      email = '',
+      address = '',
+      joinDate,
+      salary,
+      workHours,
+      status = 'active',
+      notes = ''
+    } = req.body || {};
+
+    if (!name || !position || !phone || !joinDate || salary === undefined || workHours === undefined) {
+      return res.status(400).json({ success: false, message: "Missing required fields" });
+    }
+
+    const id = await generateSequentialId('EMP');
+
+    const doc = {
+      id,
+      name: String(name).trim(),
+      position: String(position).trim(),
+      phone: String(phone).trim(),
+      email: String(email || '').trim(),
+      address: String(address || '').trim(),
+      joinDate: String(joinDate), // yyyy-mm-dd
+      salary: Number(salary),
+      workHours: Number(workHours),
+      status: String(status),
+      notes: String(notes || ''),
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    await farmEmployees.insertOne(doc);
+    res.json({ success: true, data: doc });
+  } catch (e) {
+    console.error('Create farm employee error:', e);
+    res.status(500).json({ success: false, message: 'Failed to create employee' });
+  }
+});
+
+// GET: List employees with optional filters: search, status
+app.get("/api/employees", async (req, res) => {
+  try {
+    const { search = '', status = 'all' } = req.query || {};
+    const filter = { isActive: { $ne: false } };
+    if (status && status !== 'all') filter.status = String(status);
+    if (search) {
+      const s = String(search);
+      filter.$or = [
+        { name: { $regex: s, $options: 'i' } },
+        { position: { $regex: s, $options: 'i' } },
+        { phone: { $regex: s } }
+      ];
+    }
+    const data = await farmEmployees.find(filter).sort({ createdAt: -1 }).toArray();
+    res.json({ success: true, data });
+  } catch (e) {
+    console.error('List farm employees error:', e);
+    res.status(500).json({ success: false, message: 'Failed to fetch employees' });
+  }
+});
+
+// GET: Single employee by id
+app.get("/api/employees/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const emp = await farmEmployees.findOne({ id, isActive: { $ne: false } });
+    if (!emp) return res.status(404).json({ success: false, message: 'Employee not found' });
+    res.json({ success: true, data: emp });
+  } catch (e) {
+    console.error('Get farm employee error:', e);
+    res.status(500).json({ success: false, message: 'Failed to fetch employee' });
+  }
+});
+
+// DELETE: Employee by id (soft delete) and cascade attendance soft delete
+app.delete("/api/employees/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const emp = await farmEmployees.findOne({ id, isActive: { $ne: false } });
+    if (!emp) return res.status(404).json({ success: false, message: 'Employee not found' });
+    await farmEmployees.updateOne({ id }, { $set: { isActive: false, updatedAt: new Date() } });
+    await attendanceRecords.updateMany({ employeeId: id }, { $set: { isActive: false, updatedAt: new Date() } });
+    res.json({ success: true, message: 'Employee deleted' });
+  } catch (e) {
+    console.error('Delete farm employee error:', e);
+    res.status(500).json({ success: false, message: 'Failed to delete employee' });
+  }
+});
+
+// POST: Attendance
+app.post("/api/attendance", async (req, res) => {
+  try {
+    const {
+      employeeId,
+      date,
+      checkIn = '',
+      checkOut = '',
+      status = 'present',
+      notes = ''
+    } = req.body || {};
+
+    if (!employeeId || !date) {
+      return res.status(400).json({ success: false, message: 'employeeId and date are required' });
+    }
+
+    const emp = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } });
+    if (!emp) return res.status(404).json({ success: false, message: 'Employee not found' });
+
+    const attId = await generateSequentialId('ATT');
+    const doc = {
+      id: attId,
+      employeeId,
+      employeeName: emp.name,
+      date: String(date),
+      checkIn: String(checkIn || ''),
+      checkOut: String(checkOut || ''),
+      status: String(status),
+      notes: String(notes || ''),
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    await attendanceRecords.insertOne(doc);
+    res.json({ success: true, data: doc });
+  } catch (e) {
+    console.error('Create attendance error:', e);
+    res.status(500).json({ success: false, message: 'Failed to add attendance' });
+  }
+});
+
+// GET: Attendance (optional: limit)
+app.get("/api/attendance", async (req, res) => {
+  try {
+    const { limit = 20, employeeId, date } = req.query || {};
+    const filter = { isActive: { $ne: false } };
+    if (employeeId) filter.employeeId = String(employeeId);
+    if (date) filter.date = String(date);
+    const data = await attendanceRecords
+      .find(filter)
+      .sort({ date: -1, createdAt: -1 })
+      .limit(parseInt(limit))
+      .toArray();
+    res.json({ success: true, data });
+  } catch (e) {
+    console.error('List attendance error:', e);
+    res.status(500).json({ success: false, message: 'Failed to fetch attendance' });
+  }
+});
+
+// GET: Employee stats for dashboard
+app.get("/api/employees/stats", async (req, res) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const thisMonth = new Date().toISOString().slice(0, 7);
+
+    const allEmployees = await farmEmployees.find({ isActive: { $ne: false } }).toArray();
+    const activeEmployees = allEmployees.filter(e => e.status === 'active').length;
+    const totalSalary = allEmployees
+      .filter(e => e.status === 'active')
+      .reduce((sum, e) => sum + (Number(e.salary) || 0), 0);
+
+    const todays = await attendanceRecords.find({ date: today, isActive: { $ne: false } }).toArray();
+    const presentToday = todays.filter(a => a.status === 'present').length;
+    const absentToday = todays.filter(a => a.status === 'absent').length;
+
+    const monthlyAttendance = await attendanceRecords.countDocuments({
+      date: { $regex: `^${thisMonth}` },
+      status: 'present',
+      isActive: { $ne: false }
+    });
+
+    res.json({
+      success: true,
+      data: {
+        totalEmployees: allEmployees.length,
+        activeEmployees,
+        totalSalary,
+        monthlyAttendance,
+        presentToday,
+        absentToday
+      }
+    });
+  } catch (e) {
+    console.error('Get employee stats error:', e);
+    res.status(500).json({ success: false, message: 'Failed to fetch stats' });
+  }
+});
+
+
+
+
+
+// ==================== FARM FINANCIAL RECORDS (Expenses & Incomes) ====================
+
+// Helpers to normalize output
+const normalizeFarmExpense = (doc) => ({
+  id: doc.id,
+  _id: String(doc._id || ''),
+  category: doc.category,
+  description: doc.description,
+  amount: Number(doc.amount) || 0,
+  vendor: String(doc.vendor || ''),
+  notes: String(doc.notes || ''),
+  createdAt: doc.createdAt,
+  updatedAt: doc.updatedAt
+});
+
+const normalizeFarmIncome = (doc) => ({
+  id: doc.id,
+  _id: String(doc._id || ''),
+  source: doc.source,
+  description: doc.description,
+  amount: Number(doc.amount) || 0,
+  date: String(doc.date || ''),
+  paymentMethod: String(doc.paymentMethod || 'cash'),
+  customer: String(doc.customer || ''),
+  notes: String(doc.notes || ''),
+  createdAt: doc.createdAt,
+  updatedAt: doc.updatedAt
+});
+
+// ---------- Expenses ----------
+
+// CREATE expense
+app.post("/api/farm/expenses", async (req, res) => {
+  try {
+    const {
+      category = '',
+      description = '',
+      amount = 0,
+      vendor = '',
+      notes = ''
+    } = req.body || {};
+
+    if (!category || !description) {
+      return res.status(400).json({ success: false, message: "category and description are required" });
+    }
+
+    const nowId = Date.now();
+    const doc = {
+      id: nowId,
+      category: String(category),
+      description: String(description),
+      amount: Number(amount) || 0,
+      vendor: String(vendor || ''),
+      notes: String(notes || ''),
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    await farmExpenses.insertOne(doc);
+    return res.status(201).json({ success: true, data: normalizeFarmExpense(doc) });
+  } catch (e) {
+    console.error('Create farm expense error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to create expense' });
+  }
+});
+
+// LIST expenses (filters: search, date)
+app.get("/api/farm/expenses", async (req, res) => {
+  try {
+    const { search = '' } = req.query || {};
+    const filter = {};
+    if (search) {
+      const s = String(search);
+      filter.$or = [
+        { vendor: { $regex: s, $options: 'i' } },
+        { description: { $regex: s, $options: 'i' } },
+        { notes: { $regex: s, $options: 'i' } }
+      ];
+    }
+    const list = await farmExpenses.find(filter).sort({ createdAt: -1 }).toArray();
+    return res.json({ success: true, data: list.map(normalizeFarmExpense) });
+  } catch (e) {
+    console.error('List farm expenses error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to fetch expenses' });
+  }
+});
+
+// GET one expense by id
+app.get("/api/farm/expenses/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const numericId = Number(id);
+    const doc = await farmExpenses.findOne({ id: numericId });
+    if (!doc) return res.status(404).json({ success: false, message: 'Expense not found' });
+    return res.json({ success: true, data: normalizeFarmExpense(doc) });
+  } catch (e) {
+    console.error('Get farm expense error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to fetch expense' });
+  }
+});
+
+// UPDATE expense by id
+app.put("/api/farm/expenses/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const numericId = Number(id);
+    const updateFields = {};
+    const allowed = ['category', 'description', 'vendor', 'notes', 'amount'];
+    for (const key of allowed) {
+      if (req.body && Object.prototype.hasOwnProperty.call(req.body, key)) {
+        updateFields[key] = key === 'amount' ? Number(req.body[key]) || 0 : String(req.body[key] ?? '');
+      }
+    }
+    updateFields.updatedAt = new Date();
+
+    const result = await farmExpenses.findOneAndUpdate(
+      { id: numericId },
+      { $set: updateFields },
+      { returnDocument: 'after' }
+    );
+    if (!result.value) return res.status(404).json({ success: false, message: 'Expense not found' });
+    return res.json({ success: true, data: normalizeFarmExpense(result.value) });
+  } catch (e) {
+    console.error('Update farm expense error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update expense' });
+  }
+});
+
+// DELETE expense by id
+app.delete("/api/farm/expenses/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const numericId = Number(id);
+    const del = await farmExpenses.deleteOne({ id: numericId });
+    if (del.deletedCount === 0) return res.status(404).json({ success: false, message: 'Expense not found' });
+    return res.json({ success: true });
+  } catch (e) {
+    console.error('Delete farm expense error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to delete expense' });
+  }
+});
+
+// ---------- Incomes ----------
+
+// CREATE income
+app.post("/api/farm/incomes", async (req, res) => {
+  try {
+    const {
+      source = '',
+      description = '',
+      amount = 0,
+      date = new Date().toISOString().split('T')[0],
+      paymentMethod = 'cash',
+      customer = '',
+      notes = ''
+    } = req.body || {};
+
+    if (!source || !description) {
+      return res.status(400).json({ success: false, message: "source and description are required" });
+    }
+
+    const nowId = Date.now();
+    const doc = {
+      id: nowId,
+      source: String(source),
+      description: String(description),
+      amount: Number(amount) || 0,
+      date: String(date), // yyyy-mm-dd
+      paymentMethod: String(paymentMethod || 'cash'),
+      customer: String(customer || ''),
+      notes: String(notes || ''),
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    await farmIncomes.insertOne(doc);
+    return res.status(201).json({ success: true, data: normalizeFarmIncome(doc) });
+  } catch (e) {
+    console.error('Create farm income error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to create income' });
+  }
+});
+
+// LIST incomes (filters: search, date)
+app.get("/api/farm/incomes", async (req, res) => {
+  try {
+    const { search = '', date = '' } = req.query || {};
+    const filter = {};
+    if (date) filter.date = String(date);
+    if (search) {
+      const s = String(search);
+      filter.$or = [
+        { customer: { $regex: s, $options: 'i' } },
+        { description: { $regex: s, $options: 'i' } },
+        { notes: { $regex: s, $options: 'i' } }
+      ];
+    }
+    const list = await farmIncomes.find(filter).sort({ date: -1, createdAt: -1 }).toArray();
+    return res.json({ success: true, data: list.map(normalizeFarmIncome) });
+  } catch (e) {
+    console.error('List farm incomes error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to fetch incomes' });
+  }
+});
+
+// GET one income by id
+app.get("/api/farm/incomes/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const numericId = Number(id);
+    const doc = await farmIncomes.findOne({ id: numericId });
+    if (!doc) return res.status(404).json({ success: false, message: 'Income not found' });
+    return res.json({ success: true, data: normalizeFarmIncome(doc) });
+  } catch (e) {
+    console.error('Get farm income error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to fetch income' });
+  }
+});
+
+// UPDATE income by id
+app.put("/api/farm/incomes/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const numericId = Number(id);
+    const updateFields = {};
+    const allowed = ['source', 'description', 'amount', 'date', 'paymentMethod', 'customer', 'notes'];
+    for (const key of allowed) {
+      if (req.body && Object.prototype.hasOwnProperty.call(req.body, key)) {
+        updateFields[key] = key === 'amount' ? Number(req.body[key]) || 0 : String(req.body[key] ?? '');
+      }
+    }
+    updateFields.updatedAt = new Date();
+
+    const result = await farmIncomes.findOneAndUpdate(
+      { id: numericId },
+      { $set: updateFields },
+      { returnDocument: 'after' }
+    );
+    if (!result.value) return res.status(404).json({ success: false, message: 'Income not found' });
+    return res.json({ success: true, data: normalizeFarmIncome(result.value) });
+  } catch (e) {
+    console.error('Update farm income error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to update income' });
+  }
+});
+
+// DELETE income by id
+app.delete("/api/farm/incomes/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const numericId = Number(id);
+    const del = await farmIncomes.deleteOne({ id: numericId });
+    if (del.deletedCount === 0) return res.status(404).json({ success: false, message: 'Income not found' });
+    return res.json({ success: true });
+  } catch (e) {
+    console.error('Delete farm income error:', e);
+    return res.status(500).json({ success: false, message: 'Failed to delete income' });
   }
 });
 
