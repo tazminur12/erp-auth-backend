@@ -4181,7 +4181,8 @@ app.post("/api/transactions", async (req, res) => {
       category,
       customerBankAccount,
       employeeReference,
-      operatingExpenseCategoryId
+      operatingExpenseCategoryId,
+      moneyExchangeInfo
     } = req.body;
 
     // Extract values from nested objects if provided
@@ -4195,7 +4196,8 @@ app.post("/api/transactions", async (req, res) => {
     const finalOperatingExpenseCategoryId = operatingExpenseCategoryId || req.body?.operatingExpenseCategory?.id;
     
     // Determine final party type defensively
-    let finalPartyType = String(partyType || '').toLowerCase();
+    // Handle customerType from frontend (e.g., 'money-exchange') and map to partyType
+    let finalPartyType = String(partyType || req.body?.customerType || '').toLowerCase();
 
     // 1. Validation - আগে সব validate করুন
     if (!transactionType || !finalAmount || !finalPartyId) {
@@ -4309,11 +4311,41 @@ app.post("/api/transactions", async (req, res) => {
         ? { $or: [{ loanId: searchPartyId }, { _id: new ObjectId(searchPartyId) }], isActive: { $ne: false } }
         : { $or: [{ loanId: searchPartyId }, { _id: searchPartyId }], isActive: { $ne: false } };
       party = await loans.findOne(loanCondition);
+    } else if (finalPartyType === 'money-exchange' || finalPartyType === 'money_exchange') {
+      // Handle money exchange party type
+      const exchangeCondition = isValidObjectId
+        ? { _id: new ObjectId(searchPartyId), isActive: { $ne: false } }
+        : { _id: searchPartyId, isActive: { $ne: false } };
+      // Also try searching by the ID from moneyExchangeInfo if provided
+      if (moneyExchangeInfo && moneyExchangeInfo.id) {
+        const exchangeId = moneyExchangeInfo.id;
+        const exchangeIdValid = ObjectId.isValid(exchangeId);
+        const exchangeCond = exchangeIdValid
+          ? { _id: new ObjectId(exchangeId), isActive: { $ne: false } }
+          : { _id: exchangeId, isActive: { $ne: false } };
+        party = await exchanges.findOne(exchangeCond);
+      } else {
+        party = await exchanges.findOne(exchangeCondition);
+      }
+      // If party not found but moneyExchangeInfo is provided, create virtual party
+      if (!party && moneyExchangeInfo) {
+        party = {
+          _id: moneyExchangeInfo.id ? (ObjectId.isValid(moneyExchangeInfo.id) ? new ObjectId(moneyExchangeInfo.id) : moneyExchangeInfo.id) : null,
+          fullName: moneyExchangeInfo.fullName || moneyExchangeInfo.currencyName || 'Money Exchange',
+          mobileNumber: moneyExchangeInfo.mobileNumber || null,
+          type: moneyExchangeInfo.type || null,
+          currencyCode: moneyExchangeInfo.currencyCode || null,
+          currencyName: moneyExchangeInfo.currencyName || null,
+          exchangeRate: moneyExchangeInfo.exchangeRate || null,
+          quantity: moneyExchangeInfo.quantity || null,
+          amount_bdt: moneyExchangeInfo.amount_bdt || moneyExchangeInfo.amount || null
+        };
+      }
     }
 
     // Allow transactions even if party is not found in database
     // Party information will be stored as provided
-    if (!party && partyType && partyType !== 'other') {
+    if (!party && partyType && partyType !== 'other' && finalPartyType !== 'money-exchange' && finalPartyType !== 'money_exchange') {
       console.warn(`Party not found in database: ${finalPartyType} with ID ${searchPartyId}`);
       // Don't return error, allow transaction to proceed
     }
@@ -4494,8 +4526,8 @@ app.post("/api/transactions", async (req, res) => {
         subCategory: finalSubCategory || null,
         partyType: finalPartyType,
         partyId: finalPartyId,
-        partyName: party?.name || party?.customerName || party?.agentName || party?.tradeName || party?.vendorName || party?.fullName || 'Unknown',
-        partyPhone: party?.phone || party?.customerPhone || party?.contactNo || party?.mobile || null,
+        partyName: party?.name || party?.customerName || party?.agentName || party?.tradeName || party?.vendorName || party?.fullName || party?.currencyName || 'Unknown',
+        partyPhone: party?.phone || party?.customerPhone || party?.contactNo || party?.mobile || party?.mobileNumber || null,
         partyEmail: party?.email || party?.customerEmail || null,
         invoiceId,
         paymentMethod,
@@ -4507,6 +4539,18 @@ app.post("/api/transactions", async (req, res) => {
         creditAccount: creditAccount || (transactionType === 'credit' ? { id: finalTargetAccountId } : null),
         paymentDetails: paymentDetails || { amount: numericAmount },
         customerBankAccount: customerBankAccount || null,
+        // Store money exchange information if available
+        moneyExchangeInfo: (finalPartyType === 'money-exchange' || finalPartyType === 'money_exchange') && moneyExchangeInfo ? {
+          id: moneyExchangeInfo.id || party?._id?.toString() || null,
+          fullName: moneyExchangeInfo.fullName || party?.fullName || null,
+          mobileNumber: moneyExchangeInfo.mobileNumber || party?.mobileNumber || null,
+          type: moneyExchangeInfo.type || party?.type || null,
+          currencyCode: moneyExchangeInfo.currencyCode || party?.currencyCode || null,
+          currencyName: moneyExchangeInfo.currencyName || party?.currencyName || null,
+          exchangeRate: moneyExchangeInfo.exchangeRate || party?.exchangeRate || null,
+          quantity: moneyExchangeInfo.quantity || party?.quantity || null,
+          amount_bdt: moneyExchangeInfo.amount_bdt || moneyExchangeInfo.amount || party?.amount_bdt || null
+        } : null,
         amount: numericAmount,
         branchId: branch.branchId,
         branchName: branch.branchName,
@@ -4851,6 +4895,42 @@ app.post("/api/transactions", async (req, res) => {
             },
             { session }
           );
+        }
+      }
+
+      // 8.9 If party is a money exchange, link transaction to exchange record
+      if ((finalPartyType === 'money-exchange' || finalPartyType === 'money_exchange') && party && party._id) {
+        const exchangeId = ObjectId.isValid(party._id) ? party._id : new ObjectId(party._id);
+        // Update exchange record to link with transaction
+        await exchanges.updateOne(
+          { _id: exchangeId },
+          { 
+            $set: { 
+              transactionId: transactionId,
+              transactionLinked: true,
+              updatedAt: new Date() 
+            } 
+          },
+          { session }
+        );
+      } else if ((finalPartyType === 'money-exchange' || finalPartyType === 'money_exchange') && moneyExchangeInfo && moneyExchangeInfo.id) {
+        // If party was not found but moneyExchangeInfo has ID, try to update it
+        const exchangeId = ObjectId.isValid(moneyExchangeInfo.id) ? new ObjectId(moneyExchangeInfo.id) : moneyExchangeInfo.id;
+        try {
+          await exchanges.updateOne(
+            { _id: exchangeId },
+            { 
+              $set: { 
+                transactionId: transactionId,
+                transactionLinked: true,
+                updatedAt: new Date() 
+              } 
+            },
+            { session }
+          );
+        } catch (exchangeUpdateErr) {
+          console.warn('Failed to link exchange with transaction:', exchangeUpdateErr?.message);
+          // Don't fail the transaction if exchange update fails
         }
       }
 
