@@ -11858,6 +11858,286 @@ app.put("/api/exchanges/:id", async (req, res) => {
   }
 });
 
+// GET: Get currency-wise reserves with purchase prices
+app.get("/api/exchanges/reserves", async (req, res) => {
+  try {
+    // Get all active exchanges
+    const allExchanges = await exchanges
+      .find({ isActive: { $ne: false } })
+      .sort({ date: 1, createdAt: 1 }) // Sort by date to maintain chronological order for FIFO
+      .toArray();
+
+    // Group by currency and calculate reserves using FIFO
+    const currencyReserves = {};
+
+    // Process each exchange using FIFO method
+    for (const exchange of allExchanges) {
+      const { currencyCode, currencyName, type, quantity, exchangeRate, amount_bdt } = exchange;
+
+      if (!currencyCode) continue;
+
+      // Initialize currency if not exists
+      if (!currencyReserves[currencyCode]) {
+        currencyReserves[currencyCode] = {
+          currencyCode,
+          currencyName: currencyName || currencyCode,
+          inventory: [], // FIFO inventory: [{ quantity, purchaseRate, purchaseCost }]
+          totalBought: 0,
+          totalSold: 0,
+          totalPurchaseCost: 0,
+          totalSaleRevenue: 0
+        };
+      }
+
+      const currency = currencyReserves[currencyCode];
+      const qty = Number(quantity) || 0;
+      const rate = Number(exchangeRate) || 0;
+      const amount = Number(amount_bdt) || (rate * qty);
+
+      if (type === 'Buy') {
+        // Add to inventory (FIFO - add to end)
+        currency.inventory.push({
+          quantity: qty,
+          purchaseRate: rate,
+          purchaseCost: amount
+        });
+        currency.totalBought += qty;
+        currency.totalPurchaseCost += amount;
+      } else if (type === 'Sell') {
+        // Remove from inventory using FIFO (remove from beginning)
+        let remainingQty = qty;
+        
+        while (remainingQty > 0 && currency.inventory.length > 0) {
+          const firstItem = currency.inventory[0];
+          
+          if (firstItem.quantity <= remainingQty) {
+            // Use entire first item
+            remainingQty -= firstItem.quantity;
+            currency.inventory.shift(); // Remove from inventory
+          } else {
+            // Use partial first item
+            const originalQuantity = firstItem.quantity;
+            const costPerUnit = firstItem.purchaseCost / originalQuantity;
+            const usedCost = costPerUnit * remainingQty;
+            firstItem.purchaseCost -= usedCost;
+            firstItem.quantity -= remainingQty;
+            remainingQty = 0;
+          }
+        }
+
+        currency.totalSold += qty;
+        currency.totalSaleRevenue += amount;
+      }
+    }
+
+    // Calculate reserves and purchase prices from remaining inventory
+    const reservesArray = Object.values(currencyReserves).map(currency => {
+      // Calculate current reserve from remaining inventory
+      const reserve = currency.inventory.reduce((sum, item) => sum + item.quantity, 0);
+      const reserveCost = currency.inventory.reduce((sum, item) => sum + item.purchaseCost, 0);
+      
+      // Calculate weighted average purchase price of current reserve
+      let weightedAveragePurchasePrice = 0;
+      if (reserve > 0) {
+        weightedAveragePurchasePrice = reserveCost / reserve;
+      }
+
+      // Calculate current reserve value
+      const currentReserveValue = reserve * weightedAveragePurchasePrice;
+
+      return {
+        currencyCode: currency.currencyCode,
+        currencyName: currency.currencyName,
+        totalBought: currency.totalBought,
+        totalSold: currency.totalSold,
+        reserve: reserve,
+        weightedAveragePurchasePrice: weightedAveragePurchasePrice,
+        currentReserveValue: currentReserveValue,
+        totalPurchaseCost: currency.totalPurchaseCost,
+        totalSaleRevenue: currency.totalSaleRevenue
+      };
+    });
+
+    // Filter out currencies with zero reserves
+    const activeReserves = reservesArray.filter(c => c.reserve > 0);
+
+    res.json({
+      success: true,
+      data: activeReserves,
+      summary: {
+        totalCurrencies: activeReserves.length,
+        totalReserveValue: activeReserves.reduce((sum, c) => sum + c.currentReserveValue, 0)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get reserves error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to fetch currency reserves'
+    });
+  }
+});
+
+// GET: Get profit/loss dashboard for money exchange
+app.get("/api/exchanges/dashboard", async (req, res) => {
+  try {
+    const { currencyCode, fromDate, toDate } = req.query;
+
+    // Build query
+    const query = { isActive: { $ne: false } };
+    if (currencyCode) {
+      query.currencyCode = currencyCode;
+    }
+    if (fromDate || toDate) {
+      query.date = {};
+      if (fromDate) query.date.$gte = fromDate;
+      if (toDate) query.date.$lte = toDate;
+    }
+
+    // Get all exchanges
+    const allExchanges = await exchanges
+      .find(query)
+      .sort({ date: 1, createdAt: 1 })
+      .toArray();
+
+    // Calculate reserves and profit/loss by currency
+    const currencyData = {};
+    let totalRealizedProfitLoss = 0;
+    let totalUnrealizedProfitLoss = 0;
+
+    // Process each exchange to calculate cost basis using FIFO method
+    for (const exchange of allExchanges) {
+      const { currencyCode, currencyName, type, quantity, exchangeRate, amount_bdt } = exchange;
+
+      if (!currencyCode) continue;
+
+      // Initialize currency if not exists
+      if (!currencyData[currencyCode]) {
+        currencyData[currencyCode] = {
+          currencyCode,
+          currencyName: currencyName || currencyCode,
+          inventory: [], // FIFO inventory: [{ quantity, purchaseRate, purchaseCost }]
+          totalBought: 0,
+          totalSold: 0,
+          totalPurchaseCost: 0,
+          totalSaleRevenue: 0,
+          realizedProfitLoss: 0,
+          currentReserve: 0,
+          weightedAveragePurchasePrice: 0,
+          currentReserveValue: 0
+        };
+      }
+
+      const currency = currencyData[currencyCode];
+      const qty = Number(quantity) || 0;
+      const rate = Number(exchangeRate) || 0;
+      const amount = Number(amount_bdt) || (rate * qty);
+
+      if (type === 'Buy') {
+        // Add to inventory
+        currency.inventory.push({
+          quantity: qty,
+          purchaseRate: rate,
+          purchaseCost: amount
+        });
+        currency.totalBought += qty;
+        currency.totalPurchaseCost += amount;
+      } else if (type === 'Sell') {
+        let remainingQty = qty;
+        let costOfGoodsSold = 0;
+
+        // FIFO: Remove from inventory
+        while (remainingQty > 0 && currency.inventory.length > 0) {
+          const firstItem = currency.inventory[0];
+          
+          if (firstItem.quantity <= remainingQty) {
+            // Use entire first item
+            costOfGoodsSold += firstItem.purchaseCost;
+            remainingQty -= firstItem.quantity;
+            currency.inventory.shift(); // Remove from inventory
+          } else {
+            // Use partial first item
+            const costPerUnit = firstItem.purchaseCost / firstItem.quantity;
+            const usedCost = costPerUnit * remainingQty;
+            costOfGoodsSold += usedCost;
+            firstItem.quantity -= remainingQty;
+            firstItem.purchaseCost -= usedCost;
+            remainingQty = 0;
+          }
+        }
+
+        // Calculate profit/loss for this sale
+        const saleRevenue = amount;
+        const profitLoss = saleRevenue - costOfGoodsSold;
+        currency.realizedProfitLoss += profitLoss;
+        currency.totalSold += qty;
+        currency.totalSaleRevenue += amount;
+      }
+    }
+
+    // Calculate final reserves and unrealized profit/loss
+    const dashboardData = Object.values(currencyData).map(currency => {
+      // Calculate current reserve from inventory
+      currency.currentReserve = currency.inventory.reduce((sum, item) => sum + item.quantity, 0);
+      
+      // Calculate weighted average purchase price of current reserve
+      const totalReserveCost = currency.inventory.reduce((sum, item) => sum + item.purchaseCost, 0);
+      if (currency.currentReserve > 0) {
+        currency.weightedAveragePurchasePrice = totalReserveCost / currency.currentReserve;
+      }
+
+      // Current reserve value (using weighted average)
+      currency.currentReserveValue = currency.currentReserve * currency.weightedAveragePurchasePrice;
+
+      // For unrealized profit/loss, we need current market rate
+      // Since we don't have current market rates, we'll use the last buy rate or calculate based on average
+      // For now, unrealized P/L will be calculated if we have a current rate parameter
+      // Otherwise, we'll just show the reserve value
+
+      // Calculate average sell rate for comparison (optional)
+      const avgSellRate = currency.totalSold > 0 
+        ? currency.totalSaleRevenue / currency.totalSold 
+        : 0;
+
+      currency.averageSellRate = avgSellRate;
+      currency.unrealizedProfitLoss = 0; // Can be calculated if current market rate is provided
+
+      // Remove inventory details from response
+      delete currency.inventory;
+
+      totalRealizedProfitLoss += currency.realizedProfitLoss;
+
+      return currency;
+    });
+
+    // Overall summary
+    const summary = {
+      totalRealizedProfitLoss,
+      totalUnrealizedProfitLoss,
+      totalPurchaseCost: dashboardData.reduce((sum, c) => sum + c.totalPurchaseCost, 0),
+      totalSaleRevenue: dashboardData.reduce((sum, c) => sum + c.totalSaleRevenue, 0),
+      totalCurrentReserveValue: dashboardData.reduce((sum, c) => sum + c.currentReserveValue, 0),
+      totalCurrencies: dashboardData.length
+    };
+
+    res.json({
+      success: true,
+      data: dashboardData,
+      summary
+    });
+
+  } catch (error) {
+    console.error('Get dashboard error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to fetch dashboard data'
+    });
+  }
+});
+
 // DELETE: Delete exchange by ID (soft delete)
 app.delete("/api/exchanges/:id", async (req, res) => {
   try {
