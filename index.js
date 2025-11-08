@@ -8250,6 +8250,510 @@ app.put("/api/haj-umrah/agents/:id", async (req, res) => {
   }
 });
 
+// Helper: Generate unique Air Ticketing Agent ID
+const generateAirAgentId = async (db) => {
+  const counterCollection = db.collection("counters");
+  
+  // Create counter key for air ticketing agent
+  const counterKey = `air_agent`;
+  
+  // Find or create counter
+  let counter = await counterCollection.findOne({ counterKey });
+  
+  if (!counter) {
+    // Create new counter starting from 0
+    await counterCollection.insertOne({ counterKey, sequence: 0 });
+    counter = { sequence: 0 };
+  }
+  
+  // Increment sequence
+  const newSequence = counter.sequence + 1;
+  
+  // Update counter
+  await counterCollection.updateOne(
+    { counterKey },
+    { $set: { sequence: newSequence } }
+  );
+  
+  // Format: AT + 00001 (e.g., AT00001)
+  const serial = String(newSequence).padStart(5, '0');
+  
+  return `AT${serial}`;
+};
+
+// ==================== AIR TICKETING AGENT ROUTES ====================
+
+// ✅ POST: Create new Air Ticketing Agent
+app.post("/api/air-ticketing/agents", async (req, res) => {
+  try {
+    const {
+      name, // Trade Name
+      personalName,
+      email,
+      mobile,
+      address,
+      city,
+      state,
+      zipCode,
+      country,
+      nid,
+      passport,
+      tradeLicense,
+      tinNumber
+    } = req.body;
+
+    // Validation
+    if (!name || !name.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Trade Name is required'
+      });
+    }
+
+    if (!email || !email.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required'
+      });
+    }
+
+    if (!mobile || !mobile.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Mobile number is required'
+      });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email.trim())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid email address'
+      });
+    }
+
+    // Validate mobile format
+    const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+    if (!phoneRegex.test(mobile.trim())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide a valid mobile number'
+      });
+    }
+
+    // Check if email already exists
+    const existingAgentByEmail = await agents.findOne({
+      email: email.trim().toLowerCase(),
+      isActive: { $ne: false }
+    });
+
+    if (existingAgentByEmail) {
+      return res.status(409).json({
+        success: false,
+        message: 'An agent with this email already exists'
+      });
+    }
+
+    // Check if mobile already exists
+    const existingAgentByMobile = await agents.findOne({
+      mobile: mobile.trim(),
+      isActive: { $ne: false }
+    });
+
+    if (existingAgentByMobile) {
+      return res.status(409).json({
+        success: false,
+        message: 'An agent with this mobile number already exists'
+      });
+    }
+
+    // Generate agent ID
+    const agentId = await generateAirAgentId(db);
+
+    // Create agent document
+    const agentData = {
+      agentId,
+      agentType: 'air-ticketing', // To distinguish from haj-umrah agents
+      name: name.trim(), // Trade Name
+      personalName: personalName ? personalName.trim() : null,
+      email: email.trim().toLowerCase(),
+      mobile: mobile.trim(),
+      address: address ? address.trim() : null,
+      city: city ? city.trim() : null,
+      state: state ? state.trim() : null,
+      zipCode: zipCode ? zipCode.trim() : null,
+      country: country || 'Bangladesh',
+      // KYC Information
+      nid: nid ? nid.trim() : null,
+      passport: passport ? passport.trim() : null,
+      tradeLicense: tradeLicense ? tradeLicense.trim() : null,
+      tinNumber: tinNumber ? tinNumber.trim() : null,
+      // Status
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    // Insert agent
+    const result = await agents.insertOne(agentData);
+
+    // Fetch created agent
+    const createdAgent = await agents.findOne({ _id: result.insertedId });
+
+    res.status(201).json({
+      success: true,
+      message: 'Air Ticketing Agent created successfully',
+      agent: createdAgent
+    });
+
+  } catch (error) {
+    console.error('Create air ticketing agent error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create air ticketing agent',
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get all Air Ticketing Agents with filters and pagination
+app.get("/api/air-ticketing/agents", async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      q, // search query
+      country
+    } = req.query || {};
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build query - only air ticketing agents
+    const query = {
+      agentType: 'air-ticketing',
+      isActive: { $ne: false }
+    };
+
+    // Search filter
+    if (q) {
+      const searchTerm = String(q).trim();
+      query.$or = [
+        { name: { $regex: searchTerm, $options: 'i' } },
+        { personalName: { $regex: searchTerm, $options: 'i' } },
+        { email: { $regex: searchTerm, $options: 'i' } },
+        { mobile: { $regex: searchTerm, $options: 'i' } },
+        { agentId: { $regex: searchTerm, $options: 'i' } },
+        { nid: { $regex: searchTerm, $options: 'i' } },
+        { passport: { $regex: searchTerm, $options: 'i' } },
+        { tradeLicense: { $regex: searchTerm, $options: 'i' } }
+      ];
+    }
+
+    // Country filter
+    if (country) {
+      query.country = country;
+    }
+
+    // Get total count
+    const total = await agents.countDocuments(query);
+
+    // Get agents
+    const agentsList = await agents
+      .find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .toArray();
+
+    res.json({
+      success: true,
+      data: agentsList,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get air ticketing agents error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch air ticketing agents',
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get single Air Ticketing Agent by ID
+app.get("/api/air-ticketing/agents/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const query = {
+      $or: [
+        { agentId: id },
+        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
+      ],
+      agentType: 'air-ticketing',
+      isActive: { $ne: false }
+    };
+
+    const agent = await agents.findOne(query);
+
+    if (!agent) {
+      return res.status(404).json({
+        success: false,
+        message: 'Air Ticketing Agent not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      agent
+    });
+
+  } catch (error) {
+    console.error('Get air ticketing agent error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch air ticketing agent',
+      error: error.message
+    });
+  }
+});
+
+// ✅ PUT: Update Air Ticketing Agent by ID
+app.put("/api/air-ticketing/agents/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      name,
+      personalName,
+      email,
+      mobile,
+      address,
+      city,
+      state,
+      zipCode,
+      country,
+      nid,
+      passport,
+      tradeLicense,
+      tinNumber
+    } = req.body;
+
+    // Find agent
+    const query = {
+      $or: [
+        { agentId: id },
+        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
+      ],
+      agentType: 'air-ticketing',
+      isActive: { $ne: false }
+    };
+
+    const existingAgent = await agents.findOne(query);
+
+    if (!existingAgent) {
+      return res.status(404).json({
+        success: false,
+        message: 'Air Ticketing Agent not found'
+      });
+    }
+
+    // Build update object
+    const updateFields = {
+      updatedAt: new Date()
+    };
+
+    // Update allowed fields
+    if (name !== undefined) {
+      if (!name || !name.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Trade Name cannot be empty'
+        });
+      }
+      updateFields.name = name.trim();
+    }
+
+    if (personalName !== undefined) {
+      updateFields.personalName = personalName ? personalName.trim() : null;
+    }
+
+    if (email !== undefined) {
+      if (!email || !email.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email cannot be empty'
+        });
+      }
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email.trim())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide a valid email address'
+        });
+      }
+      // Check if email already exists (excluding current agent)
+      const emailExists = await agents.findOne({
+        email: email.trim().toLowerCase(),
+        _id: { $ne: existingAgent._id },
+        isActive: { $ne: false }
+      });
+      if (emailExists) {
+        return res.status(409).json({
+          success: false,
+          message: 'An agent with this email already exists'
+        });
+      }
+      updateFields.email = email.trim().toLowerCase();
+    }
+
+    if (mobile !== undefined) {
+      if (!mobile || !mobile.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Mobile number cannot be empty'
+        });
+      }
+      const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+      if (!phoneRegex.test(mobile.trim())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please provide a valid mobile number'
+        });
+      }
+      // Check if mobile already exists (excluding current agent)
+      const mobileExists = await agents.findOne({
+        mobile: mobile.trim(),
+        _id: { $ne: existingAgent._id },
+        isActive: { $ne: false }
+      });
+      if (mobileExists) {
+        return res.status(409).json({
+          success: false,
+          message: 'An agent with this mobile number already exists'
+        });
+      }
+      updateFields.mobile = mobile.trim();
+    }
+
+    if (address !== undefined) {
+      updateFields.address = address ? address.trim() : null;
+    }
+
+    if (city !== undefined) {
+      updateFields.city = city ? city.trim() : null;
+    }
+
+    if (state !== undefined) {
+      updateFields.state = state ? state.trim() : null;
+    }
+
+    if (zipCode !== undefined) {
+      updateFields.zipCode = zipCode ? zipCode.trim() : null;
+    }
+
+    if (country !== undefined) {
+      updateFields.country = country || 'Bangladesh';
+    }
+
+    if (nid !== undefined) {
+      updateFields.nid = nid ? nid.trim() : null;
+    }
+
+    if (passport !== undefined) {
+      updateFields.passport = passport ? passport.trim() : null;
+    }
+
+    if (tradeLicense !== undefined) {
+      updateFields.tradeLicense = tradeLicense ? tradeLicense.trim() : null;
+    }
+
+    if (tinNumber !== undefined) {
+      updateFields.tinNumber = tinNumber ? tinNumber.trim() : null;
+    }
+
+    // Update agent
+    await agents.updateOne(
+      { _id: existingAgent._id },
+      { $set: updateFields }
+    );
+
+    // Fetch updated agent
+    const updatedAgent = await agents.findOne({ _id: existingAgent._id });
+
+    res.json({
+      success: true,
+      message: 'Air Ticketing Agent updated successfully',
+      agent: updatedAgent
+    });
+
+  } catch (error) {
+    console.error('Update air ticketing agent error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update air ticketing agent',
+      error: error.message
+    });
+  }
+});
+
+// ✅ DELETE: Delete Air Ticketing Agent by ID (soft delete)
+app.delete("/api/air-ticketing/agents/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const query = {
+      $or: [
+        { agentId: id },
+        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
+      ],
+      agentType: 'air-ticketing',
+      isActive: { $ne: false }
+    };
+
+    const agent = await agents.findOne(query);
+
+    if (!agent) {
+      return res.status(404).json({
+        success: false,
+        message: 'Air Ticketing Agent not found'
+      });
+    }
+
+    // Soft delete
+    await agents.updateOne(
+      { _id: agent._id },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: 'Air Ticketing Agent deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete air ticketing agent error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete air ticketing agent',
+      error: error.message
+    });
+  }
+});
+
 // ==================== HAJI ROUTES ====================
 // Create Haji (customerType: 'haj')
 app.post("/haj-umrah/haji", async (req, res) => {
