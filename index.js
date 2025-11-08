@@ -781,7 +781,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, services, sales, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges;
+let db, users, branches, counters, customers, customerTypes, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -796,7 +796,6 @@ async function initializeDatabase() {
     customers = db.collection("customers");
     customerTypes = db.collection("customerTypes");
     services = db.collection("services");
-    sales = db.collection("sales");
     vendors = db.collection("vendors");
     orders = db.collection("orders");
     bankAccounts = db.collection("bankAccounts");
@@ -3176,50 +3175,6 @@ app.get("/api/transactions/stats", async (req, res) => {
 
 
 
-// Sale And Invoice 
-
-// ✅ POST: Get Sale from saleData
-app.post("/sales", async (req, res) => {
-  try {
-    const { saleData } = req.body;
-    const { saleId } = saleData;
-
-    const sale = await sales.findOne({ saleId, isActive: true });
-    if (!sale) {
-      return res.status(404).json({ error: true, message: "Sale not found" });
-    }
-
-    res.json({ success: true, sale });
-  } catch (error) {
-    console.error("Sale fetch error:", error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while fetching sale",
-    });
-  }
-});
-
-// ✅ GET: Get Sale by saleId
-app.get("/sales/:saleId", async (req, res) => {
-  try {
-    const { saleId } = req.params;
-
-    const sale = await sales.findOne({ saleId, isActive: true });
-    if (!sale) {
-      return res.status(404).json({ error: true, message: "Sale not found" });
-    }
-
-    res.json({ success: true, sale });
-  } catch (error) {
-    console.error("Get sale error:", error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while fetching sale",
-    });
-  }
-});
-
-
 
 // Vendor add and list
 
@@ -4149,6 +4104,663 @@ app.delete("/vendors/bills/:id", async (req, res) => {
   }
 });
 
+// Helper: Generate unique Invoice ID
+const generateInvoiceId = async (db) => {
+  const counterCollection = db.collection("counters");
+  
+  // Create counter key for invoice
+  const counterKey = `invoice`;
+  
+  // Find or create counter
+  let counter = await counterCollection.findOne({ counterKey });
+  
+  if (!counter) {
+    // Create new counter starting from 0
+    await counterCollection.insertOne({ counterKey, sequence: 0 });
+    counter = { sequence: 0 };
+  }
+  
+  // Increment sequence
+  const newSequence = counter.sequence + 1;
+  
+  // Update counter
+  await counterCollection.updateOne(
+    { counterKey },
+    { $set: { sequence: newSequence } }
+  );
+  
+  // Format: INV + 00001 (e.g., INV00001)
+  const serial = String(newSequence).padStart(5, '0');
+  
+  return `INV${serial}`;
+};
+
+// ==================== INVOICE ROUTES ====================
+
+// ✅ POST: Create new invoice
+app.post("/api/invoices", async (req, res) => {
+  let session = null;
+  
+  try {
+    const {
+      date,
+      customerId,
+      customer,
+      customerPhone,
+      serviceId,
+      bookingId,
+      vendorId,
+      vendorName,
+      
+      // Common billing fields
+      bill,
+      commission,
+      discount,
+      paid,
+      dueCommitmentDate,
+      
+      // Air Ticket specific fields
+      baseFare,
+      tax,
+      sellerDetails,
+      gdsPnr,
+      airlinePnr,
+      ticketNo,
+      passengerType,
+      airlineName,
+      
+      // Flight Details
+      flightType,
+      origin,
+      destination,
+      flightDate,
+      originOutbound,
+      destinationOutbound,
+      outboundFlightDate,
+      originInbound,
+      destinationInbound,
+      inboundFlightDate,
+      
+      // Multi City segments
+      originSegment1,
+      destinationSegment1,
+      flightDateSegment1,
+      originSegment2,
+      destinationSegment2,
+      flightDateSegment2,
+      
+      // Customer Fare fields
+      customerBaseFare,
+      customerTax,
+      customerCommission,
+      ait,
+      serviceCharge,
+      
+      // Vendor Fare fields
+      vendorBaseFare,
+      vendorTax,
+      vendorCommission,
+      vendorAit,
+      vendorServiceCharge,
+      
+      // Additional fields
+      branchId,
+      createdBy,
+      notes
+    } = req.body;
+
+    // Validation
+    if (!customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer ID is required'
+      });
+    }
+
+    if (!serviceId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Service ID is required'
+      });
+    }
+
+    // Validate customer exists
+    const customerDoc = await customers.findOne({
+      $or: [
+        { customerId: customerId },
+        { _id: ObjectId.isValid(customerId) ? new ObjectId(customerId) : null }
+      ],
+      isActive: { $ne: false }
+    });
+
+    if (!customerDoc) {
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found'
+      });
+    }
+
+    // Validate vendor if provided
+    let vendorDoc = null;
+    if (vendorId) {
+      vendorDoc = await vendors.findOne({
+        $or: [
+          { _id: ObjectId.isValid(vendorId) ? new ObjectId(vendorId) : null },
+          { id: vendorId }
+        ],
+        isActive: { $ne: false }
+      });
+
+      if (!vendorDoc) {
+        return res.status(404).json({
+          success: false,
+          message: 'Vendor not found'
+        });
+      }
+    }
+
+    // Start transaction session
+    session = client.startSession();
+    session.startTransaction();
+
+    // Generate invoice ID
+    const invoiceId = await generateInvoiceId(db);
+
+    // Calculate totals
+    // For Air Ticket: bill = baseFare + tax
+    let calculatedBill = 0;
+    if (baseFare !== undefined || tax !== undefined) {
+      const bf = Number(baseFare) || 0;
+      const tx = Number(tax) || 0;
+      calculatedBill = bf + tx;
+    } else {
+      calculatedBill = Number(bill) || 0;
+    }
+
+    const numericCommission = Number(commission) || 0;
+    const numericDiscount = Number(discount) || 0;
+    const total = Math.max(0, calculatedBill + numericCommission - numericDiscount);
+    const numericPaid = Number(paid) || 0;
+    const due = Math.max(0, total - numericPaid);
+
+    // Calculate customer total fare
+    const custBaseFare = Number(customerBaseFare) || 0;
+    const custTax = Number(customerTax) || 0;
+    const custCommission = Number(customerCommission) || 0;
+    const custAit = Number(ait) || 0;
+    const custServiceCharge = Number(serviceCharge) || 0;
+    const customerSubtotal = custBaseFare + custTax - custCommission;
+    const customerTotalFare = Math.max(0, customerSubtotal + custAit + custServiceCharge);
+
+    // Calculate vendor total fare
+    const vendBaseFare = Number(vendorBaseFare) || 0;
+    const vendTax = Number(vendorTax) || 0;
+    const vendCommission = Number(vendorCommission) || 0;
+    const vendAit = Number(vendorAit) || 0;
+    const vendServiceCharge = Number(vendorServiceCharge) || 0;
+    const vendorSubtotal = vendBaseFare + vendTax - vendCommission;
+    const vendorTotalFare = Math.max(0, vendorSubtotal + vendAit + vendServiceCharge);
+
+    // Build flight details object
+    const flightDetails = {
+      flightType: flightType || 'oneway',
+      oneway: flightType === 'oneway' ? {
+        origin: origin || '',
+        destination: destination || '',
+        flightDate: flightDate || ''
+      } : null,
+      roundTrip: flightType === 'round' ? {
+        outbound: {
+          origin: originOutbound || '',
+          destination: destinationOutbound || '',
+          flightDate: outboundFlightDate || ''
+        },
+        inbound: {
+          origin: originInbound || '',
+          destination: destinationInbound || '',
+          flightDate: inboundFlightDate || ''
+        }
+      } : null,
+      multiCity: flightType === 'multicity' ? {
+        segment1: {
+          origin: originSegment1 || '',
+          destination: destinationSegment1 || '',
+          flightDate: flightDateSegment1 || ''
+        },
+        segment2: {
+          origin: originSegment2 || '',
+          destination: destinationSegment2 || '',
+          flightDate: flightDateSegment2 || ''
+        }
+      } : null
+    };
+
+    // Create invoice document
+    const invoiceData = {
+      invoiceId,
+      date: date || new Date().toISOString().split('T')[0],
+      
+      // Customer information
+      customerId: customerDoc.customerId || customerId,
+      customerName: customer || customerDoc.name || '',
+      customerPhone: customerPhone || customerDoc.mobile || '',
+      customer: {
+        id: customerDoc._id?.toString() || customerId,
+        customerId: customerDoc.customerId,
+        name: customerDoc.name,
+        mobile: customerDoc.mobile,
+        email: customerDoc.email || null
+      },
+      
+      // Service information
+      serviceId: serviceId,
+      serviceType: serviceId, // Can be mapped to service name if needed
+      
+      // Booking information
+      bookingId: bookingId || null,
+      
+      // Air Ticket specific fields
+      airlineName: airlineName || null,
+      gdsPnr: gdsPnr || null,
+      airlinePnr: airlinePnr || null,
+      ticketNo: ticketNo || null,
+      passengerType: passengerType || 'adult',
+      sellerDetails: sellerDetails || null,
+      
+      // Flight details
+      flightDetails: flightDetails,
+      
+      // Vendor information (if provided)
+      vendor: vendorDoc ? {
+        id: vendorDoc._id?.toString() || vendorId,
+        vendorId: vendorDoc.id || vendorId,
+        tradeName: vendorDoc.tradeName || vendorName || '',
+        ownerName: vendorDoc.ownerName || '',
+        contactNo: vendorDoc.contactNo || ''
+      } : null,
+      
+      // Billing information
+      bill: calculatedBill,
+      baseFare: baseFare ? Number(baseFare) : null,
+      tax: tax ? Number(tax) : null,
+      commission: numericCommission,
+      discount: numericDiscount,
+      total: total,
+      paid: numericPaid,
+      due: due,
+      dueCommitmentDate: dueCommitmentDate || null,
+      
+      // Customer Fare breakdown
+      customerFare: {
+        baseFare: custBaseFare,
+        tax: custTax,
+        commission: custCommission,
+        ait: custAit,
+        serviceCharge: custServiceCharge,
+        subtotal: customerSubtotal,
+        total: customerTotalFare
+      },
+      
+      // Vendor Fare breakdown
+      vendorFare: vendorDoc ? {
+        baseFare: vendBaseFare,
+        tax: vendTax,
+        commission: vendCommission,
+        ait: vendAit,
+        serviceCharge: vendServiceCharge,
+        subtotal: vendorSubtotal,
+        total: vendorTotalFare
+      } : null,
+      
+      // Profit calculation (if vendor fare exists)
+      profit: vendorDoc ? (customerTotalFare - vendorTotalFare) : null,
+      
+      // Additional fields
+      branchId: branchId || 'main',
+      createdBy: createdBy || 'SYSTEM',
+      notes: notes || '',
+      status: due > 0 ? 'pending' : 'paid',
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    // Insert invoice
+    const invoiceResult = await invoices.insertOne(invoiceData, { session });
+
+    // Update customer's total amount and due if needed
+    const customerTotalAmount = (customerDoc.totalAmount || 0) + total;
+    const customerPaidAmount = (customerDoc.paidAmount || 0) + numericPaid;
+    const customerDue = customerTotalAmount - customerPaidAmount;
+
+    await customers.updateOne(
+      { _id: customerDoc._id },
+      {
+        $set: {
+          totalAmount: customerTotalAmount,
+          paidAmount: customerPaidAmount,
+          updatedAt: new Date()
+        }
+      },
+      { session }
+    );
+
+    // Commit transaction
+    await session.commitTransaction();
+
+    // Fetch created invoice
+    const createdInvoice = await invoices.findOne({ _id: invoiceResult.insertedId });
+
+    res.status(201).json({
+      success: true,
+      message: 'Invoice created successfully',
+      invoice: createdInvoice
+    });
+
+  } catch (error) {
+    // Rollback on error
+    if (session && session.inTransaction()) {
+      await session.abortTransaction();
+    }
+    
+    console.error('Create invoice error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create invoice',
+      error: error.message
+    });
+  } finally {
+    // End session
+    if (session) {
+      session.endSession();
+    }
+  }
+});
+
+// ✅ GET: Get all invoices with filters and pagination
+app.get("/api/invoices", async (req, res) => {
+  try {
+    const {
+      customerId,
+      serviceId,
+      status,
+      fromDate,
+      toDate,
+      page = 1,
+      limit = 20,
+      q
+    } = req.query || {};
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build query
+    const query = { isActive: { $ne: false } };
+
+    if (customerId) {
+      query.$or = [
+        { customerId: customerId },
+        { 'customer.id': customerId },
+        { 'customer.customerId': customerId }
+      ];
+    }
+
+    if (serviceId) {
+      query.serviceId = serviceId;
+    }
+
+    if (status) {
+      query.status = status;
+    }
+
+    if (fromDate || toDate) {
+      query.date = {};
+      if (fromDate) query.date.$gte = fromDate;
+      if (toDate) query.date.$lte = toDate;
+    }
+
+    if (q) {
+      const searchTerm = String(q).trim();
+      const searchConditions = [
+        { invoiceId: { $regex: searchTerm, $options: 'i' } },
+        { bookingId: { $regex: searchTerm, $options: 'i' } },
+        { customerName: { $regex: searchTerm, $options: 'i' } },
+        { customerPhone: { $regex: searchTerm, $options: 'i' } },
+        { airlinePnr: { $regex: searchTerm, $options: 'i' } },
+        { gdsPnr: { $regex: searchTerm, $options: 'i' } },
+        { ticketNo: { $regex: searchTerm, $options: 'i' } }
+      ];
+      
+      // If customerId filter exists, combine with AND
+      if (query.$or) {
+        query.$and = [
+          { $or: query.$or },
+          { $or: searchConditions }
+        ];
+        delete query.$or;
+      } else {
+        query.$or = searchConditions;
+      }
+    }
+
+    // Get total count
+    const total = await invoices.countDocuments(query);
+
+    // Get invoices
+    const invoicesList = await invoices
+      .find(query)
+      .sort({ createdAt: -1, date: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .toArray();
+
+    res.json({
+      success: true,
+      data: invoicesList,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get invoices error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch invoices',
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get single invoice by ID
+app.get("/api/invoices/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const query = {
+      $or: [
+        { invoiceId: id },
+        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
+      ],
+      isActive: { $ne: false }
+    };
+
+    const invoice = await invoices.findOne(query);
+
+    if (!invoice) {
+      return res.status(404).json({
+        success: false,
+        message: 'Invoice not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      invoice
+    });
+
+  } catch (error) {
+    console.error('Get invoice error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch invoice',
+      error: error.message
+    });
+  }
+});
+
+// ✅ PUT: Update invoice by ID
+app.put("/api/invoices/:id", async (req, res) => {
+  let session = null;
+  
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    // Find invoice
+    const query = {
+      $or: [
+        { invoiceId: id },
+        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
+      ],
+      isActive: { $ne: false }
+    };
+
+    const existingInvoice = await invoices.findOne(query);
+
+    if (!existingInvoice) {
+      return res.status(404).json({
+        success: false,
+        message: 'Invoice not found'
+      });
+    }
+
+    // Start transaction
+    session = client.startSession();
+    session.startTransaction();
+
+    // Build update object (only update provided fields)
+    const updateFields = {
+      updatedAt: new Date()
+    };
+
+    // Update allowed fields
+    const allowedFields = [
+      'date', 'bookingId', 'airlineName', 'gdsPnr', 'airlinePnr', 
+      'ticketNo', 'passengerType', 'flightDetails', 'bill', 'baseFare', 
+      'tax', 'commission', 'discount', 'paid', 'dueCommitmentDate',
+      'customerFare', 'vendorFare', 'notes', 'status'
+    ];
+
+    for (const field of allowedFields) {
+      if (updateData[field] !== undefined) {
+        updateFields[field] = updateData[field];
+      }
+    }
+
+    // Recalculate totals if billing fields changed
+    if (updateData.bill !== undefined || updateData.commission !== undefined || 
+        updateData.discount !== undefined || updateData.paid !== undefined) {
+      const bill = updateData.bill !== undefined ? Number(updateData.bill) : (existingInvoice.bill || 0);
+      const commission = updateData.commission !== undefined ? Number(updateData.commission) : (existingInvoice.commission || 0);
+      const discount = updateData.discount !== undefined ? Number(updateData.discount) : (existingInvoice.discount || 0);
+      const paid = updateData.paid !== undefined ? Number(updateData.paid) : (existingInvoice.paid || 0);
+      
+      updateFields.total = Math.max(0, bill + commission - discount);
+      updateFields.due = Math.max(0, updateFields.total - paid);
+      updateFields.status = updateFields.due > 0 ? 'pending' : 'paid';
+    }
+
+    // Update invoice
+    await invoices.updateOne(
+      { _id: existingInvoice._id },
+      { $set: updateFields },
+      { session }
+    );
+
+    // Commit transaction
+    await session.commitTransaction();
+
+    // Fetch updated invoice
+    const updatedInvoice = await invoices.findOne({ _id: existingInvoice._id });
+
+    res.json({
+      success: true,
+      message: 'Invoice updated successfully',
+      invoice: updatedInvoice
+    });
+
+  } catch (error) {
+    // Rollback on error
+    if (session && session.inTransaction()) {
+      await session.abortTransaction();
+    }
+    
+    console.error('Update invoice error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update invoice',
+      error: error.message
+    });
+  } finally {
+    // End session
+    if (session) {
+      session.endSession();
+    }
+  }
+});
+
+// ✅ DELETE: Delete invoice by ID (soft delete)
+app.delete("/api/invoices/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const query = {
+      $or: [
+        { invoiceId: id },
+        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
+      ],
+      isActive: { $ne: false }
+    };
+
+    const invoice = await invoices.findOne(query);
+
+    if (!invoice) {
+      return res.status(404).json({
+        success: false,
+        message: 'Invoice not found'
+      });
+    }
+
+    // Soft delete
+    await invoices.updateOne(
+      { _id: invoice._id },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: 'Invoice deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete invoice error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete invoice',
+      error: error.message
+    });
+  }
+});
 
 // ==================== TRANSACTION ROUTES ====================
 
