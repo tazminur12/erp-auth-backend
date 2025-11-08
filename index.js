@@ -5546,6 +5546,42 @@ app.post("/api/transactions", async (req, res) => {
         }
       }
 
+      // 8.10 If invoiceId is provided, update invoice status to 'paid' (only status update, no amount change)
+      let updatedInvoice = null;
+      if (invoiceId) {
+        try {
+          const invoiceQuery = ObjectId.isValid(invoiceId)
+            ? { $or: [{ invoiceId: invoiceId }, { _id: new ObjectId(invoiceId) }], isActive: { $ne: false } }
+            : { $or: [{ invoiceId: invoiceId }, { _id: invoiceId }], isActive: { $ne: false } };
+
+          const invoiceDoc = await invoices.findOne(invoiceQuery, { session });
+          
+          if (invoiceDoc) {
+            // Only update invoice status to 'paid', don't change total, paid, due amounts
+            await invoices.updateOne(
+              { _id: invoiceDoc._id },
+              {
+                $set: {
+                  status: 'paid',
+                  updatedAt: new Date()
+                }
+              },
+              { session }
+            );
+            
+            // Fetch updated invoice
+            updatedInvoice = await invoices.findOne({ _id: invoiceDoc._id }, { session });
+            
+            console.log(`Invoice ${invoiceDoc.invoiceId} status updated to 'paid'`);
+          } else {
+            console.warn(`Invoice not found for invoiceId: ${invoiceId}`);
+          }
+        } catch (invoiceUpdateErr) {
+          console.warn('Failed to update invoice status from transaction:', invoiceUpdateErr?.message);
+          // Don't fail the transaction if invoice update fails
+        }
+      }
+
       // 9. Commit transaction
       await session.commitTransaction();
 
@@ -5554,7 +5590,8 @@ app.post("/api/transactions", async (req, res) => {
         transaction: { ...transactionData, _id: transactionResult.insertedId },
         agent: updatedAgent || null,
         customer: updatedCustomer || null,
-        vendor: updatedVendor || null
+        vendor: updatedVendor || null,
+        invoice: updatedInvoice || null
       });
 
     } catch (transactionError) {
