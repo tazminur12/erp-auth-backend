@@ -781,7 +781,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges;
+let db, users, branches, counters, customers, customerTypes, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -833,6 +833,8 @@ async function initializeDatabase() {
     farmIncomes = db.collection("farmIncomes");
     // Currency Exchange
     exchanges = db.collection("exchanges");
+    // Airlines
+    airlines = db.collection("airlines");
   
    
 
@@ -8749,6 +8751,293 @@ app.delete("/api/air-ticketing/agents/:id", async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to delete air ticketing agent',
+      error: error.message
+    });
+  }
+});
+
+// ==================== AIRLINE ROUTES ====================
+
+// Helper: Generate unique Airline ID
+const generateAirlineId = async (db) => {
+  const counterCollection = db.collection("counters");
+  const counterKey = `airline`;
+  let counter = await counterCollection.findOne({ counterKey });
+  if (!counter) {
+    await counterCollection.insertOne({ counterKey, sequence: 0 });
+    counter = { sequence: 0 };
+  }
+  const newSequence = counter.sequence + 1;
+  await counterCollection.updateOne({ counterKey }, { $set: { sequence: newSequence } });
+  const serial = String(newSequence).padStart(5, '0');
+  return `AL${serial}`;
+};
+
+// ✅ POST: Create new Airline
+app.post("/api/air-ticketing/airlines", async (req, res) => {
+  try {
+    const { name, code, country, headquarters, phone, email, website, established, status, routes, fleet, logo } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ success: false, message: 'Airline name is required' });
+    }
+
+    if (!code || !code.trim()) {
+      return res.status(400).json({ success: false, message: 'Airline code is required' });
+    }
+
+    // Check if code already exists
+    const existingCode = await airlines.findOne({
+      code: code.trim().toUpperCase(),
+      isActive: { $ne: false }
+    });
+
+    if (existingCode) {
+      return res.status(409).json({ success: false, message: 'Airline code already exists' });
+    }
+
+    const airlineId = await generateAirlineId(db);
+
+    const airlineData = {
+      airlineId,
+      name: name.trim(),
+      code: code.trim().toUpperCase(),
+      country: country || null,
+      headquarters: headquarters || null,
+      phone: phone || null,
+      email: email || null,
+      website: website || null,
+      established: established || null,
+      status: status || 'Active',
+      routes: routes ? parseInt(routes) : 0,
+      fleet: fleet ? parseInt(fleet) : 0,
+      logo: logo || null,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await airlines.insertOne(airlineData);
+    const createdAirline = await airlines.findOne({ _id: result.insertedId });
+
+    res.status(201).json({
+      success: true,
+      message: 'Airline created successfully',
+      airline: createdAirline
+    });
+
+  } catch (error) {
+    console.error('Create airline error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create airline',
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get all Airlines with filters and pagination
+app.get("/api/air-ticketing/airlines", async (req, res) => {
+  try {
+    const { page = 1, limit = 20, q, status } = req.query || {};
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+    const skip = (pageNum - 1) * limitNum;
+
+    const query = { isActive: { $ne: false } };
+
+    if (status && status !== 'All') {
+      query.status = status;
+    }
+
+    if (q) {
+      const searchTerm = String(q).trim();
+      query.$or = [
+        { name: { $regex: searchTerm, $options: 'i' } },
+        { code: { $regex: searchTerm, $options: 'i' } },
+        { country: { $regex: searchTerm, $options: 'i' } },
+        { headquarters: { $regex: searchTerm, $options: 'i' } }
+      ];
+    }
+
+    const total = await airlines.countDocuments(query);
+    const airlinesList = await airlines
+      .find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .toArray();
+
+    res.json({
+      success: true,
+      data: airlinesList,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get airlines error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch airlines',
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get single Airline by ID
+app.get("/api/air-ticketing/airlines/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const query = {
+      $or: [
+        { airlineId: id },
+        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
+      ],
+      isActive: { $ne: false }
+    };
+
+    const airline = await airlines.findOne(query);
+
+    if (!airline) {
+      return res.status(404).json({
+        success: false,
+        message: 'Airline not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      airline
+    });
+
+  } catch (error) {
+    console.error('Get airline error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch airline',
+      error: error.message
+    });
+  }
+});
+
+// ✅ PUT: Update Airline by ID
+app.put("/api/air-ticketing/airlines/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, code, country, headquarters, phone, email, website, established, status, routes, fleet, logo } = req.body;
+
+    const query = {
+      $or: [
+        { airlineId: id },
+        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
+      ],
+      isActive: { $ne: false }
+    };
+
+    const existingAirline = await airlines.findOne(query);
+
+    if (!existingAirline) {
+      return res.status(404).json({
+        success: false,
+        message: 'Airline not found'
+      });
+    }
+
+    const updateFields = { updatedAt: new Date() };
+
+    if (name !== undefined) {
+      if (!name || !name.trim()) {
+        return res.status(400).json({ success: false, message: 'Airline name cannot be empty' });
+      }
+      updateFields.name = name.trim();
+    }
+
+    if (code !== undefined) {
+      if (!code || !code.trim()) {
+        return res.status(400).json({ success: false, message: 'Airline code cannot be empty' });
+      }
+      const codeExists = await airlines.findOne({
+        code: code.trim().toUpperCase(),
+        _id: { $ne: existingAirline._id },
+        isActive: { $ne: false }
+      });
+      if (codeExists) {
+        return res.status(409).json({ success: false, message: 'Airline code already exists' });
+      }
+      updateFields.code = code.trim().toUpperCase();
+    }
+
+    if (country !== undefined) updateFields.country = country || null;
+    if (headquarters !== undefined) updateFields.headquarters = headquarters || null;
+    if (phone !== undefined) updateFields.phone = phone || null;
+    if (email !== undefined) updateFields.email = email || null;
+    if (website !== undefined) updateFields.website = website || null;
+    if (established !== undefined) updateFields.established = established || null;
+    if (status !== undefined) updateFields.status = status || 'Active';
+    if (routes !== undefined) updateFields.routes = routes ? parseInt(routes) : 0;
+    if (fleet !== undefined) updateFields.fleet = fleet ? parseInt(fleet) : 0;
+    if (logo !== undefined) updateFields.logo = logo || null;
+
+    await airlines.updateOne({ _id: existingAirline._id }, { $set: updateFields });
+    const updatedAirline = await airlines.findOne({ _id: existingAirline._id });
+
+    res.json({
+      success: true,
+      message: 'Airline updated successfully',
+      airline: updatedAirline
+    });
+
+  } catch (error) {
+    console.error('Update airline error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update airline',
+      error: error.message
+    });
+  }
+});
+
+// ✅ DELETE: Delete Airline by ID (soft delete)
+app.delete("/api/air-ticketing/airlines/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const query = {
+      $or: [
+        { airlineId: id },
+        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
+      ],
+      isActive: { $ne: false }
+    };
+
+    const airline = await airlines.findOne(query);
+
+    if (!airline) {
+      return res.status(404).json({
+        success: false,
+        message: 'Airline not found'
+      });
+    }
+
+    await airlines.updateOne(
+      { _id: airline._id },
+      { $set: { isActive: false, updatedAt: new Date() } }
+    );
+
+    res.json({
+      success: true,
+      message: 'Airline deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete airline error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete airline',
       error: error.message
     });
   }
