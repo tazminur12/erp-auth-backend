@@ -14145,6 +14145,625 @@ app.delete("/api/exchanges/:id", async (req, res) => {
   }
 });
 
+// ==================== DASHBOARD SUMMARY ENDPOINT ====================
+// Comprehensive dashboard summary with all module statistics
+app.get("/api/dashboard/summary", async (req, res) => {
+  try {
+    const { fromDate, toDate } = req.query || {};
+    
+    // Build date filter
+    const dateFilter = {};
+    if (fromDate || toDate) {
+      dateFilter.createdAt = {};
+      if (fromDate) dateFilter.createdAt.$gte = new Date(fromDate);
+      if (toDate) {
+        const end = new Date(toDate);
+        end.setHours(23, 59, 59, 999);
+        dateFilter.createdAt.$lte = end;
+      }
+    }
+
+    // Date filter for transactions
+    const transactionDateFilter = {};
+    if (fromDate || toDate) {
+      transactionDateFilter.date = {};
+      if (fromDate) transactionDateFilter.date.$gte = new Date(fromDate);
+      if (toDate) {
+        const end = new Date(toDate);
+        end.setHours(23, 59, 59, 999);
+        transactionDateFilter.date.$lte = end;
+      }
+    }
+
+    // Initialize summary object
+    const summary = {
+      overview: {},
+      users: {},
+      customers: {},
+      agents: {},
+      vendors: {},
+      financial: {},
+      services: {},
+      farm: {},
+      recentActivity: {}
+    };
+
+    // ==================== OVERVIEW ====================
+    const totalUsers = await users.countDocuments({ isActive: { $ne: false } });
+    const totalBranches = await branches.countDocuments({ isActive: { $ne: false } });
+    const totalCustomers = await customers.countDocuments({ isActive: { $ne: false } });
+    const totalAgents = await agents.countDocuments({ isActive: { $ne: false } });
+    const totalVendors = await vendors.countDocuments({ isActive: { $ne: false } });
+    
+    summary.overview = {
+      totalUsers,
+      totalBranches,
+      totalCustomers,
+      totalAgents,
+      totalVendors
+    };
+
+    // ==================== USERS ====================
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const thisMonth = new Date();
+    thisMonth.setDate(1);
+    thisMonth.setHours(0, 0, 0, 0);
+
+    const usersToday = await users.countDocuments({
+      createdAt: { $gte: today },
+      isActive: { $ne: false }
+    });
+    const usersThisMonth = await users.countDocuments({
+      createdAt: { $gte: thisMonth },
+      isActive: { $ne: false }
+    });
+
+    // Users by role
+    const usersByRole = await users.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      { $group: { _id: "$role", count: { $sum: 1 } } }
+    ]).toArray();
+
+    summary.users = {
+      total: totalUsers,
+      today: usersToday,
+      thisMonth: usersThisMonth,
+      byRole: usersByRole.reduce((acc, item) => {
+        acc[item._id || 'unknown'] = item.count;
+        return acc;
+      }, {})
+    };
+
+    // ==================== CUSTOMERS ====================
+    const customersToday = await customers.countDocuments({
+      createdAt: { $gte: today },
+      isActive: { $ne: false }
+    });
+    const customersThisMonth = await customers.countDocuments({
+      createdAt: { $gte: thisMonth },
+      isActive: { $ne: false }
+    });
+
+    // Customers by type
+    const customersByType = await customers.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      { $group: { _id: "$customerType", count: { $sum: 1 } } }
+    ]).toArray();
+
+    // Haji customers
+    const hajiCustomers = await haji.countDocuments({ isActive: { $ne: false } });
+    const umrahCustomers = await umrah.countDocuments({ isActive: { $ne: false } });
+
+    // Customer payment stats
+    const customerPaymentStats = await customers.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
+          paidAmount: { $sum: { $ifNull: ["$paidAmount", 0] } },
+          dueAmount: { $sum: { $ifNull: ["$dueAmount", 0] } }
+        }
+      }
+    ]).toArray();
+
+    const paymentStats = customerPaymentStats[0] || { totalAmount: 0, paidAmount: 0, dueAmount: 0 };
+
+    summary.customers = {
+      total: totalCustomers,
+      today: customersToday,
+      thisMonth: customersThisMonth,
+      haji: hajiCustomers,
+      umrah: umrahCustomers,
+      byType: customersByType.reduce((acc, item) => {
+        acc[item._id || 'unknown'] = item.count;
+        return acc;
+      }, {}),
+      paymentStats: {
+        totalAmount: parseFloat((paymentStats.totalAmount || 0).toFixed(2)),
+        paidAmount: parseFloat((paymentStats.paidAmount || 0).toFixed(2)),
+        dueAmount: parseFloat((paymentStats.dueAmount || 0).toFixed(2))
+      }
+    };
+
+    // ==================== AGENTS ====================
+    const agentsToday = await agents.countDocuments({
+      createdAt: { $gte: today },
+      isActive: { $ne: false }
+    });
+    const agentsThisMonth = await agents.countDocuments({
+      createdAt: { $gte: thisMonth },
+      isActive: { $ne: false }
+    });
+
+    // Agent payment stats
+    const agentPaymentStats = await agents.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
+          paidAmount: { $sum: { $ifNull: ["$paidAmount", 0] } },
+          dueAmount: { $sum: { $ifNull: ["$dueAmount", 0] } }
+        }
+      }
+    ]).toArray();
+
+    const agentPayStats = agentPaymentStats[0] || { totalAmount: 0, paidAmount: 0, dueAmount: 0 };
+
+    summary.agents = {
+      total: totalAgents,
+      today: agentsToday,
+      thisMonth: agentsThisMonth,
+      paymentStats: {
+        totalAmount: parseFloat((agentPayStats.totalAmount || 0).toFixed(2)),
+        paidAmount: parseFloat((agentPayStats.paidAmount || 0).toFixed(2)),
+        dueAmount: parseFloat((agentPayStats.dueAmount || 0).toFixed(2))
+      }
+    };
+
+    // ==================== VENDORS ====================
+    const vendorsToday = await vendors.countDocuments({
+      createdAt: { $gte: today },
+      isActive: { $ne: false }
+    });
+    const vendorsThisMonth = await vendors.countDocuments({
+      createdAt: { $gte: thisMonth },
+      isActive: { $ne: false }
+    });
+
+    // Vendor payment stats
+    const vendorPaymentStats = await vendors.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
+          paidAmount: { $sum: { $ifNull: ["$paidAmount", 0] } },
+          dueAmount: { $sum: { $ifNull: ["$dueAmount", 0] } }
+        }
+      }
+    ]).toArray();
+
+    const vendorPayStats = vendorPaymentStats[0] || { totalAmount: 0, paidAmount: 0, dueAmount: 0 };
+
+    summary.vendors = {
+      total: totalVendors,
+      today: vendorsToday,
+      thisMonth: vendorsThisMonth,
+      paymentStats: {
+        totalAmount: parseFloat((vendorPayStats.totalAmount || 0).toFixed(2)),
+        paidAmount: parseFloat((vendorPayStats.paidAmount || 0).toFixed(2)),
+        dueAmount: parseFloat((vendorPayStats.dueAmount || 0).toFixed(2))
+      }
+    };
+
+    // ==================== FINANCIAL ====================
+    // Transactions
+    const transactionMatch = {
+      ...transactionDateFilter,
+      isActive: { $ne: false },
+      status: 'completed'
+    };
+
+    const transactionStats = await transactions.aggregate([
+      { $match: transactionMatch },
+      {
+        $group: {
+          _id: "$transactionType",
+          totalAmount: { $sum: { $ifNull: ["$amount", 0] } },
+          count: { $sum: 1 }
+        }
+      }
+    ]).toArray();
+
+    let totalCredit = 0;
+    let totalDebit = 0;
+    let creditCount = 0;
+    let debitCount = 0;
+
+    transactionStats.forEach(stat => {
+      if (stat._id === 'credit') {
+        totalCredit = stat.totalAmount;
+        creditCount = stat.count;
+      } else if (stat._id === 'debit') {
+        totalDebit = stat.totalAmount;
+        debitCount = stat.count;
+      }
+    });
+
+    // Invoices
+    const invoiceMatch = {
+      ...dateFilter,
+      isActive: { $ne: false }
+    };
+
+    const invoiceStats = await invoices.aggregate([
+      { $match: invoiceMatch },
+      {
+        $group: {
+          _id: null,
+          totalInvoices: { $sum: 1 },
+          totalAmount: { $sum: { $ifNull: ["$total", 0] } },
+          paidAmount: { $sum: { $ifNull: ["$paid", 0] } },
+          dueAmount: { $sum: { $ifNull: ["$due", 0] } }
+        }
+      }
+    ]).toArray();
+
+    const invoiceStat = invoiceStats[0] || { totalInvoices: 0, totalAmount: 0, paidAmount: 0, dueAmount: 0 };
+
+    // Accounts (balance)
+    const accountStats = await accounts.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: null,
+          totalAccounts: { $sum: 1 },
+          totalBalance: { $sum: { $ifNull: ["$balance", 0] } }
+        }
+      }
+    ]).toArray();
+
+    const accountStat = accountStats[0] || { totalAccounts: 0, totalBalance: 0 };
+
+    // Bank Accounts
+    const bankAccountStats = await bankAccounts.aggregate([
+      { $match: { isDeleted: { $ne: true }, status: 'Active' } },
+      {
+        $group: {
+          _id: null,
+          totalBankAccounts: { $sum: 1 },
+          totalBalance: { $sum: { $ifNull: ["$currentBalance", 0] } }
+        }
+      }
+    ]).toArray();
+
+    const bankAccountStat = bankAccountStats[0] || { totalBankAccounts: 0, totalBalance: 0 };
+
+    // Loans
+    const loanStats = await loans.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: null,
+          totalLoans: { $sum: 1 },
+          totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
+          paidAmount: { $sum: { $ifNull: ["$paidAmount", 0] } },
+          dueAmount: { $sum: { $ifNull: ["$totalDue", 0] } }
+        }
+      }
+    ]).toArray();
+
+    const loanStat = loanStats[0] || { totalLoans: 0, totalAmount: 0, paidAmount: 0, dueAmount: 0 };
+
+    // Orders
+    const totalOrders = await orders.countDocuments({ isActive: { $ne: false } });
+    const ordersToday = await orders.countDocuments({
+      createdAt: { $gte: today },
+      isActive: { $ne: false }
+    });
+
+    summary.financial = {
+      transactions: {
+        totalCredit: parseFloat(totalCredit.toFixed(2)),
+        totalDebit: parseFloat(totalDebit.toFixed(2)),
+        netAmount: parseFloat((totalCredit - totalDebit).toFixed(2)),
+        creditCount,
+        debitCount,
+        totalCount: creditCount + debitCount
+      },
+      invoices: {
+        totalInvoices: invoiceStat.totalInvoices,
+        totalAmount: parseFloat((invoiceStat.totalAmount || 0).toFixed(2)),
+        paidAmount: parseFloat((invoiceStat.paidAmount || 0).toFixed(2)),
+        dueAmount: parseFloat((invoiceStat.dueAmount || 0).toFixed(2))
+      },
+      accounts: {
+        totalAccounts: accountStat.totalAccounts,
+        totalBalance: parseFloat((accountStat.totalBalance || 0).toFixed(2))
+      },
+      bankAccounts: {
+        totalBankAccounts: bankAccountStat.totalBankAccounts,
+        totalBalance: parseFloat((bankAccountStat.totalBalance || 0).toFixed(2))
+      },
+      loans: {
+        totalLoans: loanStat.totalLoans,
+        totalAmount: parseFloat((loanStat.totalAmount || 0).toFixed(2)),
+        paidAmount: parseFloat((loanStat.paidAmount || 0).toFixed(2)),
+        dueAmount: parseFloat((loanStat.dueAmount || 0).toFixed(2))
+      },
+      orders: {
+        total: totalOrders,
+        today: ordersToday
+      }
+    };
+
+    // ==================== SERVICES ====================
+    // Packages
+    const totalPackages = await packages.countDocuments({ isActive: { $ne: false } });
+    const agentPackagesCount = await agentPackages.countDocuments({ isActive: { $ne: false } });
+
+    // Tickets
+    const ticketStats = await tickets.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: null,
+          totalTickets: { $sum: 1 },
+          totalAmount: { $sum: { $ifNull: ["$totalFare", 0] } }
+        }
+      }
+    ]).toArray();
+
+    const ticketStat = ticketStats[0] || { totalTickets: 0, totalAmount: 0 };
+
+    // Exchanges
+    const exchangeStats = await exchanges.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: "$type",
+          totalAmount: { $sum: { $ifNull: ["$amount_bdt", 0] } },
+          count: { $sum: 1 }
+        }
+      }
+    ]).toArray();
+
+    let exchangeBuy = 0;
+    let exchangeSell = 0;
+    let exchangeBuyCount = 0;
+    let exchangeSellCount = 0;
+
+    exchangeStats.forEach(stat => {
+      if (stat._id === 'Buy') {
+        exchangeBuy = stat.totalAmount;
+        exchangeBuyCount = stat.count;
+      } else if (stat._id === 'Sell') {
+        exchangeSell = stat.totalAmount;
+        exchangeSellCount = stat.count;
+      }
+    });
+
+    summary.services = {
+      packages: {
+        total: totalPackages,
+        agentPackages: agentPackagesCount
+      },
+      tickets: {
+        total: ticketStat.totalTickets,
+        totalAmount: parseFloat((ticketStat.totalAmount || 0).toFixed(2))
+      },
+      exchanges: {
+        buyAmount: parseFloat(exchangeBuy.toFixed(2)),
+        sellAmount: parseFloat(exchangeSell.toFixed(2)),
+        buyCount: exchangeBuyCount,
+        sellCount: exchangeSellCount,
+        netAmount: parseFloat((exchangeSell - exchangeBuy).toFixed(2))
+      }
+    };
+
+    // ==================== FARM ====================
+    // Cattle
+    const cattleStats = await cattle.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 }
+        }
+      }
+    ]).toArray();
+
+    const totalCattle = await cattle.countDocuments({ isActive: { $ne: false } });
+    const cattleByStatus = cattleStats.reduce((acc, item) => {
+      acc[item._id || 'unknown'] = item.count;
+      return acc;
+    }, {});
+
+    // Milk Production
+    const milkStats = await milkProductions.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: null,
+          totalProduction: { $sum: { $ifNull: ["$quantity", 0] } },
+          totalCount: { $sum: 1 }
+        }
+      }
+    ]).toArray();
+
+    const milkStat = milkStats[0] || { totalProduction: 0, totalCount: 0 };
+
+    // Farm Employees
+    const farmEmployeeStats = await farmEmployees.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          totalSalary: { $sum: { $ifNull: ["$salary", 0] } }
+        }
+      }
+    ]).toArray();
+
+    let totalFarmEmployees = 0;
+    let activeFarmEmployees = 0;
+    let totalFarmSalary = 0;
+
+    farmEmployeeStats.forEach(stat => {
+      totalFarmEmployees += stat.count;
+      if (stat._id === 'active') {
+        activeFarmEmployees = stat.count;
+        totalFarmSalary = stat.totalSalary;
+      }
+    });
+
+    // Farm Expenses
+    const farmExpenseStats = await farmExpenses.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: null,
+          totalExpenses: { $sum: { $ifNull: ["$amount", 0] } },
+          totalCount: { $sum: 1 }
+        }
+      }
+    ]).toArray();
+
+    const farmExpenseStat = farmExpenseStats[0] || { totalExpenses: 0, totalCount: 0 };
+
+    // Farm Incomes
+    const farmIncomeStats = await farmIncomes.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: null,
+          totalIncomes: { $sum: { $ifNull: ["$amount", 0] } },
+          totalCount: { $sum: 1 }
+        }
+      }
+    ]).toArray();
+
+    const farmIncomeStat = farmIncomeStats[0] || { totalIncomes: 0, totalCount: 0 };
+
+    summary.farm = {
+      cattle: {
+        total: totalCattle,
+        byStatus: cattleByStatus
+      },
+      milkProduction: {
+        totalProduction: parseFloat((milkStat.totalProduction || 0).toFixed(2)),
+        totalRecords: milkStat.totalCount
+      },
+      employees: {
+        total: totalFarmEmployees,
+        active: activeFarmEmployees,
+        totalSalary: parseFloat((totalFarmSalary || 0).toFixed(2))
+      },
+      expenses: {
+        total: parseFloat((farmExpenseStat.totalExpenses || 0).toFixed(2)),
+        totalRecords: farmExpenseStat.totalCount
+      },
+      incomes: {
+        total: parseFloat((farmIncomeStat.totalIncomes || 0).toFixed(2)),
+        totalRecords: farmIncomeStat.totalCount
+      },
+      netProfit: parseFloat(((farmIncomeStat.totalIncomes || 0) - (farmExpenseStat.totalExpenses || 0)).toFixed(2))
+    };
+
+    // ==================== RECENT ACTIVITY ====================
+    const recentTransactions = await transactions.find({
+      isActive: { $ne: false },
+      status: 'completed'
+    })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
+
+    const recentCustomers = await customers.find({
+      isActive: { $ne: false }
+    })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
+
+    const recentInvoices = await invoices.find({
+      isActive: { $ne: false }
+    })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
+
+    summary.recentActivity = {
+      transactions: recentTransactions.map(tx => ({
+        transactionId: tx.transactionId,
+        transactionType: tx.transactionType,
+        amount: tx.amount,
+        partyType: tx.partyType,
+        createdAt: tx.createdAt
+      })),
+      customers: recentCustomers.map(c => ({
+        customerId: c.customerId,
+        name: c.name,
+        customerType: c.customerType,
+        createdAt: c.createdAt
+      })),
+      invoices: recentInvoices.map(inv => ({
+        invoiceId: inv.invoiceId,
+        total: inv.total,
+        paid: inv.paid,
+        due: inv.due,
+        createdAt: inv.createdAt
+      }))
+    };
+
+    // ==================== GRAND TOTALS ====================
+    const grandTotals = {
+      totalRevenue: parseFloat((totalCredit + (invoiceStat.paidAmount || 0) + exchangeSell).toFixed(2)),
+      totalExpenses: parseFloat((totalDebit + exchangeBuy + (farmExpenseStat.totalExpenses || 0)).toFixed(2)),
+      totalDue: parseFloat((
+        (paymentStats.dueAmount || 0) +
+        (agentPayStats.dueAmount || 0) +
+        (vendorPayStats.dueAmount || 0) +
+        (invoiceStat.dueAmount || 0) +
+        (loanStat.dueAmount || 0)
+      ).toFixed(2)),
+      totalAssets: parseFloat((
+        (accountStat.totalBalance || 0) +
+        (bankAccountStat.totalBalance || 0)
+      ).toFixed(2)),
+      netProfit: parseFloat((
+        (totalCredit - totalDebit) +
+        (exchangeSell - exchangeBuy) +
+        ((farmIncomeStat.totalIncomes || 0) - (farmExpenseStat.totalExpenses || 0))
+      ).toFixed(2))
+    };
+
+    // Response
+    res.json({
+      success: true,
+      data: summary,
+      grandTotals,
+      period: {
+        fromDate: fromDate || null,
+        toDate: toDate || null
+      },
+      generatedAt: new Date()
+    });
+
+  } catch (error) {
+    console.error('Dashboard summary error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to generate dashboard summary',
+      details: error.message
+    });
+  }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
