@@ -1781,25 +1781,34 @@ app.post("/customers", async (req, res) => {
       isActive
     } = req.body;
 
-    // Validation
-    if (!name || !mobile || !address || !division || !district || !upazila || !customerType) {
+    // Validation - Only name and mobile are required
+    if (!name || !name.trim()) {
       return res.status(400).send({
         error: true,
-        message: "Name, mobile, address, division, district, upazila, and customerType are required"
+        message: "Name is required"
       });
     }
 
-    // Validate customer type exists in database
-    const validCustomerType = await customerTypes.findOne({
-      value: customerType.toLowerCase(),
-      isActive: true
-    });
-
-    if (!validCustomerType) {
+    if (!mobile || !mobile.trim()) {
       return res.status(400).send({
         error: true,
-        message: `Invalid customer type '${customerType}'. Please select a valid customer type.`
+        message: "Mobile number is required"
       });
+    }
+
+    // Validate customer type if provided (optional)
+    if (customerType) {
+      const validCustomerType = await customerTypes.findOne({
+        value: customerType.toLowerCase(),
+        isActive: true
+      });
+
+      if (!validCustomerType) {
+        return res.status(400).send({
+          error: true,
+          message: `Invalid customer type '${customerType}'. Please select a valid customer type.`
+        });
+      }
     }
 
     // Validate passport fields if provided
@@ -1846,7 +1855,9 @@ app.post("/customers", async (req, res) => {
     }
 
     // Generate unique customer ID
-    const customerId = await generateCustomerId(db, customerType);
+    // If customerType is not provided, use 'general' as default
+    const customerTypeForId = customerType || 'general';
+    const customerId = await generateCustomerId(db, customerTypeForId);
 
 
     // Process image data - Extract just the URL string
@@ -1874,13 +1885,13 @@ app.post("/customers", async (req, res) => {
       lastName: lastName || null,
       mobile,
       email: email || null,
-      address,
-      division,
-      district,
-      upazila,
+      address: address || null,
+      division: division || null,
+      district: district || null,
+      upazila: upazila || null,
       postCode: postCode || null,
       whatsappNo: whatsappNo || null,
-      customerType,
+      customerType: customerTypeForId,
       customerImage: imageUrl, // Just the image URL
       // Passport information fields
       passportNumber: passportNumber || null,
@@ -1927,13 +1938,13 @@ app.post("/customers", async (req, res) => {
         name: newCustomer.name,
         mobile: newCustomer.mobile,
         email: newCustomer.email,
-        address: newCustomer.address,
-        division: newCustomer.division,
-        district: newCustomer.district,
-        upazila: newCustomer.upazila,
-        postCode: newCustomer.postCode,
-        whatsappNo: newCustomer.whatsappNo,
-        customerType: newCustomer.customerType,
+        address: newCustomer.address || null,
+        division: newCustomer.division || null,
+        district: newCustomer.district || null,
+        upazila: newCustomer.upazila || null,
+        postCode: newCustomer.postCode || null,
+        whatsappNo: newCustomer.whatsappNo || null,
+        customerType: newCustomer.customerType || customerTypeForId,
         customerImage: newCustomer.customerImage,
         firstName: newCustomer.firstName,
         lastName: newCustomer.lastName,
