@@ -781,7 +781,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines;
+let db, users, branches, counters, customers, customerTypes, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -835,8 +835,10 @@ async function initializeDatabase() {
     exchanges = db.collection("exchanges");
     // Airlines
     airlines = db.collection("airlines");
+    // Air Ticketing Tickets
+    tickets = db.collection("airTickets");
   
-   
+
 
 
 
@@ -1993,7 +1995,7 @@ app.get("/customers", async (req, res) => {
       });
     }
 
-    const { customerType, division, district, upazila, search, passportNumber, nidNumber, expiringSoon, serviceType, serviceStatus, paymentStatus } = req.query;
+    const { customerType, division, district, upazila, search, q, passportNumber, nidNumber, expiringSoon, serviceType, serviceStatus, paymentStatus } = req.query;
 
     let filter = { isActive: true };
 
@@ -2017,13 +2019,16 @@ app.get("/customers", async (req, res) => {
         $lte: thirtyDaysFromNow.toISOString().split('T')[0]
       };
     }
-    if (search) {
+    // Support both 'search' and 'q' parameters for search
+    const searchTerm = search || q;
+    if (searchTerm) {
       filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { mobile: { $regex: search, $options: 'i' } },
-        { customerId: { $regex: search, $options: 'i' } },
-        { passportNumber: { $regex: search, $options: 'i' } },
-        { nidNumber: { $regex: search, $options: 'i' } }
+        { name: { $regex: searchTerm, $options: 'i' } },
+        { mobile: { $regex: searchTerm, $options: 'i' } },
+        { customerId: { $regex: searchTerm, $options: 'i' } },
+        { email: { $regex: searchTerm, $options: 'i' } },
+        { passportNumber: { $regex: searchTerm, $options: 'i' } },
+        { nidNumber: { $regex: searchTerm, $options: 'i' } }
       ];
     }
 
@@ -9049,6 +9054,499 @@ app.delete("/api/air-ticketing/airlines/:id", async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to delete airline',
+      error: error.message
+    });
+  }
+});
+
+// ==================== AIR TICKETING TICKET ROUTES ====================
+
+// ✅ POST: Create new Air Ticket
+app.post("/api/air-ticketing/tickets", async (req, res) => {
+  try {
+    const ticketData = req.body;
+
+    // Validate required fields
+    if (!ticketData.customerId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Customer ID is required'
+      });
+    }
+
+    if (!ticketData.bookingId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking ID is required'
+      });
+    }
+
+    if (!ticketData.airline) {
+      return res.status(400).json({
+        success: false,
+        message: 'Airline is required'
+      });
+    }
+
+    if (!ticketData.date) {
+      return res.status(400).json({
+        success: false,
+        message: 'Selling date is required'
+      });
+    }
+
+    // Validate trip type specific fields
+    if (ticketData.tripType === 'multicity') {
+      if (!ticketData.segments || ticketData.segments.length < 2) {
+        return res.status(400).json({
+          success: false,
+          message: 'At least 2 segments are required for multicity trip'
+        });
+      }
+      // Validate each segment
+      for (let i = 0; i < ticketData.segments.length; i++) {
+        const seg = ticketData.segments[i];
+        if (!seg.origin || !seg.destination || !seg.date) {
+          return res.status(400).json({
+            success: false,
+            message: `Segment ${i + 1} must have origin, destination, and date`
+          });
+        }
+      }
+    } else {
+      if (!ticketData.origin || !ticketData.destination || !ticketData.flightDate) {
+        return res.status(400).json({
+          success: false,
+          message: 'Origin, destination, and flight date are required'
+        });
+      }
+      if (ticketData.tripType === 'roundtrip' && !ticketData.returnDate) {
+        return res.status(400).json({
+          success: false,
+          message: 'Return date is required for round trip'
+        });
+      }
+    }
+
+    // Verify customer exists
+    const customer = await customers.findOne({
+      $or: [
+        { customerId: ticketData.customerId },
+        { _id: ObjectId.isValid(ticketData.customerId) ? new ObjectId(ticketData.customerId) : null }
+      ],
+      isActive: true
+    });
+
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found'
+      });
+    }
+
+    // Verify agent exists if agentId is provided
+    if (ticketData.agentId) {
+      const agent = await agents.findOne({
+        $or: [
+          { agentId: ticketData.agentId },
+          { _id: ObjectId.isValid(ticketData.agentId) ? new ObjectId(ticketData.agentId) : null }
+        ],
+        agentType: 'air-ticketing',
+        isActive: { $ne: false }
+      });
+
+      if (!agent) {
+        return res.status(404).json({
+          success: false,
+          message: 'Agent not found'
+        });
+      }
+    }
+
+    // Prepare ticket document
+    const ticketDoc = {
+      // Customer information
+      customerId: ticketData.customerId,
+      customerName: ticketData.customerName || customer.name,
+      customerPhone: ticketData.customerPhone || customer.mobile,
+
+      // Booking information
+      tripType: ticketData.tripType || 'oneway',
+      flightType: ticketData.flightType || 'domestic',
+      date: new Date(ticketData.date),
+      bookingId: ticketData.bookingId,
+      gdsPnr: ticketData.gdsPnr || '',
+      airlinePnr: ticketData.airlinePnr || '',
+      airline: ticketData.airline,
+      status: ticketData.status || 'pending',
+
+      // Route information
+      origin: ticketData.origin || '',
+      destination: ticketData.destination || '',
+      flightDate: ticketData.flightDate ? new Date(ticketData.flightDate) : null,
+      returnDate: ticketData.returnDate ? new Date(ticketData.returnDate) : null,
+      segments: ticketData.segments || [],
+
+      // Agent information
+      agent: ticketData.agent || '',
+      agentId: ticketData.agentId || '',
+      purposeType: ticketData.purposeType || '',
+
+      // Passenger information
+      adultCount: parseInt(ticketData.adultCount) || 0,
+      childCount: parseInt(ticketData.childCount) || 0,
+      infantCount: parseInt(ticketData.infantCount) || 0,
+
+      // Customer financial information
+      customerDeal: parseFloat(ticketData.customerDeal) || 0,
+      customerPaid: parseFloat(ticketData.customerPaid) || 0,
+      customerDue: parseFloat(ticketData.customerDue) || 0,
+      dueDate: ticketData.dueDate ? new Date(ticketData.dueDate) : null,
+
+      // Vendor amount breakdown
+      baseFare: parseFloat(ticketData.baseFare) || 0,
+      taxBD: parseFloat(ticketData.taxBD) || 0,
+      e5: parseFloat(ticketData.e5) || 0,
+      e7: parseFloat(ticketData.e7) || 0,
+      g8: parseFloat(ticketData.g8) || 0,
+      ow: parseFloat(ticketData.ow) || 0,
+      p7: parseFloat(ticketData.p7) || 0,
+      p8: parseFloat(ticketData.p8) || 0,
+      ts: parseFloat(ticketData.ts) || 0,
+      ut: parseFloat(ticketData.ut) || 0,
+      yq: parseFloat(ticketData.yq) || 0,
+      taxes: parseFloat(ticketData.taxes) || 0,
+      totalTaxes: parseFloat(ticketData.totalTaxes) || 0,
+      ait: parseFloat(ticketData.ait) || 0,
+
+      // Commission and charges
+      commissionRate: parseFloat(ticketData.commissionRate) || 0,
+      plb: parseFloat(ticketData.plb) || 0,
+      salmaAirServiceCharge: parseFloat(ticketData.salmaAirServiceCharge) || 0,
+      vendorServiceCharge: parseFloat(ticketData.vendorServiceCharge) || 0,
+
+      // Vendor financial information
+      vendorAmount: parseFloat(ticketData.vendorAmount) || 0,
+      vendorPaidFh: parseFloat(ticketData.vendorPaidFh) || 0,
+      vendorDue: parseFloat(ticketData.vendorDue) || 0,
+      profit: parseFloat(ticketData.profit) || 0,
+
+      // Additional information
+      segmentCount: parseInt(ticketData.segmentCount) || (ticketData.tripType === 'multicity' ? (ticketData.segments?.length || 0) : 1),
+      flownSegment: ticketData.flownSegment || false,
+
+      // Metadata
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    // Insert ticket
+    const result = await tickets.insertOne(ticketDoc);
+
+    // Return created ticket
+    const createdTicket = await tickets.findOne({ _id: result.insertedId });
+
+    res.status(201).json({
+      success: true,
+      message: 'Ticket created successfully',
+      ticket: createdTicket
+    });
+
+  } catch (error) {
+    console.error('Create ticket error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create ticket',
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get all Air Tickets with filters and pagination
+app.get("/api/air-ticketing/tickets", async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      q, // search query
+      customerId,
+      agentId,
+      status,
+      flightType,
+      tripType,
+      airline,
+      dateFrom,
+      dateTo,
+      bookingId
+    } = req.query || {};
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build query
+    const query = {
+      isActive: { $ne: false }
+    };
+
+    // Search filter
+    if (q) {
+      const searchTerm = String(q).trim();
+      query.$or = [
+        { bookingId: { $regex: searchTerm, $options: 'i' } },
+        { gdsPnr: { $regex: searchTerm, $options: 'i' } },
+        { airlinePnr: { $regex: searchTerm, $options: 'i' } },
+        { customerName: { $regex: searchTerm, $options: 'i' } },
+        { customerPhone: { $regex: searchTerm, $options: 'i' } },
+        { airline: { $regex: searchTerm, $options: 'i' } },
+        { agent: { $regex: searchTerm, $options: 'i' } }
+      ];
+    }
+
+    // Other filters
+    if (customerId) {
+      query.customerId = customerId;
+    }
+    if (agentId) {
+      query.agentId = agentId;
+    }
+    if (status) {
+      query.status = status;
+    }
+    if (flightType) {
+      query.flightType = flightType;
+    }
+    if (tripType) {
+      query.tripType = tripType;
+    }
+    if (airline) {
+      query.airline = { $regex: airline, $options: 'i' };
+    }
+    if (bookingId) {
+      query.bookingId = { $regex: bookingId, $options: 'i' };
+    }
+    if (dateFrom || dateTo) {
+      query.date = {};
+      if (dateFrom) {
+        query.date.$gte = new Date(dateFrom);
+      }
+      if (dateTo) {
+        const toDate = new Date(dateTo);
+        toDate.setHours(23, 59, 59, 999);
+        query.date.$lte = toDate;
+      }
+    }
+
+    // Get total count
+    const total = await tickets.countDocuments(query);
+
+    // Get tickets
+    const ticketsList = await tickets
+      .find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .toArray();
+
+    res.json({
+      success: true,
+      data: ticketsList,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get tickets error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch tickets',
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get single Air Ticket by ID
+app.get("/api/air-ticketing/tickets/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const query = {
+      $or: [
+        { bookingId: id },
+        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
+      ],
+      isActive: { $ne: false }
+    };
+
+    const ticket = await tickets.findOne(query);
+
+    if (!ticket) {
+      return res.status(404).json({
+        success: false,
+        message: 'Ticket not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      ticket
+    });
+
+  } catch (error) {
+    console.error('Get ticket error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch ticket',
+      error: error.message
+    });
+  }
+});
+
+// ✅ PUT: Update Air Ticket by ID
+app.put("/api/air-ticketing/tickets/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    const query = {
+      $or: [
+        { bookingId: id },
+        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
+      ],
+      isActive: { $ne: false }
+    };
+
+    const existingTicket = await tickets.findOne(query);
+
+    if (!existingTicket) {
+      return res.status(404).json({
+        success: false,
+        message: 'Ticket not found'
+      });
+    }
+
+    // Prepare update document
+    const updateDoc = {
+      updatedAt: new Date()
+    };
+
+    // Update fields if provided
+    if (updateData.customerId !== undefined) updateDoc.customerId = updateData.customerId;
+    if (updateData.customerName !== undefined) updateDoc.customerName = updateData.customerName;
+    if (updateData.customerPhone !== undefined) updateDoc.customerPhone = updateData.customerPhone;
+    if (updateData.tripType !== undefined) updateDoc.tripType = updateData.tripType;
+    if (updateData.flightType !== undefined) updateDoc.flightType = updateData.flightType;
+    if (updateData.date !== undefined) updateDoc.date = new Date(updateData.date);
+    if (updateData.bookingId !== undefined) updateDoc.bookingId = updateData.bookingId;
+    if (updateData.gdsPnr !== undefined) updateDoc.gdsPnr = updateData.gdsPnr;
+    if (updateData.airlinePnr !== undefined) updateDoc.airlinePnr = updateData.airlinePnr;
+    if (updateData.airline !== undefined) updateDoc.airline = updateData.airline;
+    if (updateData.status !== undefined) updateDoc.status = updateData.status;
+    if (updateData.origin !== undefined) updateDoc.origin = updateData.origin;
+    if (updateData.destination !== undefined) updateDoc.destination = updateData.destination;
+    if (updateData.flightDate !== undefined) updateDoc.flightDate = updateData.flightDate ? new Date(updateData.flightDate) : null;
+    if (updateData.returnDate !== undefined) updateDoc.returnDate = updateData.returnDate ? new Date(updateData.returnDate) : null;
+    if (updateData.segments !== undefined) updateDoc.segments = updateData.segments;
+    if (updateData.agent !== undefined) updateDoc.agent = updateData.agent;
+    if (updateData.agentId !== undefined) updateDoc.agentId = updateData.agentId;
+    if (updateData.purposeType !== undefined) updateDoc.purposeType = updateData.purposeType;
+    if (updateData.adultCount !== undefined) updateDoc.adultCount = parseInt(updateData.adultCount) || 0;
+    if (updateData.childCount !== undefined) updateDoc.childCount = parseInt(updateData.childCount) || 0;
+    if (updateData.infantCount !== undefined) updateDoc.infantCount = parseInt(updateData.infantCount) || 0;
+    if (updateData.customerDeal !== undefined) updateDoc.customerDeal = parseFloat(updateData.customerDeal) || 0;
+    if (updateData.customerPaid !== undefined) updateDoc.customerPaid = parseFloat(updateData.customerPaid) || 0;
+    if (updateData.customerDue !== undefined) updateDoc.customerDue = parseFloat(updateData.customerDue) || 0;
+    if (updateData.dueDate !== undefined) updateDoc.dueDate = updateData.dueDate ? new Date(updateData.dueDate) : null;
+    if (updateData.baseFare !== undefined) updateDoc.baseFare = parseFloat(updateData.baseFare) || 0;
+    if (updateData.taxBD !== undefined) updateDoc.taxBD = parseFloat(updateData.taxBD) || 0;
+    if (updateData.e5 !== undefined) updateDoc.e5 = parseFloat(updateData.e5) || 0;
+    if (updateData.e7 !== undefined) updateDoc.e7 = parseFloat(updateData.e7) || 0;
+    if (updateData.g8 !== undefined) updateDoc.g8 = parseFloat(updateData.g8) || 0;
+    if (updateData.ow !== undefined) updateDoc.ow = parseFloat(updateData.ow) || 0;
+    if (updateData.p7 !== undefined) updateDoc.p7 = parseFloat(updateData.p7) || 0;
+    if (updateData.p8 !== undefined) updateDoc.p8 = parseFloat(updateData.p8) || 0;
+    if (updateData.ts !== undefined) updateDoc.ts = parseFloat(updateData.ts) || 0;
+    if (updateData.ut !== undefined) updateDoc.ut = parseFloat(updateData.ut) || 0;
+    if (updateData.yq !== undefined) updateDoc.yq = parseFloat(updateData.yq) || 0;
+    if (updateData.taxes !== undefined) updateDoc.taxes = parseFloat(updateData.taxes) || 0;
+    if (updateData.totalTaxes !== undefined) updateDoc.totalTaxes = parseFloat(updateData.totalTaxes) || 0;
+    if (updateData.ait !== undefined) updateDoc.ait = parseFloat(updateData.ait) || 0;
+    if (updateData.commissionRate !== undefined) updateDoc.commissionRate = parseFloat(updateData.commissionRate) || 0;
+    if (updateData.plb !== undefined) updateDoc.plb = parseFloat(updateData.plb) || 0;
+    if (updateData.salmaAirServiceCharge !== undefined) updateDoc.salmaAirServiceCharge = parseFloat(updateData.salmaAirServiceCharge) || 0;
+    if (updateData.vendorServiceCharge !== undefined) updateDoc.vendorServiceCharge = parseFloat(updateData.vendorServiceCharge) || 0;
+    if (updateData.vendorAmount !== undefined) updateDoc.vendorAmount = parseFloat(updateData.vendorAmount) || 0;
+    if (updateData.vendorPaidFh !== undefined) updateDoc.vendorPaidFh = parseFloat(updateData.vendorPaidFh) || 0;
+    if (updateData.vendorDue !== undefined) updateDoc.vendorDue = parseFloat(updateData.vendorDue) || 0;
+    if (updateData.profit !== undefined) updateDoc.profit = parseFloat(updateData.profit) || 0;
+    if (updateData.segmentCount !== undefined) updateDoc.segmentCount = parseInt(updateData.segmentCount) || 1;
+    if (updateData.flownSegment !== undefined) updateDoc.flownSegment = updateData.flownSegment;
+
+    await tickets.updateOne(
+      { _id: existingTicket._id },
+      { $set: updateDoc }
+    );
+
+    const updatedTicket = await tickets.findOne({ _id: existingTicket._id });
+
+    res.json({
+      success: true,
+      message: 'Ticket updated successfully',
+      ticket: updatedTicket
+    });
+
+  } catch (error) {
+    console.error('Update ticket error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update ticket',
+      error: error.message
+    });
+  }
+});
+
+// ✅ DELETE: Delete Air Ticket by ID (soft delete)
+app.delete("/api/air-ticketing/tickets/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const query = {
+      $or: [
+        { bookingId: id },
+        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
+      ],
+      isActive: { $ne: false }
+    };
+
+    const ticket = await tickets.findOne(query);
+
+    if (!ticket) {
+      return res.status(404).json({
+        success: false,
+        message: 'Ticket not found'
+      });
+    }
+
+    await tickets.updateOne(
+      { _id: ticket._id },
+      { $set: { isActive: false, updatedAt: new Date() } }
+    );
+
+    res.json({
+      success: true,
+      message: 'Ticket deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete ticket error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete ticket',
       error: error.message
     });
   }
