@@ -8014,7 +8014,7 @@ app.get("/orders/analytics", async (req, res) => {
 
 // ==================== AGENT ROUTES ====================
 // Create Agent
-app.post("api/haj-umrah/agents", async (req, res) => {
+app.post("/api/haj-umrah/agents", async (req, res) => {
   try {
     const {
       tradeName,
@@ -8075,7 +8075,7 @@ app.post("api/haj-umrah/agents", async (req, res) => {
 });
 
 // List Agents (with pagination and search)
-app.get("api/haj-umrah/agents", async (req, res) => {
+app.get("/api/haj-umrah/agents", async (req, res) => {
   try {
     const { page = 1, limit = 10, q } = req.query;
     const pageNum = Math.max(parseInt(page) || 1, 1);
@@ -8139,7 +8139,7 @@ app.get("api/haj-umrah/agents", async (req, res) => {
 });
 
 // Get single agent by id
-app.get("api/haj-umrah/agents/:id", async (req, res) => {
+app.get("/api/haj-umrah/agents/:id", async (req, res) => {
   try {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
