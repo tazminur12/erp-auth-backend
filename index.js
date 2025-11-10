@@ -8268,6 +8268,56 @@ app.put("/api/haj-umrah/agents/:id", async (req, res) => {
   }
 });
 
+// DELETE /api/haj-umrah/agents/:id
+app.delete("/api/haj-umrah/agents/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid agent id"
+      });
+    }
+
+    const agent = await agents.findOne({ 
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!agent) {
+      return res.status(404).json({
+        success: false,
+        message: "Haj-Umrah Agent not found"
+      });
+    }
+
+    // Soft delete
+    await agents.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: "Haj-Umrah Agent deleted successfully"
+    });
+
+  } catch (error) {
+    console.error('Delete haj-umrah agent error:', error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete haj-umrah agent",
+      error: error.message
+    });
+  }
+});
+
 // Helper: Generate unique Air Ticketing Agent ID
 const generateAirAgentId = async (db) => {
   const counterCollection = db.collection("counters");
