@@ -8081,7 +8081,7 @@ app.get("/api/haj-umrah/agents", async (req, res) => {
     const pageNum = Math.max(parseInt(page) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
 
-    const filter = {};
+    const filter = { isActive: { $ne: false } };
     if (q && String(q).trim()) {
       const text = String(q).trim();
       filter.$or = [
@@ -8281,8 +8281,7 @@ app.delete("/api/haj-umrah/agents/:id", async (req, res) => {
     }
 
     const agent = await agents.findOne({ 
-      _id: new ObjectId(id),
-      isActive: { $ne: false }
+      _id: new ObjectId(id)
     });
 
     if (!agent) {
@@ -10754,7 +10753,7 @@ app.get('/api/haj-umrah/agents', async (req, res) => {
   try {
     const { page = 1, limit = 100, search = '' } = req.query;
 
-    const filter = {};
+    const filter = { isActive: { $ne: false } };
     if (search) {
       filter.$or = [
         { tradeName: { $regex: search, $options: 'i' } },
