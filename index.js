@@ -479,7 +479,7 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
 
 
 // // MongoDB Setup
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@nesswear.awdz30m.mongodb.net/?appName=nesswear`;
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASSWORD}@salma-air-erp.puabxco.mongodb.net/?appName=Salma-Air-ERP`;
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
