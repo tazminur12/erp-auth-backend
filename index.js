@@ -2012,9 +2012,17 @@ app.get("/api/airCustomers/:id", async (req, res) => {
       });
     }
 
+    // Ensure financial fields are included (default to 0 if not set)
+    const customerWithFinancials = {
+      ...customer,
+      totalAmount: customer.totalAmount !== undefined ? customer.totalAmount : 0,
+      paidAmount: customer.paidAmount !== undefined ? customer.paidAmount : 0,
+      totalDue: customer.totalDue !== undefined ? customer.totalDue : 0
+    };
+
     res.json({
       success: true,
-      customer
+      customer: customerWithFinancials
     });
 
   } catch (error) {
@@ -9145,13 +9153,13 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
       }
     }
 
-    // Verify customer exists
-    const customer = await customers.findOne({
+    // Verify customer exists in airCustomers collection
+    const customer = await airCustomers.findOne({
       $or: [
         { customerId: ticketData.customerId },
         { _id: ObjectId.isValid(ticketData.customerId) ? new ObjectId(ticketData.customerId) : null }
       ],
-      isActive: true
+      isActive: { $ne: false }
     });
 
     if (!customer) {
@@ -9258,17 +9266,52 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
       updatedAt: new Date()
     };
 
-    // Insert ticket
-    const result = await tickets.insertOne(ticketDoc);
+    // Start transaction for atomic operations
+    let session = null;
+    let ticketId = null;
+    try {
+      session = client.startSession();
+      await session.withTransaction(async () => {
+        // Insert ticket
+        const result = await tickets.insertOne(ticketDoc, { session });
+        ticketId = result.insertedId;
 
-    // Return created ticket
-    const createdTicket = await tickets.findOne({ _id: result.insertedId });
+        // Update customer's financial information in airCustomers collection
+        const customerDeal = parseFloat(ticketData.customerDeal) || 0;
+        const customerPaid = parseFloat(ticketData.customerPaid) || 0;
+        const customerDue = parseFloat(ticketData.customerDue) || 0;
 
-    res.status(201).json({
-      success: true,
-      message: 'Ticket created successfully',
-      ticket: createdTicket
-    });
+        // Calculate current customer totals
+        const currentTotalAmount = (customer.totalAmount || 0) + customerDeal;
+        const currentPaidAmount = (customer.paidAmount || 0) + customerPaid;
+        const currentTotalDue = (customer.totalDue || 0) + customerDue;
+
+        // Update customer with new financial totals
+        await airCustomers.updateOne(
+          { _id: customer._id },
+          {
+            $set: {
+              totalAmount: Math.max(0, currentTotalAmount),
+              paidAmount: Math.max(0, currentPaidAmount),
+              totalDue: Math.max(0, currentTotalDue),
+              updatedAt: new Date()
+            }
+          },
+          { session }
+        );
+      });
+
+      // Return created ticket
+      const createdTicket = await tickets.findOne({ _id: ticketId });
+
+      res.status(201).json({
+        success: true,
+        message: 'Ticket created successfully',
+        ticket: createdTicket
+      });
+    } finally {
+      await session.endSession();
+    }
 
   } catch (error) {
     console.error('Create ticket error:', error);
@@ -9504,18 +9547,87 @@ app.put("/api/air-ticketing/tickets/:id", async (req, res) => {
     if (updateData.segmentCount !== undefined) updateDoc.segmentCount = parseInt(updateData.segmentCount) || 1;
     if (updateData.flownSegment !== undefined) updateDoc.flownSegment = updateData.flownSegment;
 
-    await tickets.updateOne(
-      { _id: existingTicket._id },
-      { $set: updateDoc }
-    );
+    // Check if financial fields are being updated
+    const financialFieldsUpdated = 
+      updateData.customerDeal !== undefined || 
+      updateData.customerPaid !== undefined || 
+      updateData.customerDue !== undefined;
 
-    const updatedTicket = await tickets.findOne({ _id: existingTicket._id });
+    // Start transaction if financial fields are updated
+    let session = null;
+    try {
+      if (financialFieldsUpdated && existingTicket.customerId) {
+        session = client.startSession();
+        await session.withTransaction(async () => {
+          // Update ticket
+          await tickets.updateOne(
+            { _id: existingTicket._id },
+            { $set: updateDoc },
+            { session }
+          );
 
-    res.json({
-      success: true,
-      message: 'Ticket updated successfully',
-      ticket: updatedTicket
-    });
+          // Find customer in airCustomers collection
+          const customer = await airCustomers.findOne({
+            $or: [
+              { customerId: existingTicket.customerId },
+              { _id: ObjectId.isValid(existingTicket.customerId) ? new ObjectId(existingTicket.customerId) : null }
+            ],
+            isActive: { $ne: false }
+          }, { session });
+
+          if (customer) {
+            // Calculate differences
+            const oldDeal = parseFloat(existingTicket.customerDeal) || 0;
+            const oldPaid = parseFloat(existingTicket.customerPaid) || 0;
+            const oldDue = parseFloat(existingTicket.customerDue) || 0;
+
+            const newDeal = updateData.customerDeal !== undefined ? (parseFloat(updateData.customerDeal) || 0) : oldDeal;
+            const newPaid = updateData.customerPaid !== undefined ? (parseFloat(updateData.customerPaid) || 0) : oldPaid;
+            const newDue = updateData.customerDue !== undefined ? (parseFloat(updateData.customerDue) || 0) : oldDue;
+
+            const dealDiff = newDeal - oldDeal;
+            const paidDiff = newPaid - oldPaid;
+            const dueDiff = newDue - oldDue;
+
+            // Update customer totals
+            const currentTotalAmount = (customer.totalAmount || 0) + dealDiff;
+            const currentPaidAmount = (customer.paidAmount || 0) + paidDiff;
+            const currentTotalDue = (customer.totalDue || 0) + dueDiff;
+
+            await airCustomers.updateOne(
+              { _id: customer._id },
+              {
+                $set: {
+                  totalAmount: Math.max(0, currentTotalAmount),
+                  paidAmount: Math.max(0, currentPaidAmount),
+                  totalDue: Math.max(0, currentTotalDue),
+                  updatedAt: new Date()
+                }
+              },
+              { session }
+            );
+          }
+        });
+      } else {
+        // No financial update, just update ticket
+        await tickets.updateOne(
+          { _id: existingTicket._id },
+          { $set: updateDoc }
+        );
+      }
+
+      const updatedTicket = await tickets.findOne({ _id: existingTicket._id });
+
+      res.json({
+        success: true,
+        message: 'Ticket updated successfully',
+        ticket: updatedTicket
+      });
+    } finally {
+      if (session) {
+        await session.endSession();
+      }
+    }
 
   } catch (error) {
     console.error('Update ticket error:', error);
