@@ -81,10 +81,23 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
           : { $or: [{ agentId: tx.partyId }, { _id: tx.partyId }], isActive: true };
         agent = await agents.findOne(cond);
       } else if (tx.partyType === 'customer' && tx.partyId) {
-        const cond = ObjectId.isValid(tx.partyId)
-          ? { $or: [{ customerId: tx.partyId }, { _id: new ObjectId(tx.partyId) }], isActive: true }
-          : { $or: [{ customerId: tx.partyId }, { _id: tx.partyId }], isActive: true };
-        customer = await customers.findOne(cond);
+        // First try airCustomers collection
+        const isValidObjectId = ObjectId.isValid(tx.partyId);
+        const airCustomerCondition = isValidObjectId
+          ? { $or: [{ customerId: tx.partyId }, { _id: new ObjectId(tx.partyId) }], isActive: { $ne: false } }
+          : { $or: [{ customerId: tx.partyId }, { _id: tx.partyId }], isActive: { $ne: false } };
+        customer = await airCustomers.findOne(airCustomerCondition);
+        // If not found in airCustomers, try regular customers collection
+        if (!customer) {
+          const cond = isValidObjectId
+            ? { $or: [{ customerId: tx.partyId }, { _id: new ObjectId(tx.partyId) }], isActive: true }
+            : { $or: [{ customerId: tx.partyId }, { _id: tx.partyId }], isActive: true };
+          try {
+            customer = await customers.findOne(cond);
+          } catch (e) {
+            // customers collection doesn't exist or error, continue
+          }
+        }
       } else if (tx.partyType === 'vendor' && tx.partyId) {
         const cond = ObjectId.isValid(tx.partyId)
           ? { $or: [{ vendorId: tx.partyId }, { _id: new ObjectId(tx.partyId) }], isActive: true }
@@ -239,15 +252,35 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
           updatedAgent = await agents.findOne({ _id: doc._id }, { session });
         }
       } else if (partyType === 'customer' && tx.partyId) {
-        const cond = ObjectId.isValid(tx.partyId)
-          ? { $or: [{ customerId: tx.partyId }, { _id: new ObjectId(tx.partyId) }], isActive: true }
-          : { $or: [{ customerId: tx.partyId }, { _id: tx.partyId }], isActive: true };
-        const doc = await customers.findOne(cond, { session });
+        // First try airCustomers collection (main collection for air customers)
+        const isValidObjectId = ObjectId.isValid(tx.partyId);
+        const airCustomerCondition = isValidObjectId
+          ? { $or: [{ customerId: tx.partyId }, { _id: new ObjectId(tx.partyId) }], isActive: { $ne: false } }
+          : { $or: [{ customerId: tx.partyId }, { _id: tx.partyId }], isActive: { $ne: false } };
+        let doc = await airCustomers.findOne(airCustomerCondition, { session });
+        let isAirCustomer = !!doc;
+        let customerCollection = airCustomers;
+
+        // If not found in airCustomers, try regular customers collection
+        if (!doc) {
+          const cond = isValidObjectId
+            ? { $or: [{ customerId: tx.partyId }, { _id: new ObjectId(tx.partyId) }], isActive: true }
+            : { $or: [{ customerId: tx.partyId }, { _id: tx.partyId }], isActive: true };
+          try {
+            doc = await customers.findOne(cond, { session });
+            if (doc) {
+              customerCollection = customers;
+            }
+          } catch (e) {
+            // customers collection doesn't exist or error, continue with airCustomers only
+          }
+        }
+
         if (doc) {
           const incObj = { totalDue: dueDelta };
           // Optional: when customer pays us (credit), track totalPaid
           if (hasValidAmount && transactionType === 'credit') {
-            incObj.totalPaid = (incObj.totalPaid || 0) + numericAmount;
+            incObj.paidAmount = (incObj.paidAmount || 0) + numericAmount;
           }
           if (isHajjCategory) {
             // customers often store hajjDue
@@ -256,24 +289,33 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
           if (isUmrahCategory) {
             incObj.umrahDue = (incObj.umrahDue || 0) + dueDelta;
           }
+          // For airCustomers, also update totalAmount on debit (when customer owes more)
+          if (isAirCustomer && transactionType === 'debit') {
+            incObj.totalAmount = (incObj.totalAmount || 0) + numericAmount;
+          }
 
-          await customers.updateOne(
+          await customerCollection.updateOne(
             { _id: doc._id },
             { $inc: incObj, $set: { updatedAt: new Date() } },
             { session }
           );
 
           // Clamp negatives
-          const after = await customers.findOne({ _id: doc._id }, { session });
+          const after = await customerCollection.findOne({ _id: doc._id }, { session });
           const setClamp = {};
           if ((after.totalDue || 0) < 0) setClamp['totalDue'] = 0;
+          if ((after.paidAmount || 0) < 0) setClamp['paidAmount'] = 0;
           if (typeof after.hajjDue !== 'undefined' && after.hajjDue < 0) setClamp['hajjDue'] = 0;
           if (typeof after.umrahDue !== 'undefined' && after.umrahDue < 0) setClamp['umrahDue'] = 0;
+          // For airCustomers, ensure paidAmount doesn't exceed totalAmount
+          if (isAirCustomer && typeof after.totalAmount === 'number' && typeof after.paidAmount === 'number' && after.paidAmount > after.totalAmount) {
+            setClamp['paidAmount'] = after.totalAmount;
+          }
           if (Object.keys(setClamp).length) {
             setClamp.updatedAt = new Date();
-            await customers.updateOne({ _id: doc._id }, { $set: setClamp }, { session });
+            await customerCollection.updateOne({ _id: doc._id }, { $set: setClamp }, { session });
           }
-          updatedCustomer = await customers.findOne({ _id: doc._id }, { session });
+          updatedCustomer = await customerCollection.findOne({ _id: doc._id }, { session });
 
           // Additionally, if this customer also exists in the Haji collection by id/customerId, update paidAmount there on credit
           if (hasValidAmount && transactionType === 'credit') {
