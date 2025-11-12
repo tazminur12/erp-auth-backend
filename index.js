@@ -522,53 +522,45 @@ const generateUniqueId = async (db, branchCode) => {
   return `${branchCode}-${String(newSequence).padStart(4, '0')}`;
 };
 
-// Helper: Generate unique Customer ID
+// Helper: Generate unique Customer ID based on customer type prefix
 const generateCustomerId = async (db, customerType) => {
   const counterCollection = db.collection("counters");
-  const customerTypesCollection = db.collection("customerTypes");
-
-  // Get customer type details from database
-  const typeDetails = await customerTypesCollection.findOne({
-    value: customerType.toLowerCase(),
-    isActive: true
-  });
-
-  if (!typeDetails) {
-    throw new Error(`Customer type '${customerType}' not found`);
+  
+  // Get customer type to find prefix
+  let prefix = "CUST"; // Default prefix
+  if (customerType) {
+    const customerTypeDoc = await customerTypes.findOne({ 
+      value: customerType.toLowerCase(),
+      isActive: true 
+    });
+    if (customerTypeDoc && customerTypeDoc.prefix) {
+      prefix = customerTypeDoc.prefix;
+    }
   }
-
-  // Get current date in DDMMYY format (as requested)
-  const today = new Date();
-  const dateStr = String(today.getDate()).padStart(2, '0') +
-    String(today.getMonth() + 1).padStart(2, '0') +
-    today.getFullYear().toString().slice(-2);
-
-  // Create counter key for customer type and date
-  const counterKey = `customer_${customerType}_${dateStr}`;
-
+  
+  // Create counter key for customer type
+  const counterKey = `customer_${prefix}`;
+  
   // Find or create counter
   let counter = await counterCollection.findOne({ counterKey });
-
+  
   if (!counter) {
     // Create new counter starting from 0
     await counterCollection.insertOne({ counterKey, sequence: 0 });
     counter = { sequence: 0 };
   }
-
+  
   // Increment sequence
   const newSequence = counter.sequence + 1;
-
+  
   // Update counter
   await counterCollection.updateOne(
     { counterKey },
     { $set: { sequence: newSequence } }
   );
-
-  // Format: PREFIX + DDMMYY + 00001 (e.g., HAJ05092500001)
-  const prefix = typeDetails.prefix; // Use prefix from database
-  const serial = String(newSequence).padStart(5, '0');
-
-  return `${prefix}${dateStr}${serial}`;
+  
+  // Format: AIR-0001, HAJI-0001, etc.
+  return `${prefix}-${String(newSequence).padStart(4, '0')}`;
 };
 
 // Helper: Generate unique Transaction ID
@@ -781,7 +773,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customers, customerTypes, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets;
+let db, users, branches, counters, customerTypes, airCustomers, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -793,8 +785,8 @@ async function initializeDatabase() {
     users = db.collection("users");
     branches = db.collection("branches");
     counters = db.collection("counters");
-    customers = db.collection("customers");
     customerTypes = db.collection("customerTypes");
+    airCustomers = db.collection("airCustomers");
     services = db.collection("services");
     vendors = db.collection("vendors");
     orders = db.collection("orders");
@@ -904,7 +896,14 @@ async function initializeDatabase() {
         farmExpenses.createIndex({ category: 1, createdAt: -1 }, { name: "farmExpenses_category_createdAt" }),
         farmIncomes.createIndex({ id: 1 }, { unique: true, name: "farmIncomes_id_unique" }),
         farmIncomes.createIndex({ date: -1 }, { name: "farmIncomes_date_desc" }),
-        farmIncomes.createIndex({ source: 1, date: -1 }, { name: "farmIncomes_source_date" })
+        farmIncomes.createIndex({ source: 1, date: -1 }, { name: "farmIncomes_source_date" }),
+        // Air Customers indexes
+        airCustomers.createIndex({ customerId: 1 }, { unique: true, name: "airCustomers_customerId_unique" }),
+        airCustomers.createIndex({ mobile: 1 }, { name: "airCustomers_mobile" }),
+        airCustomers.createIndex({ email: 1 }, { sparse: true, name: "airCustomers_email" }),
+        airCustomers.createIndex({ passportNumber: 1 }, { sparse: true, name: "airCustomers_passportNumber" }),
+        airCustomers.createIndex({ isActive: 1, createdAt: -1 }, { name: "airCustomers_active_createdAt" }),
+        airCustomers.createIndex({ name: "text", mobile: "text", email: "text", passportNumber: "text" }, { name: "airCustomers_text_search" })
       ]);
     } catch (e) {
       console.warn("⚠️ Index creation warning:", e.message);
@@ -1732,629 +1731,598 @@ app.delete("/customer-types/:id", async (req, res) => {
   }
 });
 
-// ==================== CUSTOMER ROUTES ====================
 
-// Create new customer
-app.post("/customers", async (req, res) => {
+// ==================== AIR CUSTOMER CRUD ROUTES ====================
+
+// POST: Create new Air Customer
+app.post("/api/airCustomers", async (req, res) => {
   try {
     const {
-      name,
+      // Basic customer information
+      firstName,
+      lastName,
       mobile,
       email,
+      occupation,
       address,
       division,
       district,
       upazila,
+      postCode,
       whatsappNo,
       customerType,
+      
+      // Image data
       customerImage,
+      
+      // Passport information
       passportNumber,
+      passportType,
       issueDate,
       expiryDate,
       dateOfBirth,
       nidNumber,
-      notes,
-      referenceBy,
-      referenceCustomerId,
-      postCode,
-      // Newly supported personal fields
-      firstName,
-      lastName,
+      passportFirstName,
+      passportLastName,
+      nationality,
+      previousPassport,
+      gender,
+      
+      // Family details
       fatherName,
       motherName,
       spouseName,
-      occupation,
-      nationality,
-      gender,
       maritalStatus,
-      // Newly supported passport fields
-      passportType,
-      // Service linkage fields
-      serviceType,
-      serviceStatus,
-      // Payment/financial fields
-      totalAmount,
-      paidAmount,
-      paymentMethod,
-      paymentStatus,
-      // Package information object
-      packageInfo,
-      // Explicit isActive toggle
-      isActive
+      
+      // Additional information
+      notes,
+      referenceBy,
+      referenceCustomerId
     } = req.body;
 
-    // Validation - Only name and mobile are required
-    if (!name || !name.trim()) {
-      return res.status(400).send({
-        error: true,
-        message: "Name is required"
+    // Validation - firstName and mobile are required
+    if (!firstName || !firstName.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "First name is required"
       });
     }
 
-    if (!mobile || !mobile.trim()) {
-      return res.status(400).send({
-        error: true,
+    if (!mobile) {
+      return res.status(400).json({
+        success: false,
         message: "Mobile number is required"
       });
     }
 
-    // Validate customer type if provided (optional)
-    if (customerType) {
-      const validCustomerType = await customerTypes.findOne({
-        value: customerType.toLowerCase(),
-        isActive: true
+    // Validate mobile number format (Bangladeshi format: 01XXXXXXXXX)
+    const mobileRegex = /^01[3-9]\d{8}$/;
+    if (!mobileRegex.test(mobile)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid mobile number format. Please use format: 01XXXXXXXXX"
       });
+    }
 
-      if (!validCustomerType) {
-        return res.status(400).send({
-          error: true,
-          message: `Invalid customer type '${customerType}'. Please select a valid customer type.`
+    // Validate email format if provided
+    if (email && email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid email format"
         });
       }
     }
 
-    // Validate passport fields if provided
-    if (issueDate && !isValidDate(issueDate)) {
-      return res.status(400).send({
-        error: true,
-        message: "Invalid issue date format. Please use YYYY-MM-DD format"
-      });
-    }
-
-    if (expiryDate && !isValidDate(expiryDate)) {
-      return res.status(400).send({
-        error: true,
-        message: "Invalid expiry date format. Please use YYYY-MM-DD format"
-      });
-    }
-
-    if (dateOfBirth && !isValidDate(dateOfBirth)) {
-      return res.status(400).send({
-        error: true,
-        message: "Invalid date of birth format. Please use YYYY-MM-DD format"
-      });
-    }
-
-    // Check if expiry date is after issue date
-    if (issueDate && expiryDate && new Date(expiryDate) <= new Date(issueDate)) {
-      return res.status(400).send({
-        error: true,
-        message: "Expiry date must be after issue date"
-      });
-    }
-
-    // Check if mobile already exists
-    const existingCustomer = await customers.findOne({
+    // Check if mobile number already exists
+    const existingCustomer = await airCustomers.findOne({
       mobile: mobile,
-      isActive: true
+      isActive: { $ne: false }
     });
 
     if (existingCustomer) {
-      return res.status(400).send({
-        error: true,
+      return res.status(400).json({
+        success: false,
         message: "Customer with this mobile number already exists"
       });
     }
 
-    // Generate unique customer ID
-    // If customerType is not provided, use 'general' as default
-    const customerTypeForId = customerType || 'general';
-    const customerId = await generateCustomerId(db, customerTypeForId);
-
-
-    // Process image data - Extract just the URL string
-    let imageUrl = null;
-
-    // If customerImage is a string (direct URL), use it
-    if (typeof customerImage === 'string') {
-      imageUrl = customerImage;
-    }
-    // If customerImage is an object with cloudinaryUrl, extract the URL
-    else if (customerImage && typeof customerImage === 'object' && customerImage.cloudinaryUrl) {
-      imageUrl = customerImage.cloudinaryUrl;
-    }
-    // If customerImage is an object with downloadURL, use that
-    else if (customerImage && typeof customerImage === 'object' && customerImage.downloadURL) {
-      imageUrl = customerImage.downloadURL;
-    }
+    // Generate customer ID
+    const customerId = await generateCustomerId(db, customerType);
 
     // Create customer object
-    const newCustomer = {
+    const customerData = {
       customerId,
-      name,
-      // Additional name breakdown (optional)
+      // Basic customer information
+      name: `${firstName || ''}${lastName ? ' ' + lastName : ''}`.trim(),
       firstName: firstName || null,
       lastName: lastName || null,
       mobile,
       email: email || null,
+      occupation: occupation || null,
       address: address || null,
       division: division || null,
       district: district || null,
       upazila: upazila || null,
       postCode: postCode || null,
       whatsappNo: whatsappNo || null,
-      customerType: customerTypeForId,
-      customerImage: imageUrl, // Just the image URL
-      // Passport information fields
+      customerType: customerType || null,
+      
+      // Image data
+      customerImage: customerImage || null,
+      
+      // Passport information
       passportNumber: passportNumber || null,
       passportType: passportType || null,
       issueDate: issueDate || null,
       expiryDate: expiryDate || null,
       dateOfBirth: dateOfBirth || null,
       nidNumber: nidNumber || null,
+      passportFirstName: passportFirstName || null,
+      passportLastName: passportLastName || null,
       nationality: nationality || null,
+      previousPassport: previousPassport || null,
       gender: gender || null,
-      maritalStatus: maritalStatus || null,
-      // Family and personal details
+      
+      // Family details
       fatherName: fatherName || null,
       motherName: motherName || null,
       spouseName: spouseName || null,
-      occupation: occupation || null,
-      // Additional fields
+      maritalStatus: maritalStatus || null,
+      
+      // Additional information
       notes: notes || null,
       referenceBy: referenceBy || null,
       referenceCustomerId: referenceCustomerId || null,
-      // Service linkage
-      serviceType: serviceType || null,
-      serviceStatus: serviceStatus || null,
-      // Financial fields
-      totalAmount: typeof totalAmount === 'number' ? totalAmount : null,
-      paidAmount: typeof paidAmount === 'number' ? paidAmount : null,
-      paymentMethod: paymentMethod || null,
-      paymentStatus: paymentStatus || null,
-      // Package info (store as provided if object)
-      packageInfo: packageInfo && typeof packageInfo === 'object' ? packageInfo : null,
+      
+      // System fields
+      isActive: true,
       createdAt: new Date(),
-      updatedAt: new Date(),
-      isActive: typeof isActive === 'boolean' ? isActive : true
+      updatedAt: new Date()
     };
 
-    const result = await customers.insertOne(newCustomer);
+    // Insert customer
+    const result = await airCustomers.insertOne(customerData);
 
-    res.status(201).send({
+    res.status(201).json({
       success: true,
       message: "Customer created successfully",
       customer: {
         _id: result.insertedId,
-        customerId: newCustomer.customerId,
-        name: newCustomer.name,
-        mobile: newCustomer.mobile,
-        email: newCustomer.email,
-        address: newCustomer.address || null,
-        division: newCustomer.division || null,
-        district: newCustomer.district || null,
-        upazila: newCustomer.upazila || null,
-        postCode: newCustomer.postCode || null,
-        whatsappNo: newCustomer.whatsappNo || null,
-        customerType: newCustomer.customerType || customerTypeForId,
-        customerImage: newCustomer.customerImage,
-        firstName: newCustomer.firstName,
-        lastName: newCustomer.lastName,
-        fatherName: newCustomer.fatherName,
-        motherName: newCustomer.motherName,
-        spouseName: newCustomer.spouseName,
-        occupation: newCustomer.occupation,
-        passportNumber: newCustomer.passportNumber,
-        passportType: newCustomer.passportType,
-        issueDate: newCustomer.issueDate,
-        expiryDate: newCustomer.expiryDate,
-        dateOfBirth: newCustomer.dateOfBirth,
-        nidNumber: newCustomer.nidNumber,
-        nationality: newCustomer.nationality,
-        gender: newCustomer.gender,
-        maritalStatus: newCustomer.maritalStatus,
-        notes: newCustomer.notes,
-        referenceBy: newCustomer.referenceBy,
-        referenceCustomerId: newCustomer.referenceCustomerId,
-        customerImage: newCustomer.customerImage,
-        serviceType: newCustomer.serviceType,
-        serviceStatus: newCustomer.serviceStatus,
-        totalAmount: newCustomer.totalAmount,
-        paidAmount: newCustomer.paidAmount,
-        paymentMethod: newCustomer.paymentMethod,
-        paymentStatus: newCustomer.paymentStatus,
-        packageInfo: newCustomer.packageInfo,
-        createdAt: newCustomer.createdAt
+        ...customerData
       }
     });
 
   } catch (error) {
     console.error('Create customer error:', error);
-    res.status(500).send({ error: true, message: "Internal server error" });
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while creating customer",
+      error: error.message
+    });
   }
 });
 
-// Get all customers
-app.get("/customers", async (req, res) => {
+// GET: Get all Air Customers with search and pagination
+app.get("/api/airCustomers", async (req, res) => {
   try {
-    // Check if database is connected
-    if (!customers) {
-      return res.status(503).json({
-        error: true,
-        message: "Database not connected. Please try again later."
-      });
+    const { 
+      search, 
+      page = 1, 
+      limit = 50,
+      customerType,
+      isActive = 'true'
+    } = req.query;
+
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build query
+    const query = {};
+
+    // Filter by isActive
+    if (isActive === 'true') {
+      query.isActive = true;
+    } else if (isActive === 'false') {
+      query.isActive = false;
+    } else {
+      query.isActive = { $ne: false }; // Default: active only
     }
 
-    const { customerType, division, district, upazila, search, q, passportNumber, nidNumber, expiringSoon, serviceType, serviceStatus, paymentStatus } = req.query;
-
-    let filter = { isActive: true };
-
-    // Apply filters
-    if (customerType) filter.customerType = customerType;
-    if (division) filter.division = division;
-    if (district) filter.district = district;
-    if (upazila) filter.upazila = upazila;
-    if (passportNumber) filter.passportNumber = { $regex: passportNumber, $options: 'i' };
-    if (nidNumber) filter.nidNumber = { $regex: nidNumber, $options: 'i' };
-    if (serviceType) filter.serviceType = serviceType;
-    if (serviceStatus) filter.serviceStatus = serviceStatus;
-    if (paymentStatus) filter.paymentStatus = paymentStatus;
-
-    // Filter customers with expiring passports (within next 30 days)
-    if (expiringSoon === 'true') {
-      const thirtyDaysFromNow = new Date();
-      thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
-      filter.expiryDate = {
-        $gte: new Date().toISOString().split('T')[0],
-        $lte: thirtyDaysFromNow.toISOString().split('T')[0]
-      };
+    // Filter by customer type
+    if (customerType) {
+      query.customerType = customerType;
     }
-    // Support both 'search' and 'q' parameters for search
-    const searchTerm = search || q;
-    if (searchTerm) {
-      filter.$or = [
-        { name: { $regex: searchTerm, $options: 'i' } },
-        { mobile: { $regex: searchTerm, $options: 'i' } },
-        { customerId: { $regex: searchTerm, $options: 'i' } },
-        { email: { $regex: searchTerm, $options: 'i' } },
-        { passportNumber: { $regex: searchTerm, $options: 'i' } },
-        { nidNumber: { $regex: searchTerm, $options: 'i' } }
+
+    // Search functionality
+    if (search && search.trim()) {
+      const searchRegex = { $regex: search.trim(), $options: 'i' };
+      query.$or = [
+        { name: searchRegex },
+        { firstName: searchRegex },
+        { lastName: searchRegex },
+        { mobile: searchRegex },
+        { email: searchRegex },
+        { passportNumber: searchRegex },
+        { customerId: searchRegex },
+        { nidNumber: searchRegex }
       ];
     }
 
-    const allCustomers = await customers.find(filter)
+    // Get total count
+    const total = await airCustomers.countDocuments(query);
+
+    // Get customers
+    const customers = await airCustomers
+      .find(query)
       .sort({ createdAt: -1 })
-      .toArray();
-
-    res.send({
-      success: true,
-      count: allCustomers.length,
-      customers: allCustomers
-    });
-  } catch (error) {
-    console.error('Get customers error:', error);
-    res.status(500).send({ error: true, message: "Internal server error" });
-  }
-});
-
-// Search customers for transaction form
-app.get("/customers/search", async (req, res) => {
-  try {
-    const { q } = req.query;
-
-    if (!q || q.trim().length < 2) {
-      return res.json({
-        success: true,
-        customers: []
-      });
-    }
-
-    const searchTerm = q.trim();
-    const searchRegex = new RegExp(searchTerm, 'i');
-
-    const searchResults = await customers.find({
-      isActive: true,
-      $or: [
-        { name: searchRegex },
-        { mobile: searchRegex },
-        { email: searchRegex },
-        { customerId: searchRegex },
-        { passportNumber: searchRegex },
-        { nidNumber: searchRegex }
-      ]
-    })
-      .project({
-        customerId: 1,
-        name: 1,
-        mobile: 1,
-        email: 1,
-        customerType: 1,
-        address: 1,
-        division: 1,
-        district: 1
-      })
-      .sort({ name: 1 })
-      .limit(20)
+      .skip(skip)
+      .limit(limitNum)
       .toArray();
 
     res.json({
       success: true,
-      customers: searchResults
+      customers,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
     });
+
   } catch (error) {
-    console.error('Search customers error:', error);
+    console.error('Get customers error:', error);
     res.status(500).json({
-      error: true,
-      message: "Internal server error while searching customers"
+      success: false,
+      message: "Internal server error while fetching customers",
+      error: error.message
     });
   }
 });
 
-// Get customer by ID (supports customerId or Mongo _id)
-app.get("/customers/:customerId", async (req, res) => {
+// GET: Get single Air Customer by ID
+app.get("/api/airCustomers/:id", async (req, res) => {
   try {
-    const { customerId } = req.params;
+    const { id } = req.params;
 
-    // Try find by customerId first
-    let customer = await customers.findOne({
-      customerId: customerId,
-      isActive: true
+    // Try to find by customerId first, then by _id
+    let customer = null;
+    
+    // Try by customerId
+    customer = await airCustomers.findOne({
+      customerId: id,
+      isActive: { $ne: false }
     });
 
-    // If not found and looks like a valid ObjectId, try by _id
-    if (!customer && ObjectId.isValid(customerId)) {
-      customer = await customers.findOne({
-        _id: new ObjectId(customerId),
-        isActive: true
+    // If not found, try by _id
+    if (!customer && ObjectId.isValid(id)) {
+      customer = await airCustomers.findOne({
+        _id: new ObjectId(id),
+        isActive: { $ne: false }
       });
     }
 
     if (!customer) {
-      return res.status(404).send({
-        error: true,
+      return res.status(404).json({
+        success: false,
         message: "Customer not found"
       });
     }
 
-    res.send({
+    res.json({
       success: true,
-      customer: customer
+      customer
     });
+
   } catch (error) {
     console.error('Get customer error:', error);
-    res.status(500).send({ error: true, message: "Internal server error" });
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while fetching customer",
+      error: error.message
+    });
   }
 });
 
-// Update customer
-app.patch("/customers/:customerId", async (req, res) => {
+// PUT: Update Air Customer
+app.put("/api/airCustomers/:id", async (req, res) => {
   try {
-    const { customerId } = req.params;
-    const updateData = { ...req.body };
+    const { id } = req.params;
+    const updateData = req.body;
 
-    // Remove fields that shouldn't be updated
-    delete updateData.customerId;
-    delete updateData.createdAt;
-    updateData.updatedAt = new Date();
+    // Find customer
+    let customer = null;
+    
+    // Try by customerId first
+    customer = await airCustomers.findOne({
+      customerId: id,
+      isActive: { $ne: false }
+    });
 
-    // Normalize customerImage if provided (like create route)
-    if (Object.prototype.hasOwnProperty.call(updateData, 'customerImage')) {
-      let imageUrl = null;
-      const incoming = updateData.customerImage;
-      if (typeof incoming === 'string') {
-        imageUrl = incoming;
-      } else if (incoming && typeof incoming === 'object' && incoming.cloudinaryUrl) {
-        imageUrl = incoming.cloudinaryUrl;
-      } else if (incoming && typeof incoming === 'object' && incoming.downloadURL) {
-        imageUrl = incoming.downloadURL;
-      }
-      updateData.customerImage = imageUrl;
+    // If not found, try by _id
+    if (!customer && ObjectId.isValid(id)) {
+      customer = await airCustomers.findOne({
+        _id: new ObjectId(id),
+        isActive: { $ne: false }
+      });
     }
 
-    // Check if mobile is being updated and if it already exists
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        message: "Customer not found"
+      });
+    }
+
+    // Validate mobile number if being updated
     if (updateData.mobile) {
-      const existingCustomer = await customers.findOne({
+      const mobileRegex = /^01[3-9]\d{8}$/;
+      if (!mobileRegex.test(updateData.mobile)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid mobile number format. Please use format: 01XXXXXXXXX"
+        });
+      }
+
+      // Check if mobile number already exists for another customer
+      const existingCustomer = await airCustomers.findOne({
         mobile: updateData.mobile,
-        customerId: { $ne: customerId },
-        isActive: true
+        customerId: { $ne: customer.customerId },
+        isActive: { $ne: false }
       });
 
       if (existingCustomer) {
-        return res.status(400).send({
-          error: true,
-          message: "Customer with this mobile number already exists"
+        return res.status(400).json({
+          success: false,
+          message: "Mobile number already exists for another customer"
         });
       }
     }
 
-    // Validate passport fields if being updated
-    if (updateData.issueDate && !isValidDate(updateData.issueDate)) {
-      return res.status(400).send({
-        error: true,
-        message: "Invalid issue date format. Please use YYYY-MM-DD format"
-      });
-    }
-
-    if (updateData.expiryDate && !isValidDate(updateData.expiryDate)) {
-      return res.status(400).send({
-        error: true,
-        message: "Invalid expiry date format. Please use YYYY-MM-DD format"
-      });
-    }
-
-    if (updateData.dateOfBirth && !isValidDate(updateData.dateOfBirth)) {
-      return res.status(400).send({
-        error: true,
-        message: "Invalid date of birth format. Please use YYYY-MM-DD format"
-      });
-    }
-
-    // Check if expiry date is after issue date
-    if (updateData.issueDate && updateData.expiryDate && new Date(updateData.expiryDate) <= new Date(updateData.issueDate)) {
-      return res.status(400).send({
-        error: true,
-        message: "Expiry date must be after issue date"
-      });
-    }
-
-    // Validate payment fields if provided
-    if (Object.prototype.hasOwnProperty.call(updateData, 'totalAmount')) {
-      if (updateData.totalAmount !== null && updateData.totalAmount !== undefined && typeof updateData.totalAmount !== 'number') {
-        return res.status(400).send({ error: true, message: "totalAmount must be a number" });
-      }
-    }
-    if (Object.prototype.hasOwnProperty.call(updateData, 'paidAmount')) {
-      if (updateData.paidAmount !== null && updateData.paidAmount !== undefined && typeof updateData.paidAmount !== 'number') {
-        return res.status(400).send({ error: true, message: "paidAmount must be a number" });
-      }
-    }
-    if (typeof updateData.totalAmount === 'number' && typeof updateData.paidAmount === 'number') {
-      if (updateData.paidAmount > updateData.totalAmount) {
-        return res.status(400).send({ error: true, message: "paidAmount cannot exceed totalAmount" });
+    // Validate email if being updated
+    if (updateData.email && updateData.email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(updateData.email)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid email format"
+        });
       }
     }
 
-    // Validate enums if provided
-    if (updateData.paymentStatus && !['pending', 'partial', 'paid'].includes(updateData.paymentStatus)) {
-      return res.status(400).send({ error: true, message: "Invalid paymentStatus value" });
-    }
-    if (updateData.serviceStatus && !['pending', 'confirmed', 'cancelled', 'in_progress', 'completed'].includes(updateData.serviceStatus)) {
-      return res.status(400).send({ error: true, message: "Invalid serviceStatus value" });
+    // Update name if firstName or lastName changed
+    if (updateData.firstName || updateData.lastName) {
+      const firstName = updateData.firstName !== undefined ? updateData.firstName : customer.firstName;
+      const lastName = updateData.lastName !== undefined ? updateData.lastName : customer.lastName;
+      updateData.name = `${firstName || ''}${lastName ? ' ' + lastName : ''}`.trim();
     }
 
-    const result = await customers.updateOne(
-      { customerId: customerId, isActive: true },
-      { $set: updateData }
+    // Prepare update object (exclude _id and customerId from updates)
+    const { _id, customerId, ...allowedUpdates } = updateData;
+    
+    // Add updatedAt
+    allowedUpdates.updatedAt = new Date();
+
+    // Update customer
+    const updateQuery = customer._id 
+      ? { _id: customer._id }
+      : { customerId: customer.customerId };
+
+    const result = await airCustomers.updateOne(
+      updateQuery,
+      { $set: allowedUpdates }
     );
 
     if (result.matchedCount === 0) {
-      return res.status(404).send({
-        error: true,
+      return res.status(404).json({
+        success: false,
         message: "Customer not found"
       });
     }
 
-    // Return updated customer
-    const updatedCustomer = await customers.findOne({ customerId, isActive: true });
-    res.send({
+    // Get updated customer
+    const updatedCustomer = await airCustomers.findOne(updateQuery);
+
+    res.json({
       success: true,
       message: "Customer updated successfully",
       customer: updatedCustomer
     });
+
   } catch (error) {
     console.error('Update customer error:', error);
-    res.status(500).send({ error: true, message: "Internal server error" });
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while updating customer",
+      error: error.message
+    });
   }
 });
 
-// Delete customer (soft delete)
-app.delete("/customers/:customerId", async (req, res) => {
+// PATCH: Partially update Air Customer
+app.patch("/api/airCustomers/:id", async (req, res) => {
   try {
-    const { customerId } = req.params;
+    const { id } = req.params;
+    const updateData = req.body;
 
-    const result = await customers.updateOne(
-      { customerId: customerId, isActive: true },
-      { $set: { isActive: false, updatedAt: new Date() } }
-    );
+    // Find customer
+    let customer = null;
+    
+    // Try by customerId first
+    customer = await airCustomers.findOne({
+      customerId: id,
+      isActive: { $ne: false }
+    });
 
-    if (result.matchedCount === 0) {
-      return res.status(404).send({
-        error: true,
+    // If not found, try by _id
+    if (!customer && ObjectId.isValid(id)) {
+      customer = await airCustomers.findOne({
+        _id: new ObjectId(id),
+        isActive: { $ne: false }
+      });
+    }
+
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
         message: "Customer not found"
       });
     }
 
-    res.send({
+    // Validate mobile number if being updated
+    if (updateData.mobile) {
+      const mobileRegex = /^01[3-9]\d{8}$/;
+      if (!mobileRegex.test(updateData.mobile)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid mobile number format. Please use format: 01XXXXXXXXX"
+        });
+      }
+
+      // Check if mobile number already exists for another customer
+      const existingCustomer = await airCustomers.findOne({
+        mobile: updateData.mobile,
+        customerId: { $ne: customer.customerId },
+        isActive: { $ne: false }
+      });
+
+      if (existingCustomer) {
+        return res.status(400).json({
+          success: false,
+          message: "Mobile number already exists for another customer"
+        });
+      }
+    }
+
+    // Validate email if being updated
+    if (updateData.email && updateData.email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(updateData.email)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid email format"
+        });
+      }
+    }
+
+    // Update name if firstName or lastName changed
+    if (updateData.firstName !== undefined || updateData.lastName !== undefined) {
+      const firstName = updateData.firstName !== undefined ? updateData.firstName : customer.firstName;
+      const lastName = updateData.lastName !== undefined ? updateData.lastName : customer.lastName;
+      updateData.name = `${firstName || ''}${lastName ? ' ' + lastName : ''}`.trim();
+    }
+
+    // Prepare update object (exclude _id and customerId from updates)
+    const { _id, customerId, ...allowedUpdates } = updateData;
+    
+    // Add updatedAt
+    allowedUpdates.updatedAt = new Date();
+
+    // Update customer
+    const updateQuery = customer._id 
+      ? { _id: customer._id }
+      : { customerId: customer.customerId };
+
+    const result = await airCustomers.updateOne(
+      updateQuery,
+      { $set: allowedUpdates }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Customer not found"
+      });
+    }
+
+    // Get updated customer
+    const updatedCustomer = await airCustomers.findOne(updateQuery);
+
+    res.json({
+      success: true,
+      message: "Customer updated successfully",
+      customer: updatedCustomer
+    });
+
+  } catch (error) {
+    console.error('Update customer error:', error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while updating customer",
+      error: error.message
+    });
+  }
+});
+
+// DELETE: Soft delete Air Customer
+app.delete("/api/airCustomers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Find customer
+    let customer = null;
+    
+    // Try by customerId first
+    customer = await airCustomers.findOne({
+      customerId: id,
+      isActive: { $ne: false }
+    });
+
+    // If not found, try by _id
+    if (!customer && ObjectId.isValid(id)) {
+      customer = await airCustomers.findOne({
+        _id: new ObjectId(id),
+        isActive: { $ne: false }
+      });
+    }
+
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        message: "Customer not found"
+      });
+    }
+
+    // Soft delete (set isActive to false)
+    const updateQuery = customer._id 
+      ? { _id: customer._id }
+      : { customerId: customer.customerId };
+
+    const result = await airCustomers.updateOne(
+      updateQuery,
+      { 
+        $set: { 
+          isActive: false,
+          updatedAt: new Date()
+        } 
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Customer not found"
+      });
+    }
+
+    res.json({
       success: true,
       message: "Customer deleted successfully"
     });
+
   } catch (error) {
     console.error('Delete customer error:', error);
-    res.status(500).send({ error: true, message: "Internal server error" });
+    res.status(500).json({
+      success: false,
+      message: "Internal server error while deleting customer",
+      error: error.message
+    });
   }
 });
 
-// Get customer statistics
-app.get("/customers/stats/overview", async (req, res) => {
-  try {
-    const totalCustomers = await customers.countDocuments({ isActive: true });
-    const hajCustomers = await customers.countDocuments({ customerType: 'Haj', isActive: true });
-    const umrahCustomers = await customers.countDocuments({ customerType: 'Umrah', isActive: true });
-
-    // Get today's customers
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayCustomers = await customers.countDocuments({
-      createdAt: { $gte: today },
-      isActive: true
-    });
-
-    // Get this month's customers
-    const thisMonth = new Date();
-    thisMonth.setDate(1);
-    thisMonth.setHours(0, 0, 0, 0);
-    const thisMonthCustomers = await customers.countDocuments({
-      createdAt: { $gte: thisMonth },
-      isActive: true
-    });
-
-    // Get passport statistics
-    const customersWithPassport = await customers.countDocuments({
-      passportNumber: { $exists: true, $ne: null },
-      isActive: true
-    });
-
-    const customersWithNID = await customers.countDocuments({
-      nidNumber: { $exists: true, $ne: null },
-      isActive: true
-    });
-
-    // Get customers with expiring passports (within next 30 days)
-    const thirtyDaysFromNow = new Date();
-    thirtyDaysFromNow.setDate(thirtyDaysFromNow.getDate() + 30);
-    const expiringPassports = await customers.countDocuments({
-      expiryDate: {
-        $gte: new Date().toISOString().split('T')[0],
-        $lte: thirtyDaysFromNow.toISOString().split('T')[0]
-      },
-      isActive: true
-    });
-
-    // Get customers with images
-    const customersWithImage = await customers.countDocuments({
-      customerImage: { $exists: true, $ne: null },
-      isActive: true
-    });
-
-    res.send({
-      success: true,
-      stats: {
-        total: totalCustomers,
-        haj: hajCustomers,
-        umrah: umrahCustomers,
-        today: todayCustomers,
-        thisMonth: thisMonthCustomers,
-        withPassport: customersWithPassport,
-        withNID: customersWithNID,
-        expiringPassports: expiringPassports,
-        withImage: customersWithImage
-      }
-    });
-  } catch (error) {
-    console.error('Get customer stats error:', error);
-    res.status(500).send({ error: true, message: "Internal server error" });
-  }
-});
 
 // ==================== PASSPORT ROUTES ====================
 
@@ -2365,7 +2333,7 @@ app.get("/customers/passport/stats", async (req, res) => {
     const daysFromNow = new Date();
     daysFromNow.setDate(daysFromNow.getDate() + parseInt(days));
 
-    const expiringPassports = await customers.find({
+    const expiringPassports = await airCustomers.find({
       expiryDate: {
         $gte: new Date().toISOString().split('T')[0],
         $lte: daysFromNow.toISOString().split('T')[0]
@@ -2373,7 +2341,7 @@ app.get("/customers/passport/stats", async (req, res) => {
       isActive: true
     }).sort({ expiryDate: 1 }).toArray();
 
-    const expiredPassports = await customers.find({
+    const expiredPassports = await airCustomers.find({
       expiryDate: {
         $lt: new Date().toISOString().split('T')[0]
       },
