@@ -4889,7 +4889,19 @@ app.post("/api/transactions", async (req, res) => {
         email: null
       };
     } else if (finalPartyType === 'customer') {
+      // First try regular customers collection
       party = await customers.findOne(searchCondition);
+      // If not found, try airCustomers collection
+      if (!party) {
+        const airCustomerCondition = isValidObjectId
+          ? { $or: [{ customerId: searchPartyId }, { _id: new ObjectId(searchPartyId) }], isActive: { $ne: false } }
+          : { $or: [{ customerId: searchPartyId }, { _id: searchPartyId }], isActive: { $ne: false } };
+        party = await airCustomers.findOne(airCustomerCondition);
+        // Mark that this is an airCustomer
+        if (party) {
+          party._isAirCustomer = true;
+        }
+      }
     } else if (finalPartyType === 'agent') {
       const agentCondition = isValidObjectId
         ? { $or: [{ agentId: searchPartyId }, { _id: new ObjectId(searchPartyId) }], isActive: true }
@@ -5132,8 +5144,8 @@ app.post("/api/transactions", async (req, res) => {
         subCategory: finalSubCategory || null,
         partyType: finalPartyType,
         partyId: finalPartyId,
-        partyName: party?.name || party?.customerName || party?.agentName || party?.tradeName || party?.vendorName || party?.fullName || party?.currencyName || 'Unknown',
-        partyPhone: party?.phone || party?.customerPhone || party?.contactNo || party?.mobile || party?.mobileNumber || null,
+        partyName: party?.name || party?.customerName || party?.firstName || (party?.firstName && party?.lastName ? `${party.firstName} ${party.lastName}` : null) || party?.agentName || party?.tradeName || party?.vendorName || party?.fullName || party?.currencyName || 'Unknown',
+        partyPhone: party?.phone || party?.customerPhone || party?.contactNo || party?.mobile || party?.mobileNumber || party?.whatsappNo || null,
         partyEmail: party?.email || party?.customerEmail || null,
         invoiceId,
         paymentMethod,
@@ -5225,6 +5237,10 @@ app.post("/api/transactions", async (req, res) => {
         const isHajjCategory = categoryText.includes('haj');
         const isUmrahCategory = categoryText.includes('umrah');
         const dueDelta = transactionType === 'debit' ? numericAmount : (transactionType === 'credit' ? -numericAmount : 0);
+        const isAirCustomer = party._isAirCustomer === true;
+
+        // Determine which collection to update
+        const customerCollection = isAirCustomer ? airCustomers : customers;
 
         const customerUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: dueDelta } };
         if (isHajjCategory) {
@@ -5237,8 +5253,12 @@ app.post("/api/transactions", async (req, res) => {
         if (transactionType === 'credit') {
           customerUpdate.$inc.paidAmount = (customerUpdate.$inc.paidAmount || 0) + numericAmount;
         }
-        await customers.updateOne({ _id: party._id }, customerUpdate, { session });
-        const after = await customers.findOne({ _id: party._id }, { session });
+        // For airCustomers, also update totalAmount on debit (when customer owes more)
+        if (isAirCustomer && transactionType === 'debit') {
+          customerUpdate.$inc.totalAmount = (customerUpdate.$inc.totalAmount || 0) + numericAmount;
+        }
+        await customerCollection.updateOne({ _id: party._id }, customerUpdate, { session });
+        const after = await customerCollection.findOne({ _id: party._id }, { session });
         // Clamp due fields to 0+
         const setClamp = {};
         if ((after.totalDue || 0) < 0) setClamp['totalDue'] = 0;
@@ -5250,9 +5270,9 @@ app.post("/api/transactions", async (req, res) => {
         }
         if (Object.keys(setClamp).length) {
           setClamp.updatedAt = new Date();
-          await customers.updateOne({ _id: party._id }, { $set: setClamp }, { session });
+          await customerCollection.updateOne({ _id: party._id }, { $set: setClamp }, { session });
         }
-        updatedCustomer = await customers.findOne({ _id: party._id }, { session });
+        updatedCustomer = await customerCollection.findOne({ _id: party._id }, { session });
 
         // Additionally, if this customer also exists in the Haji collection by id/customerId, update paidAmount there on credit
         if (transactionType === 'credit') {
