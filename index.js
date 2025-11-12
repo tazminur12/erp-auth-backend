@@ -6406,6 +6406,9 @@ app.delete("/api/transactions/:id", async (req, res) => {
   }
 });
 
+
+
+
 // ==================== DIRECT TRANSACTIONS API: PERSONAL EXPENSE ====================
 // Use main `transactions` collection, but mark as scope: "personal-expense" and type: "expense"
 
@@ -8649,7 +8652,36 @@ app.get("/orders/analytics", async (req, res) => {
   }
 });
 
-
+// Helper: Generate unique Haj-Umrah Agent ID
+const generateHajUmrahAgentId = async (db) => {
+  const counterCollection = db.collection("counters");
+  
+  // Create counter key for haj-umrah agent
+  const counterKey = `haj_umrah_agent`;
+  
+  // Find or create counter
+  let counter = await counterCollection.findOne({ counterKey });
+  
+  if (!counter) {
+    // Create new counter starting from 0
+    await counterCollection.insertOne({ counterKey, sequence: 0 });
+    counter = { sequence: 0 };
+  }
+  
+  // Increment sequence
+  const newSequence = counter.sequence + 1;
+  
+  // Update counter
+  await counterCollection.updateOne(
+    { counterKey },
+    { $set: { sequence: newSequence } }
+  );
+  
+  // Format: HU + 00001 (e.g., HU00001)
+  const serial = String(newSequence).padStart(5, '0');
+  
+  return `HUAGE${serial}`;
+};
 
 // ==================== AGENT ROUTES ====================
 // Create Agent
@@ -8687,8 +8719,12 @@ app.post("/api/haj-umrah/agents", async (req, res) => {
       return res.status(400).send({ error: true, message: "Invalid date format for dob (YYYY-MM-DD)" });
     }
 
+    // Generate unique agent ID
+    const agentId = await generateHajUmrahAgentId(db);
+
     const now = new Date();
     const doc = {
+      agentId,
       tradeName: String(tradeName).trim(),
       tradeLocation: String(tradeLocation).trim(),
       ownerName: String(ownerName).trim(),
