@@ -5763,6 +5763,603 @@ app.get("/api/transactions", async (req, res) => {
   }
 });
 
+// ✅ DELETE: Delete transaction and reverse all related operations
+app.delete("/api/transactions/:id", async (req, res) => {
+  let session = null;
+
+  try {
+    const { id } = req.params;
+    
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ success: false, message: "Invalid transaction ID" });
+    }
+
+    // Find the transaction
+    const tx = await transactions.findOne({ 
+      _id: new ObjectId(id), 
+      isActive: { $ne: false },
+      scope: { $ne: "personal-expense" } // Exclude personal-expense transactions (they have their own endpoint)
+    });
+
+    if (!tx) {
+      return res.status(404).json({ success: false, message: "Transaction not found" });
+    }
+
+    // Start MongoDB session for atomic operations
+    session = db.client.startSession();
+    session.startTransaction();
+
+    try {
+      const numericAmount = Number(tx.amount || 0);
+      const transactionType = tx.transactionType; // credit | debit | transfer
+      const partyType = tx.partyType;
+      const serviceCategory = tx.serviceCategory || '';
+      const categoryText = String(serviceCategory).toLowerCase();
+      const isHajjCategory = categoryText.includes('haj');
+      const isUmrahCategory = categoryText.includes('umrah');
+
+      // 1. Reverse bank account balance changes
+      if (transactionType === "credit" && tx.targetAccountId) {
+        const account = await bankAccounts.findOne({ _id: new ObjectId(tx.targetAccountId) }, { session });
+        if (account) {
+          const newBalance = (account.currentBalance || 0) - numericAmount;
+          await bankAccounts.updateOne(
+            { _id: new ObjectId(tx.targetAccountId) },
+            {
+              $set: { currentBalance: newBalance, updatedAt: new Date() },
+              $push: {
+                balanceHistory: {
+                  amount: -numericAmount,
+                  type: 'reversal',
+                  note: `Transaction deletion: ${tx.transactionId || id}`,
+                  at: new Date()
+                }
+              }
+            },
+            { session }
+          );
+        }
+      } else if (transactionType === "debit" && tx.targetAccountId) {
+        const account = await bankAccounts.findOne({ _id: new ObjectId(tx.targetAccountId) }, { session });
+        if (account) {
+          const newBalance = (account.currentBalance || 0) + numericAmount;
+          await bankAccounts.updateOne(
+            { _id: new ObjectId(tx.targetAccountId) },
+            {
+              $set: { currentBalance: newBalance, updatedAt: new Date() },
+              $push: {
+                balanceHistory: {
+                  amount: numericAmount,
+                  type: 'reversal',
+                  note: `Transaction deletion: ${tx.transactionId || id}`,
+                  at: new Date()
+                }
+              }
+            },
+            { session }
+          );
+        }
+      } else if (transactionType === "transfer" && tx.fromAccountId && tx.targetAccountId) {
+        const fromAccount = await bankAccounts.findOne({ _id: new ObjectId(tx.fromAccountId) }, { session });
+        const toAccount = await bankAccounts.findOne({ _id: new ObjectId(tx.targetAccountId) }, { session });
+        
+        if (fromAccount) {
+          const fromNewBalance = (fromAccount.currentBalance || 0) + numericAmount;
+          await bankAccounts.updateOne(
+            { _id: new ObjectId(tx.fromAccountId) },
+            {
+              $set: { currentBalance: fromNewBalance, updatedAt: new Date() },
+              $push: {
+                balanceHistory: {
+                  amount: numericAmount,
+                  type: 'reversal',
+                  note: `Transaction deletion: ${tx.transactionId || id}`,
+                  at: new Date()
+                }
+              }
+            },
+            { session }
+          );
+        }
+        
+        if (toAccount) {
+          const toNewBalance = (toAccount.currentBalance || 0) - numericAmount;
+          await bankAccounts.updateOne(
+            { _id: new ObjectId(tx.targetAccountId) },
+            {
+              $set: { currentBalance: toNewBalance, updatedAt: new Date() },
+              $push: {
+                balanceHistory: {
+                  amount: -numericAmount,
+                  type: 'reversal',
+                  note: `Transaction deletion: ${tx.transactionId || id}`,
+                  at: new Date()
+                }
+              }
+            },
+            { session }
+          );
+        }
+      }
+
+      // 2. Reverse party due/paid amount changes
+      if (tx.partyId && tx.partyType) {
+        const partyId = tx.partyId;
+        const isValidObjectId = ObjectId.isValid(partyId);
+
+        // Reverse dueDelta: opposite of creation
+        // Creation: debit => +amount, credit => -amount
+        // Deletion: debit => -amount, credit => +amount
+        const dueDelta = transactionType === 'debit' ? -numericAmount : (transactionType === 'credit' ? numericAmount : 0);
+
+        // 2.1 Agent
+        if (partyType === 'agent') {
+          const agentCond = isValidObjectId
+            ? { $or: [{ agentId: partyId }, { _id: new ObjectId(partyId) }], isActive: { $ne: false } }
+            : { $or: [{ agentId: partyId }, { _id: partyId }], isActive: { $ne: false } };
+          const agent = await agents.findOne(agentCond, { session });
+          if (agent) {
+            const agentUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: dueDelta } };
+            if (isHajjCategory) {
+              agentUpdate.$inc.hajDue = (agentUpdate.$inc.hajDue || 0) + dueDelta;
+            }
+            if (isUmrahCategory) {
+              agentUpdate.$inc.umrahDue = (agentUpdate.$inc.umrahDue || 0) + dueDelta;
+            }
+            if (transactionType === 'credit') {
+              agentUpdate.$inc.totalDeposit = (agentUpdate.$inc.totalDeposit || 0) - numericAmount;
+            }
+            await agents.updateOne({ _id: agent._id }, agentUpdate, { session });
+            
+            // Clamp negatives
+            const after = await agents.findOne({ _id: agent._id }, { session });
+            const setClamp = {};
+            if ((after.totalDue || 0) < 0) setClamp.totalDue = 0;
+            if ((after.hajDue !== undefined) && after.hajDue < 0) setClamp.hajDue = 0;
+            if ((after.umrahDue !== undefined) && after.umrahDue < 0) setClamp.umrahDue = 0;
+            if (Object.keys(setClamp).length) {
+              setClamp.updatedAt = new Date();
+              await agents.updateOne({ _id: agent._id }, { $set: setClamp }, { session });
+            }
+          }
+        }
+
+        // 2.2 Vendor
+        if (partyType === 'vendor') {
+          const vendorCond = isValidObjectId
+            ? { $or: [{ vendorId: partyId }, { _id: new ObjectId(partyId) }], isActive: { $ne: false } }
+            : { $or: [{ vendorId: partyId }, { _id: partyId }], isActive: { $ne: false } };
+          const vendor = await vendors.findOne(vendorCond, { session });
+          if (vendor) {
+            // Reverse: debit => vendor ke taka deya (due kombe) -> deletion: due barbe
+            // Reverse: credit => vendor theke taka neya (due barbe) -> deletion: due kombe
+            const vendorDueDelta = transactionType === 'debit' ? numericAmount : (transactionType === 'credit' ? -numericAmount : 0);
+            const vendorUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: vendorDueDelta } };
+            if (isHajjCategory) {
+              vendorUpdate.$inc.hajDue = (vendorUpdate.$inc.hajDue || 0) + vendorDueDelta;
+            }
+            if (isUmrahCategory) {
+              vendorUpdate.$inc.umrahDue = (vendorUpdate.$inc.umrahDue || 0) + vendorDueDelta;
+            }
+            if (transactionType === 'debit') {
+              vendorUpdate.$inc.totalPaid = (vendorUpdate.$inc.totalPaid || 0) - numericAmount;
+            }
+            await vendors.updateOne({ _id: vendor._id }, vendorUpdate, { session });
+            
+            // Clamp negatives
+            const after = await vendors.findOne({ _id: vendor._id }, { session });
+            const setClamp = {};
+            if ((after.totalDue || 0) < 0) setClamp.totalDue = 0;
+            if ((after.hajDue !== undefined) && after.hajDue < 0) setClamp.hajDue = 0;
+            if ((after.umrahDue !== undefined) && after.umrahDue < 0) setClamp.umrahDue = 0;
+            if (Object.keys(setClamp).length) {
+              setClamp.updatedAt = new Date();
+              await vendors.updateOne({ _id: vendor._id }, { $set: setClamp }, { session });
+            }
+          }
+        }
+
+        // 2.3 Customer (check if airCustomer or regular customer)
+        if (partyType === 'customer') {
+          const customerCond = isValidObjectId
+            ? { $or: [{ customerId: partyId }, { _id: new ObjectId(partyId) }], isActive: { $ne: false } }
+            : { $or: [{ customerId: partyId }, { _id: partyId }], isActive: { $ne: false } };
+          
+          // Try airCustomers first
+          let customer = await airCustomers.findOne(customerCond, { session });
+          let isAirCustomer = !!customer;
+          let customerCollection = airCustomers;
+          
+          // If not found in airCustomers, try to find in regular customers (if collection exists)
+          // Note: customers collection might not be initialized, so we'll handle gracefully
+          if (!customer) {
+            try {
+              // Check if customers collection exists by trying to use it
+              if (typeof customers !== 'undefined' && customers) {
+                customer = await customers.findOne(customerCond, { session });
+                if (customer) {
+                  customerCollection = customers;
+                }
+              }
+            } catch (e) {
+              // customers collection doesn't exist, continue with airCustomers only
+            }
+          }
+          
+          if (customer) {
+            const customerUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: dueDelta } };
+            if (isHajjCategory) {
+              customerUpdate.$inc.hajjDue = (customerUpdate.$inc.hajjDue || 0) + dueDelta;
+            }
+            if (isUmrahCategory) {
+              customerUpdate.$inc.umrahDue = (customerUpdate.$inc.umrahDue || 0) + dueDelta;
+            }
+            if (transactionType === 'credit') {
+              customerUpdate.$inc.paidAmount = (customerUpdate.$inc.paidAmount || 0) - numericAmount;
+            }
+            if (isAirCustomer && transactionType === 'debit') {
+              customerUpdate.$inc.totalAmount = (customerUpdate.$inc.totalAmount || 0) - numericAmount;
+            }
+            await customerCollection.updateOne({ _id: customer._id }, customerUpdate, { session });
+            
+            // Clamp negatives
+            const after = await customerCollection.findOne({ _id: customer._id }, { session });
+            const setClamp = {};
+            if ((after.totalDue || 0) < 0) setClamp.totalDue = 0;
+            if ((after.paidAmount || 0) < 0) setClamp.paidAmount = 0;
+            if ((after.hajjDue !== undefined) && after.hajjDue < 0) setClamp.hajjDue = 0;
+            if ((after.umrahDue !== undefined) && after.umrahDue < 0) setClamp.umrahDue = 0;
+            if (typeof after.totalAmount === 'number' && typeof after.paidAmount === 'number' && after.paidAmount > after.totalAmount) {
+              setClamp.paidAmount = after.totalAmount;
+            }
+            if (Object.keys(setClamp).length) {
+              setClamp.updatedAt = new Date();
+              await customerCollection.updateOne({ _id: customer._id }, { $set: setClamp }, { session });
+            }
+
+            // Reverse haji paidAmount if credit transaction
+            if (transactionType === 'credit') {
+              const hajiCond = isValidObjectId
+                ? { $or: [{ customerId: partyId }, { _id: new ObjectId(partyId) }], isActive: { $ne: false } }
+                : { $or: [{ customerId: partyId }, { _id: partyId }], isActive: { $ne: false } };
+              const hajiDoc = await haji.findOne(hajiCond, { session });
+              if (hajiDoc && hajiDoc._id) {
+                await haji.updateOne(
+                  { _id: hajiDoc._id },
+                  { $inc: { paidAmount: -numericAmount }, $set: { updatedAt: new Date() } },
+                  { session }
+                );
+                const afterH = await haji.findOne({ _id: hajiDoc._id }, { session });
+                const clampH = {};
+                if ((afterH.paidAmount || 0) < 0) clampH.paidAmount = 0;
+                if (typeof afterH.totalAmount === 'number' && typeof afterH.paidAmount === 'number' && afterH.paidAmount > afterH.totalAmount) {
+                  clampH.paidAmount = afterH.totalAmount;
+                }
+                if (Object.keys(clampH).length) {
+                  clampH.updatedAt = new Date();
+                  await haji.updateOne({ _id: hajiDoc._id }, { $set: clampH }, { session });
+                }
+              }
+              
+              // Reverse umrah paidAmount if credit transaction
+              const umrahCond = isValidObjectId
+                ? { $or: [{ customerId: partyId }, { _id: new ObjectId(partyId) }] }
+                : { $or: [{ customerId: partyId }, { _id: partyId }] };
+              const umrahDoc = await umrah.findOne(umrahCond, { session });
+              if (umrahDoc && umrahDoc._id) {
+                await umrah.updateOne(
+                  { _id: umrahDoc._id },
+                  { $inc: { paidAmount: -numericAmount }, $set: { updatedAt: new Date() } },
+                  { session }
+                );
+                const afterU = await umrah.findOne({ _id: umrahDoc._id }, { session });
+                const clampU = {};
+                if ((afterU.paidAmount || 0) < 0) clampU.paidAmount = 0;
+                if (typeof afterU.totalAmount === 'number' && typeof afterU.paidAmount === 'number' && afterU.paidAmount > afterU.totalAmount) {
+                  clampU.paidAmount = afterU.totalAmount;
+                }
+                if (Object.keys(clampU).length) {
+                  clampU.updatedAt = new Date();
+                  await umrah.updateOne({ _id: umrahDoc._id }, { $set: clampU }, { session });
+                }
+              }
+            }
+          }
+        }
+
+        // 2.4 Haji
+        if (partyType === 'haji') {
+          const hajiCond = isValidObjectId
+            ? { $or: [{ customerId: partyId }, { _id: new ObjectId(partyId) }], isActive: { $ne: false } }
+            : { $or: [{ customerId: partyId }, { _id: partyId }], isActive: { $ne: false } };
+          const hajiDoc = await haji.findOne(hajiCond, { session });
+          if (hajiDoc && transactionType === 'credit') {
+            await haji.updateOne(
+              { _id: hajiDoc._id },
+              { $inc: { paidAmount: -numericAmount }, $set: { updatedAt: new Date() } },
+              { session }
+            );
+            const afterHaji = await haji.findOne({ _id: hajiDoc._id }, { session });
+            const setClampHaji = {};
+            if ((afterHaji.paidAmount || 0) < 0) setClampHaji.paidAmount = 0;
+            if (typeof afterHaji.totalAmount === 'number' && typeof afterHaji.paidAmount === 'number' && afterHaji.paidAmount > afterHaji.totalAmount) {
+              setClampHaji.paidAmount = afterHaji.totalAmount;
+            }
+            if (Object.keys(setClampHaji).length) {
+              setClampHaji.updatedAt = new Date();
+              await haji.updateOne({ _id: hajiDoc._id }, { $set: setClampHaji }, { session });
+            }
+          }
+
+          // Reverse sync to linked customer
+          try {
+            if (hajiDoc && hajiDoc._id) {
+              const linkedCustomerId = hajiDoc.customerId || hajiDoc.customer_id;
+              if (linkedCustomerId) {
+              const customerCond = ObjectId.isValid(linkedCustomerId)
+                ? { $or: [{ _id: new ObjectId(linkedCustomerId) }, { customerId: linkedCustomerId }], isActive: { $ne: false } }
+                : { $or: [{ _id: linkedCustomerId }, { customerId: linkedCustomerId }], isActive: { $ne: false } };
+              const custDoc = await airCustomers.findOne(customerCond, { session });
+              if (custDoc && custDoc._id) {
+                const customerUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: -dueDelta } };
+                if (isHajjCategory) customerUpdate.$inc.hajjDue = (customerUpdate.$inc.hajjDue || 0) - dueDelta;
+                if (isUmrahCategory) customerUpdate.$inc.umrahDue = (customerUpdate.$inc.umrahDue || 0) - dueDelta;
+                if (transactionType === 'credit') customerUpdate.$inc.paidAmount = (customerUpdate.$inc.paidAmount || 0) - numericAmount;
+
+                await airCustomers.updateOne({ _id: custDoc._id }, customerUpdate, { session });
+
+                // Clamp negatives
+                const afterCust = await airCustomers.findOne({ _id: custDoc._id }, { session });
+                const clampCust = {};
+                if ((afterCust.totalDue || 0) < 0) clampCust.totalDue = 0;
+                if ((afterCust.paidAmount || 0) < 0) clampCust.paidAmount = 0;
+                if ((afterCust.hajjDue !== undefined) && afterCust.hajjDue < 0) clampCust.hajjDue = 0;
+                if ((afterCust.umrahDue !== undefined) && afterCust.umrahDue < 0) clampCust.umrahDue = 0;
+                if (typeof afterCust.totalAmount === 'number' && typeof afterCust.paidAmount === 'number' && afterCust.paidAmount > afterCust.totalAmount) {
+                  clampCust.paidAmount = afterCust.totalAmount;
+                }
+                if (Object.keys(clampCust).length) {
+                  clampCust.updatedAt = new Date();
+                  await airCustomers.updateOne({ _id: custDoc._id }, { $set: clampCust }, { session });
+                }
+              }
+            }
+            }
+          } catch (syncErr) {
+            console.warn('Customer sync reversal from haji transaction failed:', syncErr?.message);
+          }
+        }
+
+        // 2.5 Umrah
+        if (partyType === 'umrah') {
+          const umrahCond = isValidObjectId
+            ? { $or: [{ customerId: partyId }, { _id: new ObjectId(partyId) }], isActive: { $ne: false } }
+            : { $or: [{ customerId: partyId }, { _id: partyId }], isActive: { $ne: false } };
+          const umrahDoc = await umrah.findOne(umrahCond, { session });
+          if (umrahDoc && transactionType === 'credit') {
+            await umrah.updateOne(
+              { _id: umrahDoc._id },
+              { $inc: { paidAmount: -numericAmount }, $set: { updatedAt: new Date() } },
+              { session }
+            );
+            const afterUmrah = await umrah.findOne({ _id: umrahDoc._id }, { session });
+            const setClampUmrah = {};
+            if ((afterUmrah.paidAmount || 0) < 0) setClampUmrah.paidAmount = 0;
+            if (typeof afterUmrah.totalAmount === 'number' && typeof afterUmrah.paidAmount === 'number' && afterUmrah.paidAmount > afterUmrah.totalAmount) {
+              setClampUmrah.paidAmount = afterUmrah.totalAmount;
+            }
+            if (Object.keys(setClampUmrah).length) {
+              setClampUmrah.updatedAt = new Date();
+              await umrah.updateOne({ _id: umrahDoc._id }, { $set: setClampUmrah }, { session });
+            }
+          }
+
+          // Reverse sync to linked customer
+          try {
+            if (umrahDoc && umrahDoc._id) {
+              const linkedCustomerId = umrahDoc.customerId || umrahDoc.customer_id;
+              if (linkedCustomerId) {
+              const customerCond = ObjectId.isValid(linkedCustomerId)
+                ? { $or: [{ _id: new ObjectId(linkedCustomerId) }, { customerId: linkedCustomerId }], isActive: { $ne: false } }
+                : { $or: [{ _id: linkedCustomerId }, { customerId: linkedCustomerId }], isActive: { $ne: false } };
+              const custDoc = await airCustomers.findOne(customerCond, { session });
+              if (custDoc && custDoc._id) {
+                const customerUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: -dueDelta } };
+                if (isUmrahCategory) customerUpdate.$inc.umrahDue = (customerUpdate.$inc.umrahDue || 0) - dueDelta;
+                if (transactionType === 'credit') customerUpdate.$inc.paidAmount = (customerUpdate.$inc.paidAmount || 0) - numericAmount;
+
+                await airCustomers.updateOne({ _id: custDoc._id }, customerUpdate, { session });
+
+                // Clamp negatives
+                const afterCust = await airCustomers.findOne({ _id: custDoc._id }, { session });
+                const clampCust = {};
+                if ((afterCust.totalDue || 0) < 0) clampCust.totalDue = 0;
+                if ((afterCust.paidAmount || 0) < 0) clampCust.paidAmount = 0;
+                if ((afterCust.umrahDue !== undefined) && afterCust.umrahDue < 0) clampCust.umrahDue = 0;
+                if (typeof afterCust.totalAmount === 'number' && typeof afterCust.paidAmount === 'number' && afterCust.paidAmount > afterCust.totalAmount) {
+                  clampCust.paidAmount = afterCust.totalAmount;
+                }
+                if (Object.keys(clampCust).length) {
+                  clampCust.updatedAt = new Date();
+                  await airCustomers.updateOne({ _id: custDoc._id }, { $set: clampCust }, { session });
+                }
+              }
+            }
+            }
+          } catch (syncErr) {
+            console.warn('Customer sync reversal from umrah transaction failed:', syncErr?.message);
+          }
+        }
+
+        // 2.6 Loan
+        if (partyType === 'loan') {
+          const loanCond = isValidObjectId
+            ? { $or: [{ loanId: partyId }, { _id: new ObjectId(partyId) }], isActive: { $ne: false } }
+            : { $or: [{ loanId: partyId }, { _id: partyId }], isActive: { $ne: false } };
+          const loanDoc = await loans.findOne(loanCond, { session });
+          if (loanDoc) {
+            const isReceivingLoan = String(loanDoc.loanDirection || '').toLowerCase() === 'receiving';
+            let dueDelta = 0;
+            const loanUpdate = { $set: { updatedAt: new Date() }, $inc: {} };
+
+            if (isReceivingLoan) {
+              // Reverse: credit = principal in -> deletion: principal out
+              if (transactionType === 'credit') {
+                dueDelta = -numericAmount;
+                loanUpdate.$inc.totalAmount = (loanUpdate.$inc.totalAmount || 0) - numericAmount;
+              } else if (transactionType === 'debit') {
+                dueDelta = numericAmount;
+                loanUpdate.$inc.paidAmount = (loanUpdate.$inc.paidAmount || 0) - numericAmount;
+              }
+            } else {
+              // Reverse: debit = principal out -> deletion: principal in
+              if (transactionType === 'debit') {
+                dueDelta = -numericAmount;
+                loanUpdate.$inc.totalAmount = (loanUpdate.$inc.totalAmount || 0) - numericAmount;
+              } else if (transactionType === 'credit') {
+                dueDelta = numericAmount;
+                loanUpdate.$inc.paidAmount = (loanUpdate.$inc.paidAmount || 0) - numericAmount;
+              }
+            }
+
+            loanUpdate.$inc.totalDue = dueDelta;
+            await loans.updateOne({ _id: loanDoc._id }, loanUpdate, { session });
+            
+            // Clamp negatives
+            const afterLoan = await loans.findOne({ _id: loanDoc._id }, { session });
+            const clampLoan = {};
+            if ((afterLoan.totalDue || 0) < 0) clampLoan.totalDue = 0;
+            if ((afterLoan.paidAmount || 0) < 0) clampLoan.paidAmount = 0;
+            if ((afterLoan.totalAmount || 0) < 0) clampLoan.totalAmount = 0;
+            if (typeof afterLoan.totalAmount === 'number' && typeof afterLoan.paidAmount === 'number' && afterLoan.paidAmount > afterLoan.totalAmount) {
+              clampLoan.paidAmount = afterLoan.totalAmount;
+            }
+            if (Object.keys(clampLoan).length) {
+              clampLoan.updatedAt = new Date();
+              await loans.updateOne({ _id: loanDoc._id }, { $set: clampLoan }, { session });
+            }
+          }
+        }
+      }
+
+      // 3. Reverse operating expense category updates
+      if (tx.operatingExpenseCategoryId && ObjectId.isValid(String(tx.operatingExpenseCategoryId)) && transactionType === 'debit') {
+        await operatingExpenseCategories.updateOne(
+          { _id: new ObjectId(String(tx.operatingExpenseCategoryId)) },
+          { 
+            $inc: { totalAmount: -numericAmount, itemCount: -1 }, 
+            $set: { lastUpdated: new Date().toISOString().slice(0, 10) } 
+          },
+          { session }
+        );
+      }
+
+      // 4. Unlink money exchange records
+      if ((partyType === 'money-exchange' || partyType === 'money_exchange') && tx.transactionId) {
+        try {
+          const exchangeId = tx.partyId && ObjectId.isValid(tx.partyId) ? new ObjectId(tx.partyId) : null;
+          if (exchangeId) {
+            await exchanges.updateOne(
+              { _id: exchangeId },
+              { 
+                $set: { 
+                  transactionId: null,
+                  transactionLinked: false,
+                  updatedAt: new Date() 
+                } 
+              },
+              { session }
+            );
+          }
+        } catch (exchangeErr) {
+          console.warn('Failed to unlink exchange from transaction:', exchangeErr?.message);
+        }
+      }
+
+      // 5. Revert invoice status (optional - you may want to keep it as 'paid' or revert to 'pending')
+      // Uncomment if you want to revert invoice status on transaction deletion
+      /*
+      if (tx.invoiceId) {
+        try {
+          const invoiceQuery = ObjectId.isValid(tx.invoiceId)
+            ? { $or: [{ invoiceId: tx.invoiceId }, { _id: new ObjectId(tx.invoiceId) }], isActive: { $ne: false } }
+            : { $or: [{ invoiceId: tx.invoiceId }, { _id: tx.invoiceId }], isActive: { $ne: false } };
+          const invoiceDoc = await invoices.findOne(invoiceQuery, { session });
+          if (invoiceDoc) {
+            await invoices.updateOne(
+              { _id: invoiceDoc._id },
+              { $set: { status: 'pending', updatedAt: new Date() } },
+              { session }
+            );
+          }
+        } catch (invoiceErr) {
+          console.warn('Failed to revert invoice status:', invoiceErr?.message);
+        }
+      }
+      */
+
+      // 6. Reverse farm income/expense updates
+      if (partyType === 'miraj-income' && tx.partyId) {
+        try {
+          await farmIncomes.updateOne(
+            { id: Number(tx.partyId) },
+            { $set: { amount: 0, updatedAt: new Date() } },
+            { session }
+          );
+        } catch (farmErr) {
+          console.warn('Failed to reverse farm income:', farmErr?.message);
+        }
+      } else if (partyType === 'miraj-expense' && tx.partyId) {
+        try {
+          await farmExpenses.updateOne(
+            { id: Number(tx.partyId) },
+            { $set: { amount: 0, updatedAt: new Date() } },
+            { session }
+          );
+        } catch (farmErr) {
+          console.warn('Failed to reverse farm expense:', farmErr?.message);
+        }
+      }
+
+      // 7. Delete the transaction
+      const deleteResult = await transactions.deleteOne({ _id: new ObjectId(id) }, { session });
+      if (deleteResult.deletedCount === 0) {
+        throw new Error("Failed to delete transaction");
+      }
+
+      // Commit transaction
+      await session.commitTransaction();
+
+      res.json({
+        success: true,
+        message: "Transaction deleted successfully"
+      });
+
+    } catch (transactionError) {
+      // Rollback on error
+      await session.abortTransaction();
+      throw transactionError;
+    }
+
+  } catch (err) {
+    // Clean up session on error
+    if (session && session.inTransaction()) {
+      await session.abortTransaction();
+    }
+
+    console.error('Transaction deletion error:', err);
+    res.status(500).json({
+      success: false,
+      message: err.message || "Failed to delete transaction"
+    });
+  } finally {
+    // End session
+    if (session) {
+      session.endSession();
+    }
+  }
+});
+
 // ==================== DIRECT TRANSACTIONS API: PERSONAL EXPENSE ====================
 // Use main `transactions` collection, but mark as scope: "personal-expense" and type: "expense"
 
