@@ -4889,17 +4889,21 @@ app.post("/api/transactions", async (req, res) => {
         email: null
       };
     } else if (finalPartyType === 'customer') {
-      // First try regular customers collection
-      party = await customers.findOne(searchCondition);
-      // If not found, try airCustomers collection
-      if (!party) {
-        const airCustomerCondition = isValidObjectId
-          ? { $or: [{ customerId: searchPartyId }, { _id: new ObjectId(searchPartyId) }], isActive: { $ne: false } }
-          : { $or: [{ customerId: searchPartyId }, { _id: searchPartyId }], isActive: { $ne: false } };
-        party = await airCustomers.findOne(airCustomerCondition);
-        // Mark that this is an airCustomer
-        if (party) {
-          party._isAirCustomer = true;
+      // First try airCustomers collection (main collection)
+      const airCustomerCondition = isValidObjectId
+        ? { $or: [{ customerId: searchPartyId }, { _id: new ObjectId(searchPartyId) }], isActive: { $ne: false } }
+        : { $or: [{ customerId: searchPartyId }, { _id: searchPartyId }], isActive: { $ne: false } };
+      party = await airCustomers.findOne(airCustomerCondition);
+      // Mark that this is an airCustomer
+      if (party) {
+        party._isAirCustomer = true;
+      }
+      // If not found in airCustomers, try regular customers collection (if it exists)
+      if (!party && typeof customers !== 'undefined' && customers) {
+        try {
+          party = await customers.findOne(searchCondition);
+        } catch (e) {
+          // customers collection doesn't exist or error, continue
         }
       }
     } else if (finalPartyType === 'agent') {
