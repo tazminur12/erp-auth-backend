@@ -527,7 +527,7 @@ const generateCustomerId = async (db, customerType) => {
   const counterCollection = db.collection("counters");
   
   // Get customer type to find prefix
-  let prefix = "CUST"; // Default prefix
+  let prefix = "AIR"; // Default prefix
   if (customerType) {
     const customerTypeDoc = await customerTypes.findOne({ 
       value: customerType.toLowerCase(),
