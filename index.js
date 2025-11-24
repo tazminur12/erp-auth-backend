@@ -10498,7 +10498,7 @@ app.get("/haj-umrah/haji", async (req, res) => {
   try {
     const { page = 1, limit = 10, q, serviceStatus, paymentStatus, isActive } = req.query || {};
     const pageNum = Math.max(parseInt(page) || 1, 1);
-    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 20000);
 
     const filter = {};
     
