@@ -10986,7 +10986,7 @@ app.get("/haj-umrah/umrah", async (req, res) => {
   try {
     const { page = 1, limit = 10, q, serviceStatus, paymentStatus, isActive } = req.query || {};
     const pageNum = Math.max(parseInt(page) || 1, 1);
-    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 20000);
 
     const filter = {};
     if (q && String(q).trim()) {
@@ -11223,6 +11223,200 @@ app.delete("/haj-umrah/umrah/:id", async (req, res) => {
       details: error.message,
       stack: error.stack,
       receivedId: req.params.id
+    });
+  }
+});
+
+// Bulk Create Umrah from Excel Upload
+app.post("/haj-umrah/umrah/bulk", async (req, res) => {
+  try {
+    const { data: umrahDataArray } = req.body || {};
+    
+    if (!Array.isArray(umrahDataArray) || umrahDataArray.length === 0) {
+      return res.status(400).json({ 
+        error: true, 
+        message: "Data array is required and must not be empty" 
+      });
+    }
+
+    const now = new Date();
+    const results = {
+      success: [],
+      failed: [],
+      total: umrahDataArray.length,
+      successCount: 0,
+      failedCount: 0
+    };
+
+    // Process each Umrah record
+    for (let i = 0; i < umrahDataArray.length; i++) {
+      const rawData = umrahDataArray[i];
+      const rowNumber = i + 1;
+
+      try {
+        // Map Excel field names to backend field names
+        // Primary fields from Excel: Name, Mobile no, Fathers name, Mother's Name, Upazila, Districts
+        const data = {
+          // Required fields
+          name: rawData['Name'] || rawData['name'] || rawData.name || '',
+          mobile: rawData['Mobile no'] || rawData['Mobile No'] || rawData['mobile no'] || rawData['Mobile'] || rawData.mobile || '',
+          
+          // Optional fields from Excel
+          fatherName: rawData['Fathers name'] || rawData['Fathers Name'] || rawData['fathers name'] || rawData['Father Name'] || rawData.fatherName || null,
+          motherName: rawData['Mother\'s Name'] || rawData['Mother\'s name'] || rawData['mother\'s name'] || rawData['Mother Name'] || rawData['Mothers name'] || rawData.motherName || null,
+          upazila: rawData['Upazila'] || rawData['upazila'] || rawData.upazila || null,
+          district: rawData['Districts'] || rawData['districts'] || rawData['District'] || rawData['district'] || rawData.district || null,
+          
+          // Additional optional fields (if provided)
+          division: rawData['Division'] || rawData['division'] || rawData.division || null,
+          email: rawData['Email'] || rawData['email'] || rawData.email || null,
+          whatsappNo: rawData['WhatsApp'] || rawData['whatsapp'] || rawData['WhatsApp No'] || rawData.whatsappNo || null,
+          address: rawData['Address'] || rawData['address'] || rawData.address || null,
+          postCode: rawData['Post Code'] || rawData['post code'] || rawData['PostCode'] || rawData.postCode || null,
+          passportNumber: rawData['Passport Number'] || rawData['passport number'] || rawData['Passport'] || rawData.passportNumber || null,
+          nidNumber: rawData['NID Number'] || rawData['nid number'] || rawData['NID'] || rawData['nid'] || rawData.nidNumber || null,
+          dateOfBirth: rawData['Date of Birth'] || rawData['date of birth'] || rawData['DOB'] || rawData['dob'] || rawData.dateOfBirth || null,
+          gender: rawData['Gender'] || rawData['gender'] || rawData.gender || null,
+          referenceBy: rawData['Reference By'] || rawData['reference by'] || rawData['Reference'] || rawData.referenceBy || null,
+          totalAmount: rawData['Total Amount'] || rawData['total amount'] || rawData.totalAmount || 0,
+          paidAmount: rawData['Paid Amount'] || rawData['paid amount'] || rawData.paidAmount || 0,
+          notes: rawData['Notes'] || rawData['notes'] || rawData.notes || null
+        };
+
+        // Validate required fields
+        if (!data.name || !String(data.name).trim()) {
+          throw new Error(`Row ${rowNumber}: Name is required`);
+        }
+        if (!data.mobile || !String(data.mobile).trim()) {
+          throw new Error(`Row ${rowNumber}: Mobile is required`);
+        }
+
+        // Validate email if provided
+        if (data.email) {
+          const emailRegex = /^\S+@\S+\.\S+$/;
+          if (!emailRegex.test(String(data.email).trim())) {
+            throw new Error(`Row ${rowNumber}: Invalid email address`);
+          }
+        }
+
+        // Validate date fields
+        const dateFields = ["dateOfBirth"];
+        for (const field of dateFields) {
+          if (data[field] && !isValidDate(data[field])) {
+            throw new Error(`Row ${rowNumber}: Invalid date format for ${field} (YYYY-MM-DD)`);
+          }
+        }
+
+        // Generate unique Umrah ID
+        const umrahCustomerId = await generateCustomerId(db, 'umrah');
+        
+        // Create Umrah document
+        const doc = {
+          customerId: umrahCustomerId,
+          name: String(data.name).trim(),
+          firstName: (String(data.name).trim().split(' ')[0] || ''),
+          lastName: (String(data.name).trim().split(' ').slice(1).join(' ') || ''),
+
+          mobile: String(data.mobile).trim(),
+          whatsappNo: data.whatsappNo ? String(data.whatsappNo).trim() : null,
+          email: data.email ? String(data.email).trim() : null,
+
+          address: data.address ? String(data.address).trim() : null,
+          division: data.division ? String(data.division).trim() : null,
+          district: data.district ? String(data.district).trim() : null,
+          upazila: data.upazila ? String(data.upazila).trim() : null,
+          postCode: data.postCode ? String(data.postCode).trim() : null,
+
+          passportNumber: data.passportNumber ? String(data.passportNumber).trim() : null,
+          passportType: 'ordinary',
+          issueDate: null,
+          expiryDate: null,
+          dateOfBirth: data.dateOfBirth || null,
+          nidNumber: data.nidNumber ? String(data.nidNumber).trim() : null,
+          passportFirstName: (String(data.name).trim().split(' ')[0] || ''),
+          passportLastName: (String(data.name).trim().split(' ').slice(1).join(' ') || ''),
+          nationality: 'Bangladeshi',
+          gender: data.gender ? String(data.gender).toLowerCase() : 'male',
+
+          fatherName: data.fatherName ? String(data.fatherName).trim() : null,
+          motherName: data.motherName ? String(data.motherName).trim() : null,
+          spouseName: null,
+          maritalStatus: 'single',
+
+          occupation: null,
+          customerImage: null,
+          notes: data.notes ? String(data.notes).trim() : null,
+          isActive: true,
+
+          referenceBy: data.referenceBy ? String(data.referenceBy).trim() : null,
+
+          serviceType: 'umrah',
+          serviceStatus: 'pending',
+
+          totalAmount: Number(data.totalAmount || 0),
+          paidAmount: Number(data.paidAmount || 0),
+          paymentMethod: 'cash',
+          paymentStatus: (function () {
+            const total = Number(data.totalAmount || 0);
+            const paid = Number(data.paidAmount || 0);
+            if (paid >= total && total > 0) return 'paid';
+            if (paid > 0 && paid < total) return 'partial';
+            return 'pending';
+          })(),
+
+          packageInfo: {
+            packageId: null,
+            packageName: null,
+            packageType: 'umrah',
+            agentId: null,
+            agent: null,
+            agentContact: null,
+            departureDate: null,
+            returnDate: null,
+            previousHajj: false,
+            previousUmrah: false,
+            specialRequirements: null
+          },
+
+          createdAt: now,
+          updatedAt: now,
+          deletedAt: null
+        };
+
+        // Insert the document
+        const result = await umrah.insertOne(doc);
+        results.success.push({
+          row: rowNumber,
+          _id: result.insertedId,
+          customerId: doc.customerId,
+          name: doc.name,
+          mobile: doc.mobile
+        });
+        results.successCount++;
+
+      } catch (error) {
+        results.failed.push({
+          row: rowNumber,
+          data: rawData,
+          error: error.message || 'Unknown error'
+        });
+        results.failedCount++;
+      }
+    }
+
+    // Return results
+    return res.status(200).json({
+      success: true,
+      message: `Processed ${results.total} records. ${results.successCount} succeeded, ${results.failedCount} failed.`,
+      data: results
+    });
+
+  } catch (error) {
+    console.error('Bulk create umrah error:', error);
+    res.status(500).json({ 
+      error: true, 
+      message: "Internal server error while bulk creating umrah",
+      details: error.message 
     });
   }
 });
