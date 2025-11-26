@@ -3267,10 +3267,89 @@ app.post("/vendors", async (req, res) => {
   }
 });
 
+// ✅ POST: Bulk add vendors
+app.post("/vendors/bulk", async (req, res) => {
+  try {
+    // Support both: body = [...]  or  body = { vendors: [...] }
+    const vendorsPayload = Array.isArray(req.body) ? req.body : req.body?.vendors;
+
+    if (!Array.isArray(vendorsPayload) || vendorsPayload.length === 0) {
+      return res.status(400).json({
+        error: true,
+        message: "vendors array is required and should not be empty",
+      });
+    }
+
+    const docs = [];
+
+    for (let i = 0; i < vendorsPayload.length; i++) {
+      const item = vendorsPayload[i] || {};
+      const {
+        tradeName,
+        tradeLocation,
+        ownerName,
+        contactNo,
+        dob,
+        nid,
+        passport,
+      } = item;
+
+      // Basic required validations (same as single add)
+      if (!tradeName || !tradeLocation || !ownerName || !contactNo) {
+        return res.status(400).json({
+          error: true,
+          message: `Row ${i + 1}: Trade Name, Location, Owner Name & Contact No are required`,
+        });
+      }
+
+      const vendorId = await generateVendorId(db);
+      const now = new Date();
+
+      docs.push({
+        vendorId,
+        tradeName: String(tradeName).trim(),
+        tradeLocation: String(tradeLocation).trim(),
+        ownerName: String(ownerName).trim(),
+        contactNo: String(contactNo).trim(),
+        dob: dob || null,
+        nid: nid ? String(nid).trim() : "",
+        passport: passport ? String(passport).trim() : "",
+        isActive: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    const result = await vendors.insertMany(docs);
+    const insertedIds = result.insertedIds || {};
+
+    const responseData = docs.map((doc, index) => ({
+      _id: insertedIds[index] || null,
+      ...doc,
+    }));
+
+    return res.status(201).json({
+      success: true,
+      message: "Vendors added successfully",
+      count: responseData.length,
+      data: responseData,
+    });
+  } catch (error) {
+    console.error("Error adding vendors in bulk:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while adding vendors in bulk",
+    });
+  }
+});
+
 // ✅ GET: All active vendors
 app.get("/vendors", async (req, res) => {
   try {
-    const allVendors = await vendors.find({ isActive: true }).toArray();
+    const allVendors = await vendors
+      .find({ isActive: true })
+      .limit(10000)
+      .toArray();
 
     // Initialize due amounts if missing (migration for old vendors)
     for (const vendor of allVendors) {
@@ -8749,12 +8828,116 @@ app.post("/api/haj-umrah/agents", async (req, res) => {
   }
 });
 
+// Bulk Create Agents
+app.post("/api/haj-umrah/agents/bulk", async (req, res) => {
+  try {
+    // Support both: body = [...]  or  body = { agents: [...] }
+    const agentsPayload = Array.isArray(req.body) ? req.body : req.body?.agents;
+
+    if (!Array.isArray(agentsPayload) || agentsPayload.length === 0) {
+      return res.status(400).send({
+        error: true,
+        message: "agents array is required and should not be empty"
+      });
+    }
+
+    const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+
+    const docs = [];
+    for (let i = 0; i < agentsPayload.length; i++) {
+      const item = agentsPayload[i] || {};
+      const {
+        tradeName,
+        tradeLocation,
+        ownerName,
+        contactNo,
+        dob,
+        nid,
+        passport
+      } = item;
+
+      // Basic required fields
+      if (!tradeName || !tradeLocation || !ownerName || !contactNo) {
+        return res.status(400).send({
+          error: true,
+          message: `Row ${i + 1}: tradeName, tradeLocation, ownerName and contactNo are required`
+        });
+      }
+
+      // Same validations as single create
+      if (!phoneRegex.test(String(contactNo).trim())) {
+        return res.status(400).send({
+          error: true,
+          message: `Row ${i + 1}: Enter a valid phone number`
+        });
+      }
+      if (nid && !/^[0-9]{8,20}$/.test(String(nid).trim())) {
+        return res.status(400).send({
+          error: true,
+          message: `Row ${i + 1}: NID should be 8-20 digits`
+        });
+      }
+      if (passport && !/^[A-Za-z0-9]{6,12}$/.test(String(passport).trim())) {
+        return res.status(400).send({
+          error: true,
+          message: `Row ${i + 1}: Passport should be 6-12 chars`
+        });
+      }
+      if (dob && !isValidDate(dob)) {
+        return res.status(400).send({
+          error: true,
+          message: `Row ${i + 1}: Invalid date format for dob (YYYY-MM-DD)`
+        });
+      }
+
+      // Generate unique agent ID for each row
+      const agentId = await generateHajUmrahAgentId(db);
+      const now = new Date();
+
+      docs.push({
+        agentId,
+        tradeName: String(tradeName).trim(),
+        tradeLocation: String(tradeLocation).trim(),
+        ownerName: String(ownerName).trim(),
+        contactNo: String(contactNo).trim(),
+        dob: dob || null,
+        nid: nid || "",
+        passport: passport || "",
+        isActive: true,
+        createdAt: now,
+        updatedAt: now
+      });
+    }
+
+    const result = await agents.insertMany(docs);
+    const insertedIds = result.insertedIds || {};
+
+    const responseData = docs.map((doc, index) => ({
+      _id: insertedIds[index] || null,
+      ...doc
+    }));
+
+    return res.status(201).send({
+      success: true,
+      message: "Agents created successfully",
+      count: responseData.length,
+      data: responseData
+    });
+  } catch (error) {
+    console.error('Bulk create agents error:', error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while creating agents in bulk"
+    });
+  }
+});
+
 // List Agents (with pagination and search)
 app.get("/api/haj-umrah/agents", async (req, res) => {
   try {
-    const { page = 1, limit = 10, q } = req.query;
+    const { page = 1, limit = 50, q } = req.query;
     const pageNum = Math.max(parseInt(page) || 1, 1);
-    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 20000);
 
     const filter = { isActive: { $ne: false } };
     if (q && String(q).trim()) {
