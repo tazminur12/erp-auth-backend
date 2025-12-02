@@ -15548,15 +15548,45 @@ app.delete("/api/exchanges/:id", async (req, res) => {
 // Comprehensive dashboard summary with all module statistics
 app.get("/api/dashboard/summary", async (req, res) => {
   try {
+    // Check if database collections are initialized
+    if (!db || !users || !airCustomers || !agents || !vendors || !branches || 
+        !transactions || !invoices || !accounts || !bankAccounts || !loans || 
+        !orders || !packages || !agentPackages || !tickets || !exchanges || 
+        !cattle || !milkProductions || !farmEmployees || !farmExpenses || 
+        !farmIncomes || !haji || !umrah) {
+      return res.status(503).json({
+        success: false,
+        error: 'Database not initialized',
+        message: 'Database collections are not available. Please try again in a moment.'
+      });
+    }
+
     const { fromDate, toDate } = req.query || {};
     
     // Build date filter
     const dateFilter = {};
     if (fromDate || toDate) {
       dateFilter.createdAt = {};
-      if (fromDate) dateFilter.createdAt.$gte = new Date(fromDate);
+      if (fromDate) {
+        const start = new Date(fromDate);
+        if (isNaN(start.getTime())) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid date format',
+            message: 'fromDate must be a valid date string'
+          });
+        }
+        dateFilter.createdAt.$gte = start;
+      }
       if (toDate) {
         const end = new Date(toDate);
+        if (isNaN(end.getTime())) {
+          return res.status(400).json({
+            success: false,
+            error: 'Invalid date format',
+            message: 'toDate must be a valid date string'
+          });
+        }
         end.setHours(23, 59, 59, 999);
         dateFilter.createdAt.$lte = end;
       }
@@ -15566,11 +15596,18 @@ app.get("/api/dashboard/summary", async (req, res) => {
     const transactionDateFilter = {};
     if (fromDate || toDate) {
       transactionDateFilter.date = {};
-      if (fromDate) transactionDateFilter.date.$gte = new Date(fromDate);
+      if (fromDate) {
+        const start = new Date(fromDate);
+        if (!isNaN(start.getTime())) {
+          transactionDateFilter.date.$gte = start;
+        }
+      }
       if (toDate) {
         const end = new Date(toDate);
-        end.setHours(23, 59, 59, 999);
-        transactionDateFilter.date.$lte = end;
+        if (!isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+          transactionDateFilter.date.$lte = end;
+        }
       }
     }
 
@@ -15590,7 +15627,7 @@ app.get("/api/dashboard/summary", async (req, res) => {
     // ==================== OVERVIEW ====================
     const totalUsers = await users.countDocuments({ isActive: { $ne: false } });
     const totalBranches = await branches.countDocuments({ isActive: { $ne: false } });
-    const totalCustomers = await customers.countDocuments({ isActive: { $ne: false } });
+    const totalCustomers = await airCustomers.countDocuments({ isActive: { $ne: false } });
     const totalAgents = await agents.countDocuments({ isActive: { $ne: false } });
     const totalVendors = await vendors.countDocuments({ isActive: { $ne: false } });
     
@@ -15635,17 +15672,17 @@ app.get("/api/dashboard/summary", async (req, res) => {
     };
 
     // ==================== CUSTOMERS ====================
-    const customersToday = await customers.countDocuments({
+    const customersToday = await airCustomers.countDocuments({
       createdAt: { $gte: today },
       isActive: { $ne: false }
     });
-    const customersThisMonth = await customers.countDocuments({
+    const customersThisMonth = await airCustomers.countDocuments({
       createdAt: { $gte: thisMonth },
       isActive: { $ne: false }
     });
 
     // Customers by type
-    const customersByType = await customers.aggregate([
+    const customersByType = await airCustomers.aggregate([
       { $match: { isActive: { $ne: false } } },
       { $group: { _id: "$customerType", count: { $sum: 1 } } }
     ]).toArray();
@@ -15655,7 +15692,7 @@ app.get("/api/dashboard/summary", async (req, res) => {
     const umrahCustomers = await umrah.countDocuments({ isActive: { $ne: false } });
 
     // Customer payment stats
-    const customerPaymentStats = await customers.aggregate([
+    const customerPaymentStats = await airCustomers.aggregate([
       { $match: { isActive: { $ne: false } } },
       {
         $group: {
@@ -16081,7 +16118,7 @@ app.get("/api/dashboard/summary", async (req, res) => {
       .limit(5)
       .toArray();
 
-    const recentCustomers = await customers.find({
+    const recentCustomers = await airCustomers.find({
       isActive: { $ne: false }
     })
       .sort({ createdAt: -1 })
@@ -16154,11 +16191,29 @@ app.get("/api/dashboard/summary", async (req, res) => {
 
   } catch (error) {
     console.error('Dashboard summary error:', error);
-    res.status(500).json({
+    console.error('Error stack:', error.stack);
+    
+    // Provide more specific error messages
+    let errorMessage = 'Failed to generate dashboard summary';
+    let statusCode = 500;
+    
+    if (error.message && error.message.includes('not defined')) {
+      errorMessage = 'Database collection not initialized';
+      statusCode = 503;
+    } else if (error.message && error.message.includes('connection')) {
+      errorMessage = 'Database connection error';
+      statusCode = 503;
+    } else if (error.message && error.message.includes('timeout')) {
+      errorMessage = 'Request timeout - database query took too long';
+      statusCode = 504;
+    }
+    
+    res.status(statusCode).json({
       success: false,
       error: 'Internal server error',
-      message: 'Failed to generate dashboard summary',
-      details: error.message
+      message: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? error.message : 'An error occurred while processing your request',
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 });
