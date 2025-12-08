@@ -3421,7 +3421,59 @@ app.get("/vendors/:id", async (req, res) => {
       console.log('✅ Vendor migrated successfully');
     }
 
-    res.json({ success: true, vendor });
+    // Recent activity for this vendor (transactions + bills)
+    const vendorObjectId = vendor._id;
+    const vendorIdString = vendor.vendorId || vendorObjectId.toString();
+
+    const recentTransactions = await transactions.find({
+      partyType: 'vendor',
+      isActive: { $ne: false },
+      $or: [
+        { partyId: vendorIdString },
+        { partyId: vendorObjectId.toString() },
+        { partyId: vendorObjectId }
+      ]
+    })
+      .sort({ createdAt: -1, date: -1 })
+      .limit(10)
+      .toArray();
+
+    const recentVendorBills = await vendorBills.find({
+      isActive: { $ne: false },
+      $or: [
+        { vendorId: vendorIdString },
+        { vendorId: vendorObjectId.toString() },
+        { vendorId: vendorObjectId },
+        { vendorName: vendor.tradeName }
+      ]
+    })
+      .sort({ createdAt: -1, billDate: -1 })
+      .limit(5)
+      .toArray();
+
+    const recentActivity = {
+      transactions: recentTransactions.map(tx => ({
+        transactionId: tx.transactionId,
+        transactionType: tx.transactionType,
+        amount: tx.amount,
+        status: tx.status,
+        paymentMethod: tx.paymentMethod || tx?.paymentDetails?.method || null,
+        reference: tx.reference || tx?.paymentDetails?.reference || tx.transactionId,
+        createdAt: tx.createdAt || tx.date
+      })),
+      bills: recentVendorBills.map(bill => ({
+        billId: bill._id,
+        billNumber: bill.billNumber || null,
+        billType: bill.billType || null,
+        totalAmount: bill.totalAmount || 0,
+        paidAmount: bill.amount || bill.paidAmount || 0,
+        paymentStatus: bill.paymentStatus || null,
+        billDate: bill.billDate || null,
+        createdAt: bill.createdAt || null
+      }))
+    };
+
+    res.json({ success: true, vendor, recentActivity });
   } catch (error) {
     console.error("Error fetching vendor:", error);
     res.status(500).json({
@@ -11863,6 +11915,114 @@ app.get('/api/haj-umrah/agent-packages/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch package',
+      error: error.message
+    });
+  }
+});
+
+// GET /api/haj-umrah/agent-packages/:id/transactions
+// Fetch transaction history for a package's agent
+app.get('/api/haj-umrah/agent-packages/:id/transactions', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { fromDate, toDate, page = 1, limit = 20 } = req.query || {};
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid package ID'
+      });
+    }
+
+    const packageDoc = await agentPackages.findOne({ _id: new ObjectId(id) });
+    if (!packageDoc) {
+      return res.status(404).json({
+        success: false,
+        message: 'Package not found'
+      });
+    }
+
+    const agentId = packageDoc.agentId || packageDoc.agent?._id || packageDoc.agent?._id?.toString();
+    if (!agentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Package does not have an associated agent'
+      });
+    }
+
+    const agentIdStr = String(agentId);
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+
+    const filter = {
+      isActive: { $ne: false },
+      partyType: 'agent'
+    };
+
+    const orConditions = [{ partyId: agentIdStr }];
+    if (ObjectId.isValid(agentIdStr)) {
+      orConditions.push({ partyId: new ObjectId(agentIdStr) });
+    }
+    filter.$or = orConditions;
+
+    if (fromDate || toDate) {
+      filter.date = {};
+      if (fromDate) filter.date.$gte = new Date(fromDate);
+      if (toDate) {
+        const end = new Date(toDate);
+        if (!isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+        }
+        filter.date.$lte = end;
+      }
+    }
+
+    const cursor = transactions
+      .find(filter)
+      .sort({ date: -1, createdAt: -1 })
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum);
+
+    const [items, total] = await Promise.all([
+      cursor.toArray(),
+      transactions.countDocuments(filter)
+    ]);
+
+    const totals = items.reduce(
+      (acc, tx) => {
+        const amt = Number(tx.amount || 0);
+        if (tx.transactionType === 'credit') acc.totalCredit += amt;
+        if (tx.transactionType === 'debit') acc.totalDebit += amt;
+        return acc;
+      },
+      { totalCredit: 0, totalDebit: 0 }
+    );
+    totals.net = totals.totalCredit - totals.totalDebit;
+
+    res.json({
+      success: true,
+      data: items,
+      agent: {
+        id: agentIdStr,
+        name: packageDoc.agentName || packageDoc.agent?.name || null
+      },
+      package: {
+        id: String(packageDoc._id),
+        name: packageDoc.packageName || null
+      },
+      totals,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Get agent package transactions error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch transaction history',
       error: error.message
     });
   }
