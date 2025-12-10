@@ -12850,9 +12850,21 @@ app.get('/haj-umrah/packages/:id', async (req, res) => {
       };
     }
 
+    // Profit & Loss section (Costing Price vs Package Price)
+    const costingPrice = parseFloat(package.totals?.grandTotal) || 0;
+    const packagePrice = parseFloat(package.totalPrice ?? package.totals?.grandTotal) || 0;
+    const profitLoss = packagePrice - costingPrice;
+
     res.json({
       success: true,
-      data: package
+      data: {
+        ...package,
+        profitLoss: {
+          costingPrice,
+          packagePrice,
+          profitOrLoss: profitLoss
+        }
+      }
     });
   } catch (error) {
     console.error('Get package error:', error);
