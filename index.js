@@ -12852,7 +12852,8 @@ app.get('/haj-umrah/packages/:id', async (req, res) => {
 
     // Profit & Loss section (Costing Price vs Package Price)
     const costingPrice = parseFloat(package.totals?.grandTotal) || 0;
-    const packagePrice = parseFloat(package.totalPrice ?? package.totals?.grandTotal) || 0;
+    // Original sale price set during creation (do NOT fallback to costing)
+    const packagePrice = parseFloat(package.totalPrice) || 0;
     const profitLoss = packagePrice - costingPrice;
 
     res.json({
