@@ -4961,7 +4961,8 @@ app.post("/api/transactions", async (req, res) => {
       customerBankAccount,
       employeeReference,
       operatingExpenseCategoryId,
-      moneyExchangeInfo
+      moneyExchangeInfo,
+      meta: incomingMeta
     } = req.body;
 
     // Extract values from nested objects if provided
@@ -4973,6 +4974,10 @@ app.post("/api/transactions", async (req, res) => {
     const finalServiceCategory = serviceCategory || category;
     const finalSubCategory = typeof req.body?.subCategory !== 'undefined' ? String(req.body.subCategory || '').trim() : undefined;
     const finalOperatingExpenseCategoryId = operatingExpenseCategoryId || req.body?.operatingExpenseCategory?.id;
+    const meta = (incomingMeta && typeof incomingMeta === 'object') ? { ...incomingMeta } : {};
+    if (meta.packageId) {
+      meta.packageId = String(meta.packageId);
+    }
     
     // Determine final party type defensively
     // Handle customerType from frontend (e.g., 'money-exchange') and map to partyType
@@ -5334,6 +5339,7 @@ app.post("/api/transactions", async (req, res) => {
         creditAccount: creditAccount || (transactionType === 'credit' ? { id: finalTargetAccountId } : null),
         paymentDetails: paymentDetails || { amount: numericAmount },
         customerBankAccount: customerBankAccount || null,
+        meta: Object.keys(meta || {}).length ? meta : undefined,
         // Store money exchange information if available
         moneyExchangeInfo: (finalPartyType === 'money-exchange' || finalPartyType === 'money_exchange') && moneyExchangeInfo ? {
           id: moneyExchangeInfo.id || party?._id?.toString() || null,
@@ -5770,6 +5776,69 @@ app.post("/api/transactions", async (req, res) => {
         } catch (invoiceUpdateErr) {
           console.warn('Failed to update invoice status from transaction:', invoiceUpdateErr?.message);
           // Don't fail the transaction if invoice update fails
+        }
+      }
+
+      // 8.11 If linked to an agent package, recalculate payment summary
+      if (meta.packageId) {
+        try {
+          const packageIdStr = String(meta.packageId);
+          const packageIdCandidates = [packageIdStr];
+          if (ObjectId.isValid(packageIdStr)) {
+            packageIdCandidates.push(new ObjectId(packageIdStr));
+          }
+
+          const summary = await transactions
+            .aggregate(
+              [
+                {
+                  $match: {
+                    isActive: { $ne: false },
+                    'meta.packageId': { $in: packageIdCandidates }
+                  }
+                },
+                {
+                  $group: {
+                    _id: null,
+                    totalCredit: {
+                      $sum: {
+                        $cond: [{ $eq: ['$transactionType', 'credit'] }, '$amount', 0]
+                      }
+                    },
+                    totalDebit: {
+                      $sum: {
+                        $cond: [{ $eq: ['$transactionType', 'debit'] }, '$amount', 0]
+                      }
+                    },
+                    lastPaymentDate: {
+                      $max: {
+                        $cond: [{ $eq: ['$transactionType', 'credit'] }, '$date', null]
+                      }
+                    }
+                  }
+                }
+              ],
+              { session }
+            )
+            .toArray();
+
+          const totalPaid = summary?.[0]?.totalCredit || 0;
+          const lastPaymentDate = summary?.[0]?.lastPaymentDate || null;
+          const targetPackageId = ObjectId.isValid(packageIdStr) ? new ObjectId(packageIdStr) : packageIdStr;
+
+          await agentPackages.updateOne(
+            { _id: targetPackageId },
+            {
+              $set: {
+                totalPaid,
+                lastPaymentDate,
+                updatedAt: new Date()
+              }
+            },
+            { session }
+          );
+        } catch (packageSummaryErr) {
+          console.warn('Failed to update agent package payment summary:', packageSummaryErr?.message);
         }
       }
 
@@ -7919,314 +7988,6 @@ app.delete("/api/calvings/:id", async (req, res) => {
 
 
 
-
-// ==================== ORDER ROUTES ====================
-
-// ✅ POST: Create new order
-app.post("/orders", async (req, res) => {
-  try {
-    const {
-      vendorId,
-      orderType,
-      amount,
-      notes,
-      createdBy,
-      branchId
-    } = req.body;
-
-    // Validation
-    if (!vendorId || !orderType || !amount) {
-      return res.status(400).json({
-        error: true,
-        message: "Vendor ID, order type, and amount are required"
-      });
-    }
-
-    // Validate amount
-    const parsedAmount = parseFloat(amount);
-    if (!parsedAmount || parsedAmount <= 0) {
-      return res.status(400).json({
-        error: true,
-        message: "Amount must be greater than 0"
-      });
-    }
-
-    // Check if vendor exists - support both MongoDB ObjectId and string vendorId (e.g., VN-...)
-    let vendor;
-    if (ObjectId.isValid(vendorId)) {
-      vendor = await vendors.findOne({ _id: new ObjectId(vendorId), isActive: true });
-    } else {
-      const normalized = String(vendorId).trim().toUpperCase();
-      vendor = await vendors.findOne({ vendorId: normalized, isActive: true });
-    }
-
-    if (!vendor) {
-      return res.status(404).json({
-        error: true,
-        message: "Vendor not found"
-      });
-    }
-
-    // Get branch information
-    const branch = await branches.findOne({ branchId: branchId || 'main', isActive: true });
-    if (!branch) {
-      return res.status(400).json({
-        error: true,
-        message: "Invalid branch ID"
-      });
-    }
-
-    // Generate unique order ID
-    const orderId = await generateOrderId(db, branch.branchCode);
-
-    // Create order object
-    const newOrder = {
-      orderId,
-      vendorId: vendor._id,
-      vendorName: vendor.tradeName,
-      vendorLocation: vendor.tradeLocation,
-      vendorContact: vendor.contactNo,
-      vendorOwner: vendor.ownerName,
-      orderType: orderType.trim(),
-      amount: parsedAmount,
-      notes: notes || null,
-      status: 'pending', // pending, confirmed, completed, cancelled
-      createdBy: createdBy || null,
-      branchId: branch.branchId,
-      branchName: branch.branchName,
-      branchCode: branch.branchCode,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      isActive: true
-    };
-
-    const result = await orders.insertOne(newOrder);
-
-    res.status(201).json({
-      success: true,
-      message: "Order created successfully",
-      order: {
-        _id: result.insertedId,
-        orderId: newOrder.orderId,
-        vendorId: newOrder.vendorId,
-        vendorName: newOrder.vendorName,
-        vendorLocation: newOrder.vendorLocation,
-        vendorContact: newOrder.vendorContact,
-        vendorOwner: newOrder.vendorOwner,
-        orderType: newOrder.orderType,
-        amount: newOrder.amount,
-        notes: newOrder.notes,
-        status: newOrder.status,
-        branchId: newOrder.branchId,
-        branchName: newOrder.branchName,
-        createdAt: newOrder.createdAt
-      }
-    });
-
-  } catch (error) {
-    console.error('Create order error:', error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while creating order"
-    });
-  }
-});
-
-// ✅ GET: Get all orders with filters
-app.get("/orders", async (req, res) => {
-  try {
-    const {
-      vendorId,
-      orderType,
-      status,
-      branchId,
-      dateFrom,
-      dateTo,
-      search,
-      page = 1,
-      limit = 20
-    } = req.query;
-
-    let filter = { isActive: true };
-
-    // Apply filters
-    if (vendorId) filter.vendorId = new ObjectId(vendorId);
-    if (orderType) filter.orderType = { $regex: orderType, $options: 'i' };
-    if (status) filter.status = status;
-    if (branchId) filter.branchId = branchId;
-
-    // Date range filter
-    if (dateFrom || dateTo) {
-      filter.createdAt = {};
-      if (dateFrom) filter.createdAt.$gte = new Date(dateFrom);
-      if (dateTo) {
-        const endDate = new Date(dateTo);
-        endDate.setHours(23, 59, 59, 999);
-        filter.createdAt.$lte = endDate;
-      }
-    }
-
-    // Search filter
-    if (search) {
-      filter.$or = [
-        { orderId: { $regex: search, $options: 'i' } },
-        { vendorName: { $regex: search, $options: 'i' } },
-        { vendorContact: { $regex: search, $options: 'i' } },
-        { vendorOwner: { $regex: search, $options: 'i' } },
-        { orderType: { $regex: search, $options: 'i' } },
-        { notes: { $regex: search, $options: 'i' } }
-      ];
-    }
-
-    // Calculate pagination
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-
-    // Get total count
-    const totalCount = await orders.countDocuments(filter);
-
-    // Get orders with pagination
-    const allOrders = await orders.find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .toArray();
-
-    res.json({
-      success: true,
-      count: allOrders.length,
-      totalCount,
-      currentPage: parseInt(page),
-      totalPages: Math.ceil(totalCount / parseInt(limit)),
-      orders: allOrders
-    });
-  } catch (error) {
-    console.error('Get orders error:', error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while fetching orders"
-    });
-  }
-});
-
-// ✅ GET: Get order by ID
-app.get("/orders/:orderId", async (req, res) => {
-  try {
-    const { orderId } = req.params;
-
-    const order = await orders.findOne({
-      orderId: orderId,
-      isActive: true
-    });
-
-    if (!order) {
-      return res.status(404).json({
-        error: true,
-        message: "Order not found"
-      });
-    }
-
-    res.json({
-      success: true,
-      order: order
-    });
-  } catch (error) {
-    console.error('Get order error:', error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while fetching order"
-    });
-  }
-});
-
-// ✅ PATCH: Update order
-app.patch("/orders/:orderId", async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const updateData = req.body;
-
-    // Remove fields that shouldn't be updated
-    delete updateData.orderId;
-    delete updateData.createdAt;
-    updateData.updatedAt = new Date();
-
-    // Validate status if being updated
-    if (updateData.status) {
-      const validStatuses = ['pending', 'confirmed', 'completed', 'cancelled'];
-      if (!validStatuses.includes(updateData.status)) {
-        return res.status(400).json({
-          error: true,
-          message: "Invalid status. Must be one of: pending, confirmed, completed, cancelled"
-        });
-      }
-    }
-
-    // Validate amount if being updated
-    if (updateData.amount) {
-      const parsedAmount = parseFloat(updateData.amount);
-      if (!parsedAmount || parsedAmount <= 0) {
-        return res.status(400).json({
-          error: true,
-          message: "Amount must be greater than 0"
-        });
-      }
-      updateData.amount = parsedAmount;
-    }
-
-    const result = await orders.updateOne(
-      { orderId: orderId, isActive: true },
-      { $set: updateData }
-    );
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({
-        error: true,
-        message: "Order not found"
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Order updated successfully",
-      modifiedCount: result.modifiedCount
-    });
-  } catch (error) {
-    console.error('Update order error:', error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while updating order"
-    });
-  }
-});
-
-// ✅ DELETE: Delete order (soft delete)
-app.delete("/orders/:orderId", async (req, res) => {
-  try {
-    const { orderId } = req.params;
-
-    const result = await orders.updateOne(
-      { orderId: orderId, isActive: true },
-      { $set: { isActive: false, updatedAt: new Date() } }
-    );
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({
-        error: true,
-        message: "Order not found"
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Order deleted successfully"
-    });
-  } catch (error) {
-    console.error('Delete order error:', error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while deleting order"
-    });
-  }
-});
 
 // Loan Routes      ////
 
@@ -12346,9 +12107,15 @@ app.get('/api/haj-umrah/agent-packages/:id/transactions', async (req, res) => {
     const pageNum = Math.max(parseInt(page) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
 
+    const packageIdCandidates = [String(id)];
+    if (ObjectId.isValid(id)) {
+      packageIdCandidates.push(new ObjectId(id));
+    }
+
     const filter = {
       isActive: { $ne: false },
-      partyType: 'agent'
+      partyType: 'agent',
+      'meta.packageId': { $in: packageIdCandidates }
     };
 
     const orConditions = [{ partyId: agentIdStr }];
@@ -12375,32 +12142,62 @@ app.get('/api/haj-umrah/agent-packages/:id/transactions', async (req, res) => {
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum);
 
-    const [items, total] = await Promise.all([
+    const totalsPipeline = [
+      { $match: filter },
+      {
+        $group: {
+          _id: null,
+          totalCredit: {
+            $sum: {
+              $cond: [{ $eq: ['$transactionType', 'credit'] }, '$amount', 0]
+            }
+          },
+          totalDebit: {
+            $sum: {
+              $cond: [{ $eq: ['$transactionType', 'debit'] }, '$amount', 0]
+            }
+          },
+          lastPaymentDate: {
+            $max: {
+              $cond: [{ $eq: ['$transactionType', 'credit'] }, '$date', null]
+            }
+          }
+        }
+      }
+    ];
+
+    const [items, total, totalsAgg] = await Promise.all([
       cursor.toArray(),
-      transactions.countDocuments(filter)
+      transactions.countDocuments(filter),
+      transactions.aggregate(totalsPipeline).toArray()
     ]);
 
-    const totals = items.reduce(
-      (acc, tx) => {
-        const amt = Number(tx.amount || 0);
-        if (tx.transactionType === 'credit') acc.totalCredit += amt;
-        if (tx.transactionType === 'debit') acc.totalDebit += amt;
-        return acc;
-      },
-      { totalCredit: 0, totalDebit: 0 }
-    );
-    totals.net = totals.totalCredit - totals.totalDebit;
+    const totals = {
+      totalCredit: totalsAgg?.[0]?.totalCredit || 0,
+      totalDebit: totalsAgg?.[0]?.totalDebit || 0,
+      net: (totalsAgg?.[0]?.totalCredit || 0) - (totalsAgg?.[0]?.totalDebit || 0),
+      lastPaymentDate: totalsAgg?.[0]?.lastPaymentDate || null
+    };
+
+    const packageTotal = packageDoc?.totals?.grandTotal ?? packageDoc?.totalPrice ?? 0;
+    const totalPaid = totals.totalCredit;
+    const remainingDue = packageTotal - totalPaid;
+    const agentDoc = agentIdStr && ObjectId.isValid(agentIdStr) ? await agents.findOne({ _id: new ObjectId(agentIdStr) }) : null;
 
     res.json({
       success: true,
       data: items,
       agent: {
         id: agentIdStr,
-        name: packageDoc.agentName || packageDoc.agent?.name || null
+        name: packageDoc.agentName || packageDoc.agent?.name || agentDoc?.name || null,
+        phone: agentDoc?.phone || agentDoc?.contactNo || null
       },
       package: {
         id: String(packageDoc._id),
-        name: packageDoc.packageName || null
+        name: packageDoc.packageName || null,
+        totalPrice: packageTotal,
+        totalPaid,
+        remainingDue
       },
       totals,
       pagination: {
