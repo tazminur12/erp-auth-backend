@@ -12169,9 +12169,6 @@ app.post('/api/haj-umrah/agent-packages/:id/costing', async (req, res) => {
       totals
     } = req.body;
 
-    // Get the grand total from the payload
-    const packageTotal = totals?.grandTotal || existingPackage.totalPrice || 0;
-
     // Prepare update object
     const updateData = {
       updatedAt: new Date()
@@ -12241,8 +12238,10 @@ app.post('/api/haj-umrah/agent-packages/:id/costing', async (req, res) => {
       updateData.saudiOthersPassengers = saudiOthersPassengers || [];
     }
 
-    // Update total price based on grand total
-    updateData.totalPrice = packageTotal;
+    // IMPORTANT: Do NOT update totalPrice here
+    // totalPrice = Agent যে price দেবে (original price, set during package creation)
+    // totals.grandTotal = Actual costing price (costingPrice)
+    // Profit/Loss = totalPrice - totals.grandTotal
 
     // Update the package
     await agentPackages.updateOne(
