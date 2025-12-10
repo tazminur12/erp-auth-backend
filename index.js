@@ -583,6 +583,23 @@ const generateCustomerId = async (db, customerType) => {
   // Create counter key for customer type
   const counterKey = `customer_${prefix}`;
   
+  // Special handling for 'haj' type: reset counter if no records exist
+  if (customerType && customerType.toLowerCase() === 'haj') {
+    const hajiCollection = db.collection("haji");
+    const hajiCount = await hajiCollection.countDocuments({});
+    
+    // If no haji records exist, reset counter to 0
+    if (hajiCount === 0) {
+      const existingCounter = await counterCollection.findOne({ counterKey });
+      if (existingCounter && existingCounter.sequence > 0) {
+        await counterCollection.updateOne(
+          { counterKey },
+          { $set: { sequence: 0 } }
+        );
+      }
+    }
+  }
+  
   // Find or create counter
   let counter = await counterCollection.findOne({ counterKey });
   
