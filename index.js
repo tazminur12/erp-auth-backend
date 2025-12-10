@@ -11684,6 +11684,58 @@ app.get('/api/haj-umrah/agent-packages/:id', async (req, res) => {
       profitLossPercentage: packagePrice > 0 ? ((profitLoss / packagePrice) * 100).toFixed(2) : 0
     };
 
+    // Calculate payment summary (total paid & remaining due) for this package
+    const agentId = package.agentId || package.agent?._id || package.agent?._id?.toString();
+    let paymentSummary = {
+      totalPaid: 0,
+      remainingDue: parseFloat(package.totals?.grandTotal ?? package.totalPrice ?? 0) || 0
+    };
+
+    if (agentId) {
+      const agentIdStr = String(agentId);
+      const packageIdCandidates = [String(id)];
+      if (ObjectId.isValid(id)) {
+        packageIdCandidates.push(new ObjectId(id));
+      }
+
+      const filter = {
+        isActive: { $ne: false },
+        partyType: 'agent',
+        'meta.packageId': { $in: packageIdCandidates }
+      };
+
+      const orConditions = [{ partyId: agentIdStr }];
+      if (ObjectId.isValid(agentIdStr)) {
+        orConditions.push({ partyId: new ObjectId(agentIdStr) });
+      }
+      filter.$or = orConditions;
+
+      const totalsAgg = await transactions
+        .aggregate([
+          { $match: filter },
+          {
+            $group: {
+              _id: null,
+              totalCredit: {
+                $sum: {
+                  $cond: [{ $eq: ['$transactionType', 'credit'] }, '$amount', 0]
+                }
+              }
+            }
+          }
+        ])
+        .toArray();
+
+      const totalPaid = totalsAgg?.[0]?.totalCredit || 0;
+      const packageTotal = parseFloat(package.totals?.grandTotal ?? package.totalPrice ?? 0) || 0;
+      paymentSummary = {
+        totalPaid,
+        remainingDue: packageTotal - totalPaid
+      };
+    }
+
+    package.paymentSummary = paymentSummary;
+
     res.json({
       success: true,
       data: package
