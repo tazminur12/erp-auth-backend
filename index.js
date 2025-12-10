@@ -815,7 +815,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customerTypes, airCustomers, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets;
+let db, users, branches, counters, customerTypes, airCustomers, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -825,6 +825,7 @@ async function initializeDatabase() {
 
     db = client.db("erpDashboard");
     users = db.collection("users");
+    notifications = db.collection("notifications");
     branches = db.collection("branches");
     counters = db.collection("counters");
     customerTypes = db.collection("customerTypes");
@@ -945,7 +946,10 @@ async function initializeDatabase() {
         airCustomers.createIndex({ email: 1 }, { sparse: true, name: "airCustomers_email" }),
         airCustomers.createIndex({ passportNumber: 1 }, { sparse: true, name: "airCustomers_passportNumber" }),
         airCustomers.createIndex({ isActive: 1, createdAt: -1 }, { name: "airCustomers_active_createdAt" }),
-        airCustomers.createIndex({ name: "text", mobile: "text", email: "text", passportNumber: "text" }, { name: "airCustomers_text_search" })
+        airCustomers.createIndex({ name: "text", mobile: "text", email: "text", passportNumber: "text" }, { name: "airCustomers_text_search" }),
+        // Notifications
+        notifications.createIndex({ userId: 1, isRead: 1, isActive: 1, createdAt: -1 }, { name: "notifications_user_read_active_createdAt" }),
+        notifications.createIndex({ isActive: 1, createdAt: -1 }, { name: "notifications_active_createdAt" })
       ]);
     } catch (e) {
       console.warn("⚠️ Index creation warning:", e.message);
@@ -12938,6 +12942,272 @@ app.put('/haj-umrah/packages/:id', async (req, res) => {
   }
 });
 
+// POST /haj-umrah/packages/:id/costing - Add/Update package costing
+app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid package ID'
+      });
+    }
+
+    // Ensure package exists
+    const existingPackage = await packages.findOne({ _id: new ObjectId(id) });
+    if (!existingPackage) {
+      return res.status(404).json({
+        success: false,
+        message: 'Package not found'
+      });
+    }
+
+    const {
+      sarToBdtRate: incomingSarToBdtRate,
+      discount: incomingDiscount,
+      costs: incomingCosts = {},
+      bangladeshVisaPassengers,
+      bangladeshAirfarePassengers,
+      bangladeshBusPassengers,
+      bangladeshTrainingOtherPassengers,
+      saudiVisaPassengers,
+      saudiMakkahHotelPassengers,
+      saudiMadinaHotelPassengers,
+      saudiMakkahFoodPassengers,
+      saudiMadinaFoodPassengers,
+      saudiMakkahZiyaraPassengers,
+      saudiMadinaZiyaraPassengers,
+      saudiTransportPassengers,
+      saudiCampFeePassengers,
+      saudiAlMashayerPassengers,
+      saudiOthersPassengers
+    } = req.body;
+
+    const toNumber = (val, fallback = 0) => {
+      const parsed = parseFloat(val);
+      return Number.isFinite(parsed) ? parsed : fallback;
+    };
+
+    // Normalize air fare details (per passenger type)
+    const normalizedAirFareDetails = {};
+    if (incomingCosts.airFareDetails && typeof incomingCosts.airFareDetails === 'object') {
+      ['adult', 'child', 'infant'].forEach((type) => {
+        const price = incomingCosts.airFareDetails?.[type]?.price;
+        normalizedAirFareDetails[type] = { price: toNumber(price, 0) };
+      });
+    }
+
+    // Normalize hotel details (price & nights per passenger type)
+    const normalizedHotelDetails = {};
+    if (incomingCosts.hotelDetails && typeof incomingCosts.hotelDetails === 'object') {
+      Object.keys(incomingCosts.hotelDetails).forEach((hotelKey) => {
+        const hotel = incomingCosts.hotelDetails[hotelKey] || {};
+        normalizedHotelDetails[hotelKey] = {};
+        ['adult', 'child', 'infant'].forEach((ptype) => {
+          const price = hotel?.[ptype]?.price;
+          const nights = hotel?.[ptype]?.nights;
+          normalizedHotelDetails[hotelKey][ptype] = {
+            price: toNumber(price, 0),
+            nights: toNumber(nights, 0)
+          };
+        });
+      });
+    }
+
+    // Normalize other cost fields (default to 0)
+    const normalizedCosts = {
+      ...incomingCosts,
+      airFareDetails: normalizedAirFareDetails,
+      hotelDetails: normalizedHotelDetails
+    };
+
+    const numericCostFields = [
+      'airFare',
+      'makkahHotel1',
+      'makkahHotel2',
+      'makkahHotel3',
+      'madinaHotel1',
+      'madinaHotel2',
+      'zamzamWater',
+      'maktab',
+      'visaFee',
+      'insuranceFee',
+      'electronicsFee',
+      'groundServiceFee',
+      'makkahRoute',
+      'baggage',
+      'serviceCharge',
+      'monazzem',
+      'food',
+      'ziyaraFee',
+      'idCard',
+      'hajjKollan',
+      'trainFee',
+      'hajjGuide',
+      'govtServiceCharge',
+      'licenseFee',
+      'transportFee',
+      'otherBdCosts',
+      'otherSaudiCosts',
+      'train',
+      'airFair'
+    ];
+
+    numericCostFields.forEach((field) => {
+      if (field in normalizedCosts) {
+        normalizedCosts[field] = toNumber(normalizedCosts[field], 0);
+      }
+    });
+
+    const sarToBdtRate = toNumber(incomingSarToBdtRate, 1);
+    const discount = toNumber(incomingDiscount, 0);
+
+    // Calculate totals similar to the frontend costCalc to keep server as source of truth
+    const bdCosts =
+      toNumber(normalizedCosts.idCard) +
+      toNumber(normalizedCosts.hajjKollan) +
+      toNumber(normalizedCosts.trainFee) +
+      toNumber(normalizedCosts.hajjGuide) +
+      toNumber(normalizedCosts.govtServiceCharge) +
+      toNumber(normalizedCosts.licenseFee) +
+      toNumber(normalizedCosts.transportFee) +
+      toNumber(normalizedCosts.visaFee) +
+      toNumber(normalizedCosts.insuranceFee) +
+      toNumber(normalizedCosts.otherBdCosts);
+
+    const saudiCostsBDT =
+      toNumber(normalizedCosts.zamzamWater) +
+      toNumber(normalizedCosts.maktab) +
+      toNumber(normalizedCosts.electronicsFee) +
+      toNumber(normalizedCosts.groundServiceFee) +
+      toNumber(normalizedCosts.makkahRoute) +
+      toNumber(normalizedCosts.baggage) +
+      toNumber(normalizedCosts.serviceCharge) +
+      toNumber(normalizedCosts.monazzem) +
+      toNumber(normalizedCosts.food) +
+      toNumber(normalizedCosts.ziyaraFee) +
+      toNumber(normalizedCosts.otherSaudiCosts);
+
+    const airFareBDT =
+      toNumber(normalizedAirFareDetails?.adult?.price) +
+      toNumber(normalizedAirFareDetails?.child?.price) +
+      toNumber(normalizedAirFareDetails?.infant?.price);
+
+    const hotelSar = Object.keys(normalizedHotelDetails).reduce((sum, key) => {
+      const h = normalizedHotelDetails[key] || {};
+      const adult = toNumber(h?.adult?.price) * toNumber(h?.adult?.nights);
+      const child = toNumber(h?.child?.price) * toNumber(h?.child?.nights);
+      const infant = toNumber(h?.infant?.price) * toNumber(h?.infant?.nights);
+      return sum + adult + child + infant;
+    }, 0);
+
+    const saudiCostsBD = hotelSar * sarToBdtRate;
+    const totalBD = bdCosts + saudiCostsBDT + airFareBDT + saudiCostsBD;
+    const grandTotal = Math.max(0, totalBD - discount);
+
+    const passengerShared = bdCosts + saudiCostsBDT + hotelSar * sarToBdtRate;
+    const passengerTotals = ['adult', 'child', 'infant'].reduce((acc, type) => {
+      const totalHotelForType = Object.keys(normalizedHotelDetails).reduce((sum, key) => {
+        const h = normalizedHotelDetails[key] || {};
+        const price = toNumber(h?.[type]?.price);
+        const nights = toNumber(h?.[type]?.nights);
+        return sum + price * nights * sarToBdtRate;
+      }, 0);
+
+      acc[type] =
+        passengerShared +
+        toNumber(normalizedAirFareDetails?.[type]?.price) +
+        totalHotelForType;
+      return acc;
+    }, {});
+
+    const computedTotals = {
+      total: Number(totalBD.toFixed(2)),
+      totalBD: Number(totalBD.toFixed(2)),
+      grandTotal: Number(grandTotal.toFixed(2)),
+      passengerTotals
+    };
+
+    const updateData = {
+      updatedAt: new Date(),
+      sarToBdtRate,
+      discount,
+      costs: normalizedCosts,
+      totals: computedTotals
+    };
+
+    // Update passenger arrays if provided
+    if (bangladeshVisaPassengers !== undefined) {
+      updateData.bangladeshVisaPassengers = bangladeshVisaPassengers || [];
+    }
+    if (bangladeshAirfarePassengers !== undefined) {
+      updateData.bangladeshAirfarePassengers = bangladeshAirfarePassengers || [];
+    }
+    if (bangladeshBusPassengers !== undefined) {
+      updateData.bangladeshBusPassengers = bangladeshBusPassengers || [];
+    }
+    if (bangladeshTrainingOtherPassengers !== undefined) {
+      updateData.bangladeshTrainingOtherPassengers = bangladeshTrainingOtherPassengers || [];
+    }
+    if (saudiVisaPassengers !== undefined) {
+      updateData.saudiVisaPassengers = saudiVisaPassengers || [];
+    }
+    if (saudiMakkahHotelPassengers !== undefined) {
+      updateData.saudiMakkahHotelPassengers = saudiMakkahHotelPassengers || [];
+    }
+    if (saudiMadinaHotelPassengers !== undefined) {
+      updateData.saudiMadinaHotelPassengers = saudiMadinaHotelPassengers || [];
+    }
+    if (saudiMakkahFoodPassengers !== undefined) {
+      updateData.saudiMakkahFoodPassengers = saudiMakkahFoodPassengers || [];
+    }
+    if (saudiMadinaFoodPassengers !== undefined) {
+      updateData.saudiMadinaFoodPassengers = saudiMadinaFoodPassengers || [];
+    }
+    if (saudiMakkahZiyaraPassengers !== undefined) {
+      updateData.saudiMakkahZiyaraPassengers = saudiMakkahZiyaraPassengers || [];
+    }
+    if (saudiMadinaZiyaraPassengers !== undefined) {
+      updateData.saudiMadinaZiyaraPassengers = saudiMadinaZiyaraPassengers || [];
+    }
+    if (saudiTransportPassengers !== undefined) {
+      updateData.saudiTransportPassengers = saudiTransportPassengers || [];
+    }
+    if (saudiCampFeePassengers !== undefined) {
+      updateData.saudiCampFeePassengers = saudiCampFeePassengers || [];
+    }
+    if (saudiAlMashayerPassengers !== undefined) {
+      updateData.saudiAlMashayerPassengers = saudiAlMashayerPassengers || [];
+    }
+    if (saudiOthersPassengers !== undefined) {
+      updateData.saudiOthersPassengers = saudiOthersPassengers || [];
+    }
+
+    // Important: totalPrice stays as the originally set sale price.
+    // totals.grandTotal reflects the calculated costing.
+    await packages.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateData }
+    );
+
+    const updatedPackage = await packages.findOne({ _id: new ObjectId(id) });
+
+    res.status(200).json({
+      success: true,
+      message: 'Package costing added/updated successfully',
+      data: updatedPackage
+    });
+  } catch (error) {
+    console.error('Add package costing error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add/update package costing',
+      error: error.message
+    });
+  }
+});
+
 // DELETE /haj-umrah/packages/:id - Delete package
 app.delete('/haj-umrah/packages/:id', async (req, res) => {
   try {
@@ -15941,6 +16211,210 @@ app.delete("/api/exchanges/:id", async (req, res) => {
       success: false,
       error: 'Internal server error',
       message: 'Failed to delete exchange'
+    });
+  }
+});
+
+// ==================== NOTIFICATIONS ====================
+// Create a notification
+app.post("/api/notifications", async (req, res) => {
+  try {
+    const { userId, title, message, type = 'info', link, metadata } = req.body || {};
+
+    if (!userId || !title || !message) {
+      return res.status(400).json({
+        success: false,
+        error: 'Validation error',
+        message: 'userId, title and message are required'
+      });
+    }
+
+    const normalizedUserId = ObjectId.isValid(userId) ? new ObjectId(userId) : userId;
+    const doc = {
+      userId: normalizedUserId,
+      title,
+      message,
+      type,
+      link: link || null,
+      metadata: metadata || null,
+      isRead: false,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await notifications.insertOne(doc);
+
+    return res.status(201).json({
+      success: true,
+      notification: { ...doc, _id: result.insertedId }
+    });
+  } catch (error) {
+    console.error('Create notification error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to create notification'
+    });
+  }
+});
+
+// Fetch notifications for a user
+app.get("/api/notifications", async (req, res) => {
+  try {
+    const { userId, isRead, limit = 20, skip = 0 } = req.query;
+
+    const baseFilter = { isActive: { $ne: false } };
+    if (userId) {
+      baseFilter.userId = ObjectId.isValid(userId) ? new ObjectId(userId) : userId;
+    }
+
+    const filter = { ...baseFilter };
+    if (isRead === 'true') filter.isRead = true;
+    if (isRead === 'false') filter.isRead = false;
+
+    const parsedLimit = Math.min(parseInt(limit, 10) || 20, 100);
+    const parsedSkip = parseInt(skip, 10) || 0;
+
+    const [items, unreadCount] = await Promise.all([
+      notifications.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(parsedSkip)
+        .limit(parsedLimit)
+        .toArray(),
+      notifications.countDocuments({ ...baseFilter, isRead: false })
+    ]);
+
+    res.json({
+      success: true,
+      notifications: items,
+      unreadCount,
+      pagination: {
+        limit: parsedLimit,
+        skip: parsedSkip,
+        returned: items.length
+      }
+    });
+  } catch (error) {
+    console.error('Get notifications error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to fetch notifications'
+    });
+  }
+});
+
+// Mark a single notification as read
+app.patch("/api/notifications/:id/read", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid ID',
+        message: 'Invalid notification id'
+      });
+    }
+
+    const result = await notifications.updateOne(
+      { _id: new ObjectId(id), isActive: { $ne: false } },
+      { $set: { isRead: true, readAt: new Date(), updatedAt: new Date() } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Not found',
+        message: 'Notification not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Notification marked as read'
+    });
+  } catch (error) {
+    console.error('Mark notification read error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to update notification'
+    });
+  }
+});
+
+// Mark all notifications as read for a user
+app.patch("/api/notifications/read-all", async (req, res) => {
+  try {
+    const { userId } = req.body || {};
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Validation error',
+        message: 'userId is required'
+      });
+    }
+
+    const normalizedUserId = ObjectId.isValid(userId) ? new ObjectId(userId) : userId;
+    const result = await notifications.updateMany(
+      { userId: normalizedUserId, isRead: { $ne: true }, isActive: { $ne: false } },
+      { $set: { isRead: true, readAt: new Date(), updatedAt: new Date() } }
+    );
+
+    res.json({
+      success: true,
+      message: 'All notifications marked as read',
+      updatedCount: result.modifiedCount
+    });
+  } catch (error) {
+    console.error('Mark all notifications read error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to update notifications'
+    });
+  }
+});
+
+// Soft delete a notification
+app.delete("/api/notifications/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid ID',
+        message: 'Invalid notification id'
+      });
+    }
+
+    const result = await notifications.updateOne(
+      { _id: new ObjectId(id), isActive: { $ne: false } },
+      { $set: { isActive: false, updatedAt: new Date() } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Not found',
+        message: 'Notification not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Notification deleted successfully'
+    });
+  } catch (error) {
+    console.error('Delete notification error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to delete notification'
     });
   }
 });
