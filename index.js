@@ -10573,6 +10573,7 @@ app.get("/haj-umrah/haji/:id", async (req, res) => {
       success: true,
       data: {
         ...doc,
+        area: doc?.area || null,
         totalAmount,
         paidAmount,
         totalPaid,
@@ -11068,6 +11069,7 @@ app.get("/haj-umrah/umrah/:id", async (req, res) => {
       success: true,
       data: {
         ...doc,
+        area: doc?.area || null,
         totalAmount,
         paidAmount,
         totalPaid,
