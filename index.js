@@ -10426,6 +10426,7 @@ app.post("/haj-umrah/haji", async (req, res) => {
       division: data.division || null,
       district: data.district || null,
       upazila: data.upazila || null,
+      area: data.area || null,
       postCode: data.postCode || null,
 
       passportNumber: data.passportNumber || data.passport || null,
@@ -10713,6 +10714,7 @@ app.post("/haj-umrah/haji/bulk", async (req, res) => {
           motherName: rawData['Mother\'s Name'] || rawData['Mother\'s name'] || rawData['mother\'s name'] || rawData['Mother Name'] || rawData['Mothers name'] || rawData.motherName || null,
           upazila: rawData['Upazila'] || rawData['upazila'] || rawData.upazila || null,
           district: rawData['Districts'] || rawData['districts'] || rawData['District'] || rawData['district'] || rawData.district || null,
+          area: rawData['Area'] || rawData['area'] || rawData.area || null,
           
           // Additional optional fields (if provided)
           division: rawData['Division'] || rawData['division'] || rawData.division || null,
@@ -10772,6 +10774,7 @@ app.post("/haj-umrah/haji/bulk", async (req, res) => {
           division: data.division ? String(data.division).trim() : null,
           district: data.district ? String(data.district).trim() : null,
           upazila: data.upazila ? String(data.upazila).trim() : null,
+          area: data.area ? String(data.area).trim() : null,
           postCode: data.postCode ? String(data.postCode).trim() : null,
 
           passportNumber: data.passportNumber ? String(data.passportNumber).trim() : null,
@@ -10914,6 +10917,7 @@ app.post("/haj-umrah/umrah", async (req, res) => {
       division: data.division || null,
       district: data.district || null,
       upazila: data.upazila || null,
+      area: data.area || null,
       postCode: data.postCode || null,
 
       passportNumber: data.passportNumber || data.passport || null,
@@ -11266,6 +11270,7 @@ app.post("/haj-umrah/umrah/bulk", async (req, res) => {
           motherName: rawData['Mother\'s Name'] || rawData['Mother\'s name'] || rawData['mother\'s name'] || rawData['Mother Name'] || rawData['Mothers name'] || rawData.motherName || null,
           upazila: rawData['Upazila'] || rawData['upazila'] || rawData.upazila || null,
           district: rawData['Districts'] || rawData['districts'] || rawData['District'] || rawData['district'] || rawData.district || null,
+          area: rawData['Area'] || rawData['area'] || rawData.area || null,
           
           // Additional optional fields (if provided)
           division: rawData['Division'] || rawData['division'] || rawData.division || null,
@@ -11325,6 +11330,7 @@ app.post("/haj-umrah/umrah/bulk", async (req, res) => {
           division: data.division ? String(data.division).trim() : null,
           district: data.district ? String(data.district).trim() : null,
           upazila: data.upazila ? String(data.upazila).trim() : null,
+          area: data.area ? String(data.area).trim() : null,
           postCode: data.postCode ? String(data.postCode).trim() : null,
 
           passportNumber: data.passportNumber ? String(data.passportNumber).trim() : null,
@@ -12851,10 +12857,36 @@ app.get('/haj-umrah/packages/:id', async (req, res) => {
     }
 
     // Profit & Loss section (Costing Price vs Package Price)
-    const costingPrice = parseFloat(package.totals?.grandTotal) || 0;
+    const passengerCosts = {
+      adult: parseFloat(package.totals?.passengerTotals?.adult) || 0,
+      child: parseFloat(package.totals?.passengerTotals?.child) || 0,
+      infant: parseFloat(package.totals?.passengerTotals?.infant) || 0
+    };
+
+    // If grandTotal missing, fallback to sum of passenger costs
+    const passengerCostSum = passengerCosts.adult + passengerCosts.child + passengerCosts.infant;
+    const costingPrice =
+      Number.isFinite(parseFloat(package.totals?.grandTotal))
+        ? parseFloat(package.totals?.grandTotal)
+        : passengerCostSum;
+
     // Original sale price set during creation (do NOT fallback to costing)
     const packagePrice = parseFloat(package.totalPrice) || 0;
     const profitLoss = packagePrice - costingPrice;
+
+    // Allocate sale price proportionally to passenger cost share to show per-type profit
+    const totalCostForShare = passengerCostSum || 1; // avoid div/0
+    const passengerSaleAllocation = {
+      adult: (packagePrice * (passengerCosts.adult / totalCostForShare)) || 0,
+      child: (packagePrice * (passengerCosts.child / totalCostForShare)) || 0,
+      infant: (packagePrice * (passengerCosts.infant / totalCostForShare)) || 0
+    };
+
+    const passengerProfit = {
+      adult: passengerSaleAllocation.adult - passengerCosts.adult,
+      child: passengerSaleAllocation.child - passengerCosts.child,
+      infant: passengerSaleAllocation.infant - passengerCosts.infant
+    };
 
     res.json({
       success: true,
@@ -12863,7 +12895,10 @@ app.get('/haj-umrah/packages/:id', async (req, res) => {
         profitLoss: {
           costingPrice,
           packagePrice,
-          profitOrLoss: profitLoss
+          profitOrLoss: profitLoss,
+          passengerCosts,
+          passengerSaleAllocation,
+          passengerProfit
         }
       }
     });
