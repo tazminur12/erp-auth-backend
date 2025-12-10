@@ -11906,6 +11906,23 @@ app.get('/api/haj-umrah/agent-packages/:id', async (req, res) => {
       package.agent = agent;
     }
 
+    // Calculate Profit and Loss
+    // Package Price = যে price agent দেবে (totalPrice)
+    // Costing Price = যে price খরচ হয়েছে (totals.grandTotal)
+    const packagePrice = parseFloat(package.totalPrice) || 0;
+    const costingPrice = parseFloat(package.totals?.grandTotal) || 0;
+    const profitLoss = packagePrice - costingPrice;
+    
+    // Add profit/loss information to package
+    package.profitLoss = {
+      packagePrice: packagePrice,
+      costingPrice: costingPrice,
+      profitLoss: profitLoss,
+      isProfit: profitLoss > 0,
+      isLoss: profitLoss < 0,
+      profitLossPercentage: packagePrice > 0 ? ((profitLoss / packagePrice) * 100).toFixed(2) : 0
+    };
+
     res.json({
       success: true,
       data: package
@@ -11915,6 +11932,382 @@ app.get('/api/haj-umrah/agent-packages/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch package',
+      error: error.message
+    });
+  }
+});
+
+// PUT /api/haj-umrah/agent-packages/:id
+// Update agent package costing
+app.put('/api/haj-umrah/agent-packages/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid package ID'
+      });
+    }
+
+    // Check if package exists
+    const existingPackage = await agentPackages.findOne({ _id: new ObjectId(id) });
+    if (!existingPackage) {
+      return res.status(404).json({
+        success: false,
+        message: 'Package not found'
+      });
+    }
+
+    const {
+      sarToBdtRate,
+      discount,
+      costs,
+      bangladeshVisaPassengers,
+      bangladeshAirfarePassengers,
+      bangladeshBusPassengers,
+      bangladeshTrainingOtherPassengers,
+      saudiVisaPassengers,
+      saudiMakkahHotelPassengers,
+      saudiMadinaHotelPassengers,
+      saudiMakkahFoodPassengers,
+      saudiMadinaFoodPassengers,
+      saudiMakkahZiyaraPassengers,
+      saudiMadinaZiyaraPassengers,
+      saudiTransportPassengers,
+      saudiCampFeePassengers,
+      saudiAlMashayerPassengers,
+      saudiOthersPassengers,
+      totals
+    } = req.body;
+
+    // Get the grand total from the payload
+    const packageTotal = totals?.grandTotal || existingPackage.totalPrice || 0;
+
+    // Prepare update object
+    const updateData = {
+      updatedAt: new Date()
+    };
+
+    // Update costing fields if provided
+    if (sarToBdtRate !== undefined) {
+      updateData.sarToBdtRate = parseFloat(sarToBdtRate) || 1;
+    }
+
+    if (discount !== undefined) {
+      updateData.discount = parseFloat(discount) || 0;
+    }
+
+    if (costs !== undefined) {
+      updateData.costs = costs || {};
+    }
+
+    if (totals !== undefined) {
+      updateData.totals = totals || {};
+    }
+
+    // Update passenger arrays if provided
+    if (bangladeshVisaPassengers !== undefined) {
+      updateData.bangladeshVisaPassengers = bangladeshVisaPassengers || [];
+    }
+    if (bangladeshAirfarePassengers !== undefined) {
+      updateData.bangladeshAirfarePassengers = bangladeshAirfarePassengers || [];
+    }
+    if (bangladeshBusPassengers !== undefined) {
+      updateData.bangladeshBusPassengers = bangladeshBusPassengers || [];
+    }
+    if (bangladeshTrainingOtherPassengers !== undefined) {
+      updateData.bangladeshTrainingOtherPassengers = bangladeshTrainingOtherPassengers || [];
+    }
+    if (saudiVisaPassengers !== undefined) {
+      updateData.saudiVisaPassengers = saudiVisaPassengers || [];
+    }
+    if (saudiMakkahHotelPassengers !== undefined) {
+      updateData.saudiMakkahHotelPassengers = saudiMakkahHotelPassengers || [];
+    }
+    if (saudiMadinaHotelPassengers !== undefined) {
+      updateData.saudiMadinaHotelPassengers = saudiMadinaHotelPassengers || [];
+    }
+    if (saudiMakkahFoodPassengers !== undefined) {
+      updateData.saudiMakkahFoodPassengers = saudiMakkahFoodPassengers || [];
+    }
+    if (saudiMadinaFoodPassengers !== undefined) {
+      updateData.saudiMadinaFoodPassengers = saudiMadinaFoodPassengers || [];
+    }
+    if (saudiMakkahZiyaraPassengers !== undefined) {
+      updateData.saudiMakkahZiyaraPassengers = saudiMakkahZiyaraPassengers || [];
+    }
+    if (saudiMadinaZiyaraPassengers !== undefined) {
+      updateData.saudiMadinaZiyaraPassengers = saudiMadinaZiyaraPassengers || [];
+    }
+    if (saudiTransportPassengers !== undefined) {
+      updateData.saudiTransportPassengers = saudiTransportPassengers || [];
+    }
+    if (saudiCampFeePassengers !== undefined) {
+      updateData.saudiCampFeePassengers = saudiCampFeePassengers || [];
+    }
+    if (saudiAlMashayerPassengers !== undefined) {
+      updateData.saudiAlMashayerPassengers = saudiAlMashayerPassengers || [];
+    }
+    if (saudiOthersPassengers !== undefined) {
+      updateData.saudiOthersPassengers = saudiOthersPassengers || [];
+    }
+
+    // Update total price based on grand total
+    updateData.totalPrice = packageTotal;
+
+    // Update the package
+    await agentPackages.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateData }
+    );
+
+    // Get the agent ID from the existing package
+    const agentId = existingPackage.agentId;
+
+    // Recalculate all due amounts from all packages for this agent
+    const allPackages = await agentPackages.find({ agentId: agentId }).toArray();
+
+    let calculatedTotal = 0;
+    let calculatedHajj = 0;
+    let calculatedUmrah = 0;
+
+    // Calculate totals from all packages
+    for (const pkg of allPackages) {
+      const pkgType = (pkg.customPackageType || pkg.packageType || 'Regular').toLowerCase();
+      const pkgTotal = pkg.totalPrice || 0;
+      const isPkgHajj = pkgType.includes('haj') || pkgType.includes('hajj');
+      const isPkgUmrah = pkgType.includes('umrah');
+
+      calculatedTotal += pkgTotal;
+      if (isPkgHajj) calculatedHajj += pkgTotal;
+      if (isPkgUmrah) calculatedUmrah += pkgTotal;
+    }
+
+    console.log('Recalculated Due Amounts after update:', {
+      total: calculatedTotal,
+      haj: calculatedHajj,
+      umrah: calculatedUmrah
+    });
+
+    // Update agent due amounts
+    await agents.updateOne(
+      { _id: agentId },
+      {
+        $set: {
+          totalDue: calculatedTotal,
+          hajDue: calculatedHajj,
+          umrahDue: calculatedUmrah,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    // Fetch the updated package with agent details
+    const updatedPackage = await agentPackages.findOne({ _id: new ObjectId(id) });
+    const updatedAgent = await agents.findOne({ _id: agentId });
+
+    res.json({
+      success: true,
+      message: 'Package costing updated successfully',
+      data: {
+        ...updatedPackage,
+        agent: updatedAgent
+      }
+    });
+  } catch (error) {
+    console.error('Update package costing error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update package costing',
+      error: error.message
+    });
+  }
+});
+
+// POST /api/haj-umrah/agent-packages/:id/costing
+// Add/Update agent package costing
+app.post('/api/haj-umrah/agent-packages/:id/costing', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid package ID'
+      });
+    }
+
+    // Check if package exists
+    const existingPackage = await agentPackages.findOne({ _id: new ObjectId(id) });
+    if (!existingPackage) {
+      return res.status(404).json({
+        success: false,
+        message: 'Package not found'
+      });
+    }
+
+    const {
+      sarToBdtRate,
+      discount,
+      costs,
+      bangladeshVisaPassengers,
+      bangladeshAirfarePassengers,
+      bangladeshBusPassengers,
+      bangladeshTrainingOtherPassengers,
+      saudiVisaPassengers,
+      saudiMakkahHotelPassengers,
+      saudiMadinaHotelPassengers,
+      saudiMakkahFoodPassengers,
+      saudiMadinaFoodPassengers,
+      saudiMakkahZiyaraPassengers,
+      saudiMadinaZiyaraPassengers,
+      saudiTransportPassengers,
+      saudiCampFeePassengers,
+      saudiAlMashayerPassengers,
+      saudiOthersPassengers,
+      totals
+    } = req.body;
+
+    // Get the grand total from the payload
+    const packageTotal = totals?.grandTotal || existingPackage.totalPrice || 0;
+
+    // Prepare update object
+    const updateData = {
+      updatedAt: new Date()
+    };
+
+    // Update costing fields if provided
+    if (sarToBdtRate !== undefined) {
+      updateData.sarToBdtRate = parseFloat(sarToBdtRate) || 1;
+    }
+
+    if (discount !== undefined) {
+      updateData.discount = parseFloat(discount) || 0;
+    }
+
+    if (costs !== undefined) {
+      updateData.costs = costs || {};
+    }
+
+    if (totals !== undefined) {
+      updateData.totals = totals || {};
+    }
+
+    // Update passenger arrays if provided
+    if (bangladeshVisaPassengers !== undefined) {
+      updateData.bangladeshVisaPassengers = bangladeshVisaPassengers || [];
+    }
+    if (bangladeshAirfarePassengers !== undefined) {
+      updateData.bangladeshAirfarePassengers = bangladeshAirfarePassengers || [];
+    }
+    if (bangladeshBusPassengers !== undefined) {
+      updateData.bangladeshBusPassengers = bangladeshBusPassengers || [];
+    }
+    if (bangladeshTrainingOtherPassengers !== undefined) {
+      updateData.bangladeshTrainingOtherPassengers = bangladeshTrainingOtherPassengers || [];
+    }
+    if (saudiVisaPassengers !== undefined) {
+      updateData.saudiVisaPassengers = saudiVisaPassengers || [];
+    }
+    if (saudiMakkahHotelPassengers !== undefined) {
+      updateData.saudiMakkahHotelPassengers = saudiMakkahHotelPassengers || [];
+    }
+    if (saudiMadinaHotelPassengers !== undefined) {
+      updateData.saudiMadinaHotelPassengers = saudiMadinaHotelPassengers || [];
+    }
+    if (saudiMakkahFoodPassengers !== undefined) {
+      updateData.saudiMakkahFoodPassengers = saudiMakkahFoodPassengers || [];
+    }
+    if (saudiMadinaFoodPassengers !== undefined) {
+      updateData.saudiMadinaFoodPassengers = saudiMadinaFoodPassengers || [];
+    }
+    if (saudiMakkahZiyaraPassengers !== undefined) {
+      updateData.saudiMakkahZiyaraPassengers = saudiMakkahZiyaraPassengers || [];
+    }
+    if (saudiMadinaZiyaraPassengers !== undefined) {
+      updateData.saudiMadinaZiyaraPassengers = saudiMadinaZiyaraPassengers || [];
+    }
+    if (saudiTransportPassengers !== undefined) {
+      updateData.saudiTransportPassengers = saudiTransportPassengers || [];
+    }
+    if (saudiCampFeePassengers !== undefined) {
+      updateData.saudiCampFeePassengers = saudiCampFeePassengers || [];
+    }
+    if (saudiAlMashayerPassengers !== undefined) {
+      updateData.saudiAlMashayerPassengers = saudiAlMashayerPassengers || [];
+    }
+    if (saudiOthersPassengers !== undefined) {
+      updateData.saudiOthersPassengers = saudiOthersPassengers || [];
+    }
+
+    // Update total price based on grand total
+    updateData.totalPrice = packageTotal;
+
+    // Update the package
+    await agentPackages.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateData }
+    );
+
+    // Get the agent ID from the existing package
+    const agentId = existingPackage.agentId;
+
+    // Recalculate all due amounts from all packages for this agent
+    const allPackages = await agentPackages.find({ agentId: agentId }).toArray();
+
+    let calculatedTotal = 0;
+    let calculatedHajj = 0;
+    let calculatedUmrah = 0;
+
+    // Calculate totals from all packages
+    for (const pkg of allPackages) {
+      const pkgType = (pkg.customPackageType || pkg.packageType || 'Regular').toLowerCase();
+      const pkgTotal = pkg.totalPrice || 0;
+      const isPkgHajj = pkgType.includes('haj') || pkgType.includes('hajj');
+      const isPkgUmrah = pkgType.includes('umrah');
+
+      calculatedTotal += pkgTotal;
+      if (isPkgHajj) calculatedHajj += pkgTotal;
+      if (isPkgUmrah) calculatedUmrah += pkgTotal;
+    }
+
+    console.log('Recalculated Due Amounts after costing update:', {
+      total: calculatedTotal,
+      haj: calculatedHajj,
+      umrah: calculatedUmrah
+    });
+
+    // Update agent due amounts
+    await agents.updateOne(
+      { _id: agentId },
+      {
+        $set: {
+          totalDue: calculatedTotal,
+          hajDue: calculatedHajj,
+          umrahDue: calculatedUmrah,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    // Fetch the updated package with agent details
+    const updatedPackage = await agentPackages.findOne({ _id: new ObjectId(id) });
+    const updatedAgent = await agents.findOne({ _id: agentId });
+
+    res.status(200).json({
+      success: true,
+      message: 'Package costing added/updated successfully',
+      data: {
+        ...updatedPackage,
+        agent: updatedAgent
+      }
+    });
+  } catch (error) {
+    console.error('Add costing error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add/update package costing',
       error: error.message
     });
   }
