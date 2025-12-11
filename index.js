@@ -12711,6 +12711,7 @@ app.post('/haj-umrah/packages', async (req, res) => {
     }
 
     // Ensure totals.passengerTotals structure exists
+    // Passenger totals are stored separately: adult, child, infant
     const totalsData = totals || {};
     if (!totalsData.passengerTotals) {
       totalsData.passengerTotals = {
@@ -12719,18 +12720,19 @@ app.post('/haj-umrah/packages', async (req, res) => {
         infant: 0
       };
     } else {
-      // Ensure all three passenger types are present
+      // Ensure all three passenger types are present and properly formatted
       totalsData.passengerTotals = {
-        adult: parseFloat(totalsData.passengerTotals.adult) || 0,
-        child: parseFloat(totalsData.passengerTotals.child) || 0,
-        infant: parseFloat(totalsData.passengerTotals.infant) || 0
+        adult: Number((parseFloat(totalsData.passengerTotals.adult) || 0).toFixed(2)),
+        child: Number((parseFloat(totalsData.passengerTotals.child) || 0).toFixed(2)),
+        infant: Number((parseFloat(totalsData.passengerTotals.infant) || 0).toFixed(2))
       };
     }
 
     // Create package document
-    // Important: totalPrice is the main sale price set during creation.
+    // Important: totalPrice is optional and should be set separately if needed.
     // It should NEVER be updated by the costing endpoint (/packages/:id/costing).
     // The costing endpoint only updates costs, totals.grandTotal, etc.
+    // Passenger totals (adult, child, infant) are stored separately in totals.passengerTotals
     const packageDoc = {
       packageName: String(packageName),
       packageYear: String(packageYear),
@@ -12740,9 +12742,16 @@ app.post('/haj-umrah/packages', async (req, res) => {
       sarToBdtRate: parseFloat(sarToBdtRate) || 0,
       notes: notes || '',
       status: status || 'Active',
-      totalPrice: parseFloat(totalPrice) || 0, // Main sale price - set once during creation
+      totalPrice: totalPrice !== undefined && totalPrice !== null && totalPrice !== '' 
+        ? Number((parseFloat(totalPrice) || 0).toFixed(2)) 
+        : 0, // Optional: only set if provided
       costs: costs || {},
-      totals: totalsData,
+      totals: totalsData, // Contains passengerTotals with adult, child, infant separately
+      assignedPassengerCounts: {
+        adult: 0,
+        child: 0,
+        infant: 0
+      }, // Track assigned passenger counts for profit/loss calculation
       createdAt: new Date(),
       updatedAt: new Date()
     };
@@ -12809,6 +12818,14 @@ app.get('/haj-umrah/packages', async (req, res) => {
           adult: parseFloat(pkg.totals.passengerTotals.adult) || 0,
           child: parseFloat(pkg.totals.passengerTotals.child) || 0,
           infant: parseFloat(pkg.totals.passengerTotals.infant) || 0
+        };
+      }
+      // Ensure assignedPassengerCounts exists
+      if (!pkg.assignedPassengerCounts) {
+        pkg.assignedPassengerCounts = {
+          adult: 0,
+          child: 0,
+          infant: 0
         };
       }
       return pkg;
@@ -12880,36 +12897,59 @@ app.get('/haj-umrah/packages/:id', async (req, res) => {
       };
     }
 
-    // Profit & Loss section (Costing Price vs Package Price)
-    const passengerCosts = {
+    // Ensure assignedPassengerCounts exists
+    const assignedCounts = package.assignedPassengerCounts || {
+      adult: 0,
+      child: 0,
+      infant: 0
+    };
+
+    // Get original prices (from totals.passengerTotals - set during package creation)
+    const originalPrices = {
       adult: parseFloat(package.totals?.passengerTotals?.adult) || 0,
       child: parseFloat(package.totals?.passengerTotals?.child) || 0,
       infant: parseFloat(package.totals?.passengerTotals?.infant) || 0
     };
 
-    // If grandTotal missing, fallback to sum of passenger costs
-    const passengerCostSum = passengerCosts.adult + passengerCosts.child + passengerCosts.infant;
-    const costingPrice =
-      Number.isFinite(parseFloat(package.totals?.grandTotal))
-        ? parseFloat(package.totals?.grandTotal)
-        : passengerCostSum;
+    // Get costing prices (from totals.costingPassengerTotals - set during costing)
+    const costingPrices = {
+      adult: parseFloat(package.totals?.costingPassengerTotals?.adult) || 0,
+      child: parseFloat(package.totals?.costingPassengerTotals?.child) || 0,
+      infant: parseFloat(package.totals?.costingPassengerTotals?.infant) || 0
+    };
 
-    // Original sale price set during creation (do NOT fallback to costing)
-    const packagePrice = parseFloat(package.totalPrice) || 0;
-    const profitLoss = packagePrice - costingPrice;
+    // Calculate Total Original Price based on assigned passengers
+    const totalOriginalPrice = 
+      (assignedCounts.adult * originalPrices.adult) +
+      (assignedCounts.child * originalPrices.child) +
+      (assignedCounts.infant * originalPrices.infant);
 
-    // Allocate sale price proportionally to passenger cost share to show per-type profit
-    const totalCostForShare = passengerCostSum || 1; // avoid div/0
-    const passengerSaleAllocation = {
-      adult: (packagePrice * (passengerCosts.adult / totalCostForShare)) || 0,
-      child: (packagePrice * (passengerCosts.child / totalCostForShare)) || 0,
-      infant: (packagePrice * (passengerCosts.infant / totalCostForShare)) || 0
+    // Calculate Total Costing Price based on assigned passengers
+    const totalCostingPrice = 
+      (assignedCounts.adult * costingPrices.adult) +
+      (assignedCounts.child * costingPrices.child) +
+      (assignedCounts.infant * costingPrices.infant);
+
+    // Calculate Profit/Loss
+    const profitOrLoss = totalOriginalPrice - totalCostingPrice;
+
+    // Calculate per-type totals for display
+    const passengerOriginalTotals = {
+      adult: assignedCounts.adult * originalPrices.adult,
+      child: assignedCounts.child * originalPrices.child,
+      infant: assignedCounts.infant * originalPrices.infant
+    };
+
+    const passengerCostingTotals = {
+      adult: assignedCounts.adult * costingPrices.adult,
+      child: assignedCounts.child * costingPrices.child,
+      infant: assignedCounts.infant * costingPrices.infant
     };
 
     const passengerProfit = {
-      adult: passengerSaleAllocation.adult - passengerCosts.adult,
-      child: passengerSaleAllocation.child - passengerCosts.child,
-      infant: passengerSaleAllocation.infant - passengerCosts.infant
+      adult: passengerOriginalTotals.adult - passengerCostingTotals.adult,
+      child: passengerOriginalTotals.child - passengerCostingTotals.child,
+      infant: passengerOriginalTotals.infant - passengerCostingTotals.infant
     };
 
     res.json({
@@ -12917,12 +12957,27 @@ app.get('/haj-umrah/packages/:id', async (req, res) => {
       data: {
         ...package,
         profitLoss: {
-          costingPrice,
-          packagePrice,
-          profitOrLoss: profitLoss,
-          passengerCosts,
-          passengerSaleAllocation,
-          passengerProfit
+          assignedPassengerCounts: assignedCounts,
+          originalPrices: originalPrices,
+          costingPrices: costingPrices,
+          totalOriginalPrice: Number(totalOriginalPrice.toFixed(2)),
+          totalCostingPrice: Number(totalCostingPrice.toFixed(2)),
+          profitOrLoss: Number(profitOrLoss.toFixed(2)),
+          passengerOriginalTotals: {
+            adult: Number(passengerOriginalTotals.adult.toFixed(2)),
+            child: Number(passengerOriginalTotals.child.toFixed(2)),
+            infant: Number(passengerOriginalTotals.infant.toFixed(2))
+          },
+          passengerCostingTotals: {
+            adult: Number(passengerCostingTotals.adult.toFixed(2)),
+            child: Number(passengerCostingTotals.child.toFixed(2)),
+            infant: Number(passengerCostingTotals.infant.toFixed(2))
+          },
+          passengerProfit: {
+            adult: Number(passengerProfit.adult.toFixed(2)),
+            child: Number(passengerProfit.child.toFixed(2)),
+            infant: Number(passengerProfit.infant.toFixed(2))
+          }
         }
       }
     });
@@ -12961,6 +13016,27 @@ app.put('/haj-umrah/packages/:id', async (req, res) => {
       updatedAt: new Date()
     };
 
+    // Preserve assignedPassengerCounts if not provided in update
+    if (!updateData.assignedPassengerCounts) {
+      const existingCounts = existingPackage.assignedPassengerCounts;
+      if (existingCounts) {
+        updateData.assignedPassengerCounts = existingCounts;
+      } else {
+        updateData.assignedPassengerCounts = {
+          adult: 0,
+          child: 0,
+          infant: 0
+        };
+      }
+    } else {
+      // Ensure all three passenger types are present
+      updateData.assignedPassengerCounts = {
+        adult: parseInt(updateData.assignedPassengerCounts.adult) || 0,
+        child: parseInt(updateData.assignedPassengerCounts.child) || 0,
+        infant: parseInt(updateData.assignedPassengerCounts.infant) || 0
+      };
+    }
+
     // Ensure totals.passengerTotals structure exists if totals is being updated
     if (updateData.totals) {
       if (!updateData.totals.passengerTotals) {
@@ -12982,6 +13058,10 @@ app.put('/haj-umrah/packages/:id', async (req, res) => {
           child: parseFloat(updateData.totals.passengerTotals.child) || 0,
           infant: parseFloat(updateData.totals.passengerTotals.infant) || 0
         };
+      }
+      // Preserve costingPassengerTotals if not provided
+      if (!updateData.totals.costingPassengerTotals && existingPackage.totals?.costingPassengerTotals) {
+        updateData.totals.costingPassengerTotals = existingPackage.totals.costingPassengerTotals;
       }
     }
 
@@ -13195,11 +13275,28 @@ app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
       return acc;
     }, {});
 
+    // Store costing prices separately - don't update original passengerTotals
+    // costingPassengerTotals will be used for profit/loss calculation
+    const costingPassengerTotals = {
+      adult: Number(passengerTotals.adult.toFixed(2)),
+      child: Number(passengerTotals.child.toFixed(2)),
+      infant: Number(passengerTotals.infant.toFixed(2))
+    };
+
+    // Preserve existing passengerTotals (original prices) if they exist
+    const existingTotals = existingPackage.totals || {};
+    const preservedPassengerTotals = existingTotals.passengerTotals || {
+      adult: 0,
+      child: 0,
+      infant: 0
+    };
+
     const computedTotals = {
       total: Number(totalBD.toFixed(2)),
       totalBD: Number(totalBD.toFixed(2)),
       grandTotal: Number(grandTotal.toFixed(2)),
-      passengerTotals
+      passengerTotals: preservedPassengerTotals, // Keep original prices
+      costingPassengerTotals: costingPassengerTotals // Store costing prices separately
     };
 
     const updateData = {
@@ -13464,7 +13561,30 @@ app.post('/haj-umrah/packages/:id/assign-passenger', async (req, res) => {
       updateData
     );
 
+    // Increment assigned passenger count in package
+    const currentCounts = package.assignedPassengerCounts || {
+      adult: 0,
+      child: 0,
+      infant: 0
+    };
+
+    const updatedCounts = {
+      ...currentCounts,
+      [passengerTypeKey]: (currentCounts[passengerTypeKey] || 0) + 1
+    };
+
+    await packages.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          assignedPassengerCounts: updatedCounts,
+          updatedAt: new Date()
+        }
+      }
+    );
+
     const updatedPassenger = await targetCollection.findOne({ _id: passenger._id });
+    const updatedPackage = await packages.findOne({ _id: new ObjectId(id) });
 
     res.json({
       success: true,
@@ -13472,10 +13592,11 @@ app.post('/haj-umrah/packages/:id/assign-passenger', async (req, res) => {
       data: {
         passenger: updatedPassenger,
         package: {
-          _id: package._id,
-          packageName: package.packageName,
+          _id: updatedPackage._id,
+          packageName: updatedPackage.packageName,
           passengerType: passengerTypeKey,
-          price: selectedPrice
+          price: selectedPrice,
+          assignedPassengerCounts: updatedCounts
         }
       }
     });
