@@ -10471,7 +10471,7 @@ app.post("/haj-umrah/haji", async (req, res) => {
       manualSerialNumber: data.manualSerialNumber || '',
 
       serviceType: 'hajj',
-      serviceStatus: data.serviceStatus || (data.paymentStatus === 'paid' ? 'confirmed' : 'pending'),
+      serviceStatus: data.serviceStatus || (data.paymentStatus === 'paid' ? 'confirmed' : 'pending') || '',
 
       totalAmount: Number(data.totalAmount || 0),
       paidAmount: Number(data.paidAmount || 0),
@@ -10597,7 +10597,7 @@ app.get("/haj-umrah/haji/:id", async (req, res) => {
         totalPaid,
         due,
         paymentStatus: normalizedPaymentStatus,
-        serviceStatus: normalizedServiceStatus,
+        serviceStatus: normalizedServiceStatus || '',
         ...(typeof hajjDue === 'number' ? { hajjDue } : {}),
         ...(typeof umrahDue === 'number' ? { umrahDue } : {})
       }
@@ -10751,7 +10751,8 @@ app.post("/haj-umrah/haji/bulk", async (req, res) => {
           referenceBy: rawData['Reference By'] || rawData['reference by'] || rawData['Reference'] || rawData.referenceBy || null,
           totalAmount: rawData['Total Amount'] || rawData['total amount'] || rawData.totalAmount || 0,
           paidAmount: rawData['Paid Amount'] || rawData['paid amount'] || rawData.paidAmount || 0,
-          notes: rawData['Notes'] || rawData['notes'] || rawData.notes || null
+          notes: rawData['Notes'] || rawData['notes'] || rawData.notes || null,
+          serviceStatus: rawData['Service Status'] || rawData['service status'] || rawData.serviceStatus || ''
         };
 
         // Validate required fields
@@ -10821,10 +10822,10 @@ app.post("/haj-umrah/haji/bulk", async (req, res) => {
           isActive: true,
 
           referenceBy: data.referenceBy ? String(data.referenceBy).trim() : null,
-        manualSerialNumber: rawData.manualSerialNumber || rawData['Manual Serial Number'] || rawData['manual serial number'] || '',
+          manualSerialNumber: rawData.manualSerialNumber || rawData['Manual Serial Number'] || rawData['manual serial number'] || '',
 
           serviceType: 'hajj',
-          serviceStatus: 'pending',
+          serviceStatus: data.serviceStatus || '',
 
           totalAmount: Number(data.totalAmount || 0),
           paidAmount: Number(data.paidAmount || 0),
@@ -11310,7 +11311,8 @@ app.post("/haj-umrah/umrah/bulk", async (req, res) => {
           referenceBy: rawData['Reference By'] || rawData['reference by'] || rawData['Reference'] || rawData.referenceBy || null,
           totalAmount: rawData['Total Amount'] || rawData['total amount'] || rawData.totalAmount || 0,
           paidAmount: rawData['Paid Amount'] || rawData['paid amount'] || rawData.paidAmount || 0,
-          notes: rawData['Notes'] || rawData['notes'] || rawData.notes || null
+          notes: rawData['Notes'] || rawData['notes'] || rawData.notes || null,
+          serviceStatus: rawData['Service Status'] || rawData['service status'] || rawData.serviceStatus || ''
         };
 
         // Validate required fields
@@ -11383,7 +11385,7 @@ app.post("/haj-umrah/umrah/bulk", async (req, res) => {
         manualSerialNumber: rawData.manualSerialNumber || rawData['Manual Serial Number'] || rawData['manual serial number'] || '',
 
           serviceType: 'umrah',
-          serviceStatus: 'pending',
+          serviceStatus: data.serviceStatus || '',
 
           totalAmount: Number(data.totalAmount || 0),
           paidAmount: Number(data.paidAmount || 0),
