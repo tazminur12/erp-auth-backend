@@ -10986,6 +10986,13 @@ app.post("/haj-umrah/umrah", async (req, res) => {
       referenceBy: data.referenceBy || null,
       manualSerialNumber: data.manualSerialNumber || '',
 
+      photo: data.photo || data.photoUrl || '',
+      photoUrl: data.photo || data.photoUrl || '',
+      passportCopy: data.passportCopy || data.passportCopyUrl || '',
+      passportCopyUrl: data.passportCopy || data.passportCopyUrl || '',
+      nidCopy: data.nidCopy || data.nidCopyUrl || '',
+      nidCopyUrl: data.nidCopy || data.nidCopyUrl || '',
+
       serviceType: 'umrah',
       serviceStatus: data.serviceStatus || (data.paymentStatus === 'paid' ? 'confirmed' : 'pending'),
 
@@ -11198,6 +11205,13 @@ app.put("/haj-umrah/umrah/:id", async (req, res) => {
     // Remove fields that shouldn't be updated
     delete updates._id;
     delete updates.createdAt;
+
+    updates.photo = updates.photo || updates.photoUrl || '';
+    updates.photoUrl = updates.photo || updates.photoUrl || '';
+    updates.passportCopy = updates.passportCopy || updates.passportCopyUrl || '';
+    updates.passportCopyUrl = updates.passportCopy || updates.passportCopyUrl || '';
+    updates.nidCopy = updates.nidCopy || updates.nidCopyUrl || '';
+    updates.nidCopyUrl = updates.nidCopy || updates.nidCopyUrl || '';
 
     if (updates.email) {
       const emailRegex = /^\S+@\S+\.\S+$/;
