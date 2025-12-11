@@ -10470,6 +10470,10 @@ app.post("/haj-umrah/haji", async (req, res) => {
       referenceBy: data.referenceBy || null,
       manualSerialNumber: data.manualSerialNumber || '',
 
+      photo: data.photo || data.photoUrl || '',
+      passportCopy: data.passportCopy || data.passportCopyUrl || '',
+      nidCopy: data.nidCopy || data.nidCopyUrl || '',
+
       serviceType: 'hajj',
       serviceStatus: data.serviceStatus || (data.paymentStatus === 'paid' ? 'confirmed' : 'pending') || '',
 
@@ -10536,12 +10540,20 @@ app.get("/haj-umrah/haji", async (req, res) => {
     if (isActive !== undefined) filter.isActive = String(isActive) === 'true';
 
     const total = await haji.countDocuments(filter);
-    const data = await haji
+    const rawData = await haji
       .find(filter)
       .sort({ createdAt: -1 })
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
       .toArray();
+
+    // Ensure photo/passportCopy/nidCopy fields are always present
+    const data = rawData.map((doc) => ({
+      ...doc,
+      photo: doc?.photo || doc?.photoUrl || '',
+      passportCopy: doc?.passportCopy || doc?.passportCopyUrl || '',
+      nidCopy: doc?.nidCopy || doc?.nidCopyUrl || ''
+    }));
 
     res.json({
       success: true,
@@ -10592,6 +10604,9 @@ app.get("/haj-umrah/haji/:id", async (req, res) => {
       data: {
         ...doc,
         area: doc?.area || null,
+        photo: doc?.photo || doc?.photoUrl || '',
+        passportCopy: doc?.passportCopy || doc?.passportCopyUrl || '',
+        nidCopy: doc?.nidCopy || doc?.nidCopyUrl || '',
         totalAmount,
         paidAmount,
         totalPaid,
@@ -10620,6 +10635,9 @@ app.put("/haj-umrah/haji/:id", async (req, res) => {
 
     // Ensure manualSerialNumber always exists (fallback to empty string)
     updates.manualSerialNumber = updates.manualSerialNumber || '';
+    updates.photo = updates.photo || updates.photoUrl || '';
+    updates.passportCopy = updates.passportCopy || updates.passportCopyUrl || '';
+    updates.nidCopy = updates.nidCopy || updates.nidCopyUrl || '';
 
     if (updates.email) {
       const emailRegex = /^\S+@\S+\.\S+$/;
