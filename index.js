@@ -12698,7 +12698,8 @@ app.post('/haj-umrah/packages', async (req, res) => {
       notes,
       costs,
       totals,
-      status
+      status,
+      totalPrice // Main sale price - set during creation, never updated by costing endpoint
     } = req.body;
 
     // Validation
@@ -12727,6 +12728,9 @@ app.post('/haj-umrah/packages', async (req, res) => {
     }
 
     // Create package document
+    // Important: totalPrice is the main sale price set during creation.
+    // It should NEVER be updated by the costing endpoint (/packages/:id/costing).
+    // The costing endpoint only updates costs, totals.grandTotal, etc.
     const packageDoc = {
       packageName: String(packageName),
       packageYear: String(packageYear),
@@ -12736,6 +12740,7 @@ app.post('/haj-umrah/packages', async (req, res) => {
       sarToBdtRate: parseFloat(sarToBdtRate) || 0,
       notes: notes || '',
       status: status || 'Active',
+      totalPrice: parseFloat(totalPrice) || 0, // Main sale price - set once during creation
       costs: costs || {},
       totals: totalsData,
       createdAt: new Date(),
@@ -13048,7 +13053,8 @@ app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
       saudiTransportPassengers,
       saudiCampFeePassengers,
       saudiAlMashayerPassengers,
-      saudiOthersPassengers
+      saudiOthersPassengers,
+      totalPrice: _totalPrice // Explicitly ignore totalPrice if sent in request
     } = req.body;
 
     const toNumber = (val, fallback = 0) => {
@@ -13251,8 +13257,10 @@ app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
       updateData.saudiOthersPassengers = saudiOthersPassengers || [];
     }
 
-    // Important: totalPrice stays as the originally set sale price.
-    // totals.grandTotal reflects the calculated costing.
+    // Important: totalPrice (main sale price) must NEVER be updated in this endpoint.
+    // It should remain as the originally set sale price when package was created.
+    // totals.grandTotal reflects the calculated costing, not the sale price.
+    // We explicitly exclude totalPrice from updateData to ensure it's never changed.
     await packages.updateOne(
       { _id: new ObjectId(id) },
       { $set: updateData }
