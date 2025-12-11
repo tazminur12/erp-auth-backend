@@ -10671,9 +10671,14 @@ app.get("/haj-umrah/haji/:id", async (req, res) => {
     const paidAmount = Number(doc?.paidAmount || 0);
     const totalPaid = paidAmount; // alias for UI expectations
     const due = Math.max(totalAmount - paidAmount, 0);
+    const isDependent = doc?.primaryHolderId && String(doc.primaryHolderId) !== String(doc?._id);
     const familyTotal = Number(doc?.familyTotal || 0);
     const familyPaid = Number(doc?.familyPaid || 0);
     const familyDue = Number.isFinite(doc?.familyDue) ? Number(doc.familyDue) : Math.max(familyTotal - familyPaid, 0);
+    // For primary holders, expose family aggregates; for dependents, hide amounts (0)
+    const visibleTotal = isDependent ? 0 : (familyTotal || totalAmount);
+    const visiblePaid = isDependent ? 0 : (familyPaid || paidAmount);
+    const visibleDue = isDependent ? 0 : (familyDue || due);
     const normalizedRelations = Array.isArray(doc?.relations)
       ? doc.relations.map((rel) => ({
           relatedHajiId: rel?.relatedHajiId ? String(rel.relatedHajiId) : null,
@@ -10697,10 +10702,13 @@ app.get("/haj-umrah/haji/:id", async (req, res) => {
         photo: doc?.photo || doc?.photoUrl || '',
         passportCopy: doc?.passportCopy || doc?.passportCopyUrl || '',
         nidCopy: doc?.nidCopy || doc?.nidCopyUrl || '',
-        totalAmount,
-        paidAmount,
-        totalPaid,
-        due,
+        totalAmount: visibleTotal,
+        paidAmount: visiblePaid,
+        totalPaid: visiblePaid,
+        due: visibleDue,
+        displayTotalAmount: visibleTotal,
+        displayPaidAmount: visiblePaid,
+        displayDue: visibleDue,
         familyTotal,
         familyPaid,
         familyDue,
