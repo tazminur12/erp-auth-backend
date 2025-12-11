@@ -339,6 +339,7 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
                 clampH.updatedAt = new Date();
                 await haji.updateOne({ _id: hajiDoc._id }, { $set: clampH }, { session });
               }
+              await triggerFamilyRecomputeForHaji(afterH, { session });
             }
 
             // Additionally, if this customer also exists in the Umrah collection by id/customerId, update paidAmount there on credit
@@ -430,6 +431,7 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
             clamp.updatedAt = new Date();
             await haji.updateOne({ _id: doc._id }, { $set: clamp }, { session });
           }
+          await triggerFamilyRecomputeForHaji(after, { session });
         }
       }
       // Umrah branch: on credit, increase paidAmount
@@ -537,6 +539,57 @@ const isValidDate = (dateString) => {
   const date = new Date(dateString);
   return date instanceof Date && !isNaN(date) && dateString.match(/^\d{4}-\d{2}-\d{2}$/);
 };
+
+// Helper: safely create ObjectId
+const toObjectId = (value) => {
+  if (value === null || value === undefined) return null;
+  return ObjectId.isValid(value) ? new ObjectId(value) : null;
+};
+
+// Helper: recompute family totals for a primary haji profile
+async function recomputeFamilyTotals(primaryId, { session } = {}) {
+  const primaryObjectId = toObjectId(primaryId);
+  if (!primaryObjectId) return null;
+
+  const primaryDoc = await haji.findOne({ _id: primaryObjectId }, { session });
+  if (!primaryDoc) return null;
+
+  const dependents = await haji
+    .find({ primaryHolderId: primaryObjectId }, { session })
+    .toArray();
+
+  const allMembers = [primaryDoc, ...dependents];
+  const familyTotal = allMembers.reduce(
+    (sum, member) => sum + Number(member?.totalAmount || 0),
+    0
+  );
+  const familyPaid = allMembers.reduce(
+    (sum, member) => sum + Number(member?.paidAmount || 0),
+    0
+  );
+  const familyDue = Math.max(familyTotal - familyPaid, 0);
+
+  await haji.updateOne(
+    { _id: primaryObjectId },
+    { $set: { familyTotal, familyPaid, familyDue, updatedAt: new Date() } },
+    { session }
+  );
+
+  return {
+    familyTotal,
+    familyPaid,
+    familyDue,
+    members: allMembers,
+  };
+}
+
+// Helper: trigger recompute using a haji document (uses primaryHolderId when present)
+async function triggerFamilyRecomputeForHaji(hajiDoc, { session } = {}) {
+  if (!hajiDoc) return;
+  const target = hajiDoc.primaryHolderId || hajiDoc._id;
+  if (!target) return;
+  await recomputeFamilyTotals(target, { session });
+}
 
 // Helper: Generate unique ID for user
 const generateUniqueId = async (db, branchCode) => {
@@ -5500,6 +5553,7 @@ app.post("/api/transactions", async (req, res) => {
               clampH.updatedAt = new Date();
               await haji.updateOne({ _id: hajiDoc._id }, { $set: clampH }, { session });
             }
+            await triggerFamilyRecomputeForHaji(afterH, { session });
           }
           
           // Additionally, if this customer also exists in the Umrah collection by id/customerId, update paidAmount there on credit
@@ -5551,6 +5605,7 @@ app.post("/api/transactions", async (req, res) => {
             setClampHaji.updatedAt = new Date();
             await haji.updateOne({ _id: party._id }, { $set: setClampHaji }, { session });
           }
+          await triggerFamilyRecomputeForHaji(afterHaji, { session });
         }
 
         // Sync to linked customer (if exists via customerId)
@@ -6306,6 +6361,7 @@ app.delete("/api/transactions/:id", async (req, res) => {
                   clampH.updatedAt = new Date();
                   await haji.updateOne({ _id: hajiDoc._id }, { $set: clampH }, { session });
                 }
+                await triggerFamilyRecomputeForHaji(afterH, { session });
               }
               
               // Reverse umrah paidAmount if credit transaction
@@ -6356,6 +6412,7 @@ app.delete("/api/transactions/:id", async (req, res) => {
               setClampHaji.updatedAt = new Date();
               await haji.updateOne({ _id: hajiDoc._id }, { $set: setClampHaji }, { session });
             }
+            await triggerFamilyRecomputeForHaji(afterHaji, { session });
           }
 
           // Reverse sync to linked customer
@@ -10429,6 +10486,21 @@ app.post("/haj-umrah/haji", async (req, res) => {
     const now = new Date();
     // Generate unique Haji ID (reuse customer ID generator with 'haj' type)
     const hajiCustomerId = await generateCustomerId(db, 'haj');
+    const primaryHolderObjectId = toObjectId(data.primaryHolderId);
+    const seenRelationIds = new Set();
+    const sanitizedRelations = Array.isArray(data.relations)
+      ? data.relations
+          .map((rel) => {
+            const relId = toObjectId(rel?.relatedHajiId || rel?._id || rel?.id);
+            if (!relId || seenRelationIds.has(String(relId))) return null;
+            seenRelationIds.add(String(relId));
+            return {
+              relatedHajiId: relId,
+              relationType: rel?.relationType || 'relative',
+            };
+          })
+          .filter(Boolean)
+      : [];
     const doc = {
       customerId: data.customerId || hajiCustomerId,
       name: String(data.name).trim(),
@@ -10474,11 +10546,17 @@ app.post("/haj-umrah/haji", async (req, res) => {
       passportCopy: data.passportCopy || data.passportCopyUrl || '',
       nidCopy: data.nidCopy || data.nidCopyUrl || '',
 
+      primaryHolderId: primaryHolderObjectId,
+      relations: sanitizedRelations,
+
       serviceType: 'hajj',
       serviceStatus: data.serviceStatus || (data.paymentStatus === 'paid' ? 'confirmed' : 'pending') || '',
 
       totalAmount: Number(data.totalAmount || 0),
       paidAmount: Number(data.paidAmount || 0),
+      familyTotal: Number(data.familyTotal || 0),
+      familyPaid: Number(data.familyPaid || 0),
+      familyDue: Number(data.familyDue || 0),
       paymentMethod: data.paymentMethod || 'cash',
       paymentStatus: (function () {
         if (data.paymentStatus) return data.paymentStatus;
@@ -10509,6 +10587,9 @@ app.post("/haj-umrah/haji", async (req, res) => {
     };
 
     const result = await haji.insertOne(doc);
+    const recomputeTarget = primaryHolderObjectId || result.insertedId;
+    await recomputeFamilyTotals(recomputeTarget);
+
     return res.status(201).json({ success: true, data: { _id: result.insertedId, ...doc } });
   } catch (error) {
     console.error('Create haji error:', error);
@@ -10590,6 +10671,15 @@ app.get("/haj-umrah/haji/:id", async (req, res) => {
     const paidAmount = Number(doc?.paidAmount || 0);
     const totalPaid = paidAmount; // alias for UI expectations
     const due = Math.max(totalAmount - paidAmount, 0);
+    const familyTotal = Number(doc?.familyTotal || 0);
+    const familyPaid = Number(doc?.familyPaid || 0);
+    const familyDue = Number.isFinite(doc?.familyDue) ? Number(doc.familyDue) : Math.max(familyTotal - familyPaid, 0);
+    const normalizedRelations = Array.isArray(doc?.relations)
+      ? doc.relations.map((rel) => ({
+          relatedHajiId: rel?.relatedHajiId ? String(rel.relatedHajiId) : null,
+          relationType: rel?.relationType || null,
+        }))
+      : [];
     const hajjDue = typeof doc?.hajjDue === 'number' ? Math.max(doc.hajjDue, 0) : undefined;
     const umrahDue = typeof doc?.umrahDue === 'number' ? Math.max(doc.umrahDue, 0) : undefined;
     const normalizedPaymentStatus = (function () {
@@ -10611,6 +10701,10 @@ app.get("/haj-umrah/haji/:id", async (req, res) => {
         paidAmount,
         totalPaid,
         due,
+        familyTotal,
+        familyPaid,
+        familyDue,
+        relations: normalizedRelations,
         paymentStatus: normalizedPaymentStatus,
         serviceStatus: normalizedServiceStatus || '',
         ...(typeof hajjDue === 'number' ? { hajjDue } : {}),
@@ -10620,6 +10714,143 @@ app.get("/haj-umrah/haji/:id", async (req, res) => {
   } catch (error) {
     console.error('Get haji error:', error);
     res.status(500).json({ error: true, message: "Internal server error while fetching haji" });
+  }
+});
+
+// Add/Update relation for a Haji and set primaryHolderId on related profile
+app.post("/haj-umrah/haji/:id/relations", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { relatedHajiId, relationType } = req.body || {};
+
+    const primaryObjectId = toObjectId(id);
+    const relatedObjectId = toObjectId(relatedHajiId);
+
+    if (!primaryObjectId) {
+      return res.status(400).json({ error: true, message: "Invalid primary Haji ID" });
+    }
+    if (!relatedObjectId) {
+      return res.status(400).json({ error: true, message: "Invalid related Haji ID" });
+    }
+    if (String(primaryObjectId) === String(relatedObjectId)) {
+      return res.status(400).json({ error: true, message: "Cannot relate a Haji to themselves" });
+    }
+
+    const primaryDoc = await haji.findOne({ _id: primaryObjectId });
+    if (!primaryDoc) {
+      return res.status(404).json({ error: true, message: "Primary Haji not found" });
+    }
+
+    const relatedDoc = await haji.findOne({ _id: relatedObjectId });
+    if (!relatedDoc) {
+      return res.status(404).json({ error: true, message: "Related Haji not found" });
+    }
+
+    const updatedRelations = Array.isArray(primaryDoc.relations) ? [...primaryDoc.relations] : [];
+    const existingIndex = updatedRelations.findIndex(
+      (rel) => String(rel?.relatedHajiId) === String(relatedObjectId)
+    );
+    const newEntry = {
+      relatedHajiId: relatedObjectId,
+      relationType: relationType || 'relative',
+    };
+
+    if (existingIndex >= 0) {
+      updatedRelations[existingIndex] = { ...updatedRelations[existingIndex], ...newEntry };
+    } else {
+      updatedRelations.push(newEntry);
+    }
+
+    await haji.updateOne(
+      { _id: relatedObjectId },
+      { $set: { primaryHolderId: primaryObjectId, updatedAt: new Date() } }
+    );
+
+    await haji.updateOne(
+      { _id: primaryObjectId },
+      { $set: { relations: updatedRelations, updatedAt: new Date() } }
+    );
+
+    const summary = await recomputeFamilyTotals(primaryObjectId);
+
+    res.json({
+      success: true,
+      data: {
+        primaryId: String(primaryObjectId),
+        relations: updatedRelations.map((rel) => ({
+          relatedHajiId: rel?.relatedHajiId ? String(rel.relatedHajiId) : null,
+          relationType: rel?.relationType || null,
+        })),
+        familySummary: summary
+          ? {
+              familyTotal: summary.familyTotal,
+              familyPaid: summary.familyPaid,
+              familyDue: summary.familyDue,
+            }
+          : null,
+      },
+    });
+  } catch (error) {
+    console.error('Add haji relation error:', error);
+    res.status(500).json({ error: true, message: "Failed to add haji relation" });
+  }
+});
+
+// Get family summary for a primary Haji
+app.get("/haj-umrah/haji/:id/family-summary", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const primaryObjectId = toObjectId(id);
+    if (!primaryObjectId) {
+      return res.status(400).json({ error: true, message: "Invalid Haji ID" });
+    }
+
+    const summary = await recomputeFamilyTotals(primaryObjectId);
+    if (!summary) {
+      return res.status(404).json({ error: true, message: "Haji not found" });
+    }
+
+    const primaryIdStr = String(primaryObjectId);
+    const primaryMember = (summary.members || []).find((member) => String(member?._id) === primaryIdStr);
+    const relationLookup = new Map(
+      (primaryMember?.relations || []).map((rel) => [
+        String(rel?.relatedHajiId),
+        rel?.relationType || null,
+      ])
+    );
+    const members = (summary.members || []).map((member) => {
+      const totalAmount = Number(member?.totalAmount || 0);
+      const paidAmount = Number(member?.paidAmount || 0);
+      const due = Math.max(totalAmount - paidAmount, 0);
+      const isPrimary = String(member?._id) === primaryIdStr;
+      const relationType = relationLookup.get(String(member?._id)) || null;
+
+      return {
+        _id: member?._id ? String(member._id) : null,
+        name: member?.name || null,
+        primaryHolderId: member?.primaryHolderId ? String(member.primaryHolderId) : null,
+        totalAmount,
+        paidAmount,
+        due,
+        displayPaidAmount: isPrimary ? paidAmount : 0,
+        displayDue: isPrimary ? due : 0,
+        relationType,
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        primaryId: primaryIdStr,
+        familyTotal: summary.familyTotal,
+        familyPaid: summary.familyPaid,
+        familyDue: summary.familyDue,
+        members,
+      },
+    });
+  } catch (error) {
+    console.error('Get family summary error:', error);
+    res.status(500).json({ error: true, message: "Failed to fetch family summary" });
   }
 });
 
@@ -10652,6 +10883,24 @@ app.put("/haj-umrah/haji/:id", async (req, res) => {
       }
     }
 
+    if (updates.hasOwnProperty('primaryHolderId')) {
+      updates.primaryHolderId = updates.primaryHolderId ? toObjectId(updates.primaryHolderId) : null;
+    }
+    if (Array.isArray(updates.relations)) {
+      const seenRelationIds = new Set();
+      updates.relations = updates.relations
+        .map((rel) => {
+          const relId = toObjectId(rel?.relatedHajiId || rel?._id || rel?.id);
+          if (!relId || seenRelationIds.has(String(relId))) return null;
+          seenRelationIds.add(String(relId));
+          return {
+            relatedHajiId: relId,
+            relationType: rel?.relationType || 'relative',
+          };
+        })
+        .filter(Boolean);
+    }
+
     updates.updatedAt = new Date();
 
     if (!ObjectId.isValid(id)) {
@@ -10668,6 +10917,8 @@ app.put("/haj-umrah/haji/:id", async (req, res) => {
     if (!updatedDoc) {
       return res.status(404).json({ error: true, message: "Haji not found" });
     }
+
+    await triggerFamilyRecomputeForHaji(updatedDoc);
 
     res.json({ success: true, message: "Haji updated successfully", data: updatedDoc });
   } catch (error) {
@@ -14253,6 +14504,7 @@ app.post("/bank-accounts/:id/transactions", async (req, res) => {
               clamp.updatedAt = new Date();
               await haji.updateOne({ _id: doc._id }, { $set: clamp });
             }
+            await triggerFamilyRecomputeForHaji(after);
 
             // Mirror into linked customer if available on haji doc
             try {
