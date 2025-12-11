@@ -10468,6 +10468,7 @@ app.post("/haj-umrah/haji", async (req, res) => {
       isActive: data.isActive !== undefined ? Boolean(data.isActive) : true,
 
       referenceBy: data.referenceBy || null,
+      manualSerialNumber: data.manualSerialNumber || '',
 
       serviceType: 'hajj',
       serviceStatus: data.serviceStatus || (data.paymentStatus === 'paid' ? 'confirmed' : 'pending'),
@@ -10616,6 +10617,9 @@ app.put("/haj-umrah/haji/:id", async (req, res) => {
     // Remove fields that shouldn't be updated
     delete updates._id;
     delete updates.createdAt;
+
+    // Ensure manualSerialNumber always exists (fallback to empty string)
+    updates.manualSerialNumber = updates.manualSerialNumber || '';
 
     if (updates.email) {
       const emailRegex = /^\S+@\S+\.\S+$/;
@@ -10817,6 +10821,7 @@ app.post("/haj-umrah/haji/bulk", async (req, res) => {
           isActive: true,
 
           referenceBy: data.referenceBy ? String(data.referenceBy).trim() : null,
+        manualSerialNumber: rawData.manualSerialNumber || rawData['Manual Serial Number'] || rawData['manual serial number'] || '',
 
           serviceType: 'hajj',
           serviceStatus: 'pending',
@@ -10960,6 +10965,7 @@ app.post("/haj-umrah/umrah", async (req, res) => {
       isActive: data.isActive !== undefined ? Boolean(data.isActive) : true,
 
       referenceBy: data.referenceBy || null,
+      manualSerialNumber: data.manualSerialNumber || '',
 
       serviceType: 'umrah',
       serviceStatus: data.serviceStatus || (data.paymentStatus === 'paid' ? 'confirmed' : 'pending'),
@@ -11374,6 +11380,7 @@ app.post("/haj-umrah/umrah/bulk", async (req, res) => {
           isActive: true,
 
           referenceBy: data.referenceBy ? String(data.referenceBy).trim() : null,
+        manualSerialNumber: rawData.manualSerialNumber || rawData['Manual Serial Number'] || rawData['manual serial number'] || '',
 
           serviceType: 'umrah',
           serviceStatus: 'pending',
