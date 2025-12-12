@@ -10589,6 +10589,9 @@ app.post("/haj-umrah/haji", async (req, res) => {
 
       referenceBy: data.referenceBy || null,
       manualSerialNumber: data.manualSerialNumber || '',
+      pidNo: data.pidNo || '',
+      ngSerialNo: data.ngSerialNo || '',
+      trackingNo: data.trackingNo || '',
 
       photo: data.photo || data.photoUrl || '',
       passportCopy: data.passportCopy || data.passportCopyUrl || '',
@@ -10661,7 +10664,10 @@ app.get("/haj-umrah/haji", async (req, res) => {
         { mobile: { $regex: text, $options: 'i' } },
         { email: { $regex: text, $options: 'i' } },
         { customerId: { $regex: text, $options: 'i' } },
-        { passportNumber: { $regex: text, $options: 'i' } }
+        { passportNumber: { $regex: text, $options: 'i' } },
+        { pidNo: { $regex: text, $options: 'i' } },
+        { ngSerialNo: { $regex: text, $options: 'i' } },
+        { trackingNo: { $regex: text, $options: 'i' } }
       ];
     }
     if (serviceStatus) filter.serviceStatus = serviceStatus;
@@ -10676,13 +10682,39 @@ app.get("/haj-umrah/haji", async (req, res) => {
       .limit(limitNum)
       .toArray();
 
-    // Ensure photo/passportCopy/nidCopy fields are always present
-    const data = rawData.map((doc) => ({
-      ...doc,
-      photo: doc?.photo || doc?.photoUrl || '',
-      passportCopy: doc?.passportCopy || doc?.passportCopyUrl || '',
-      nidCopy: doc?.nidCopy || doc?.nidCopyUrl || ''
-    }));
+    // Ensure photo/passportCopy/nidCopy fields are always present and calculate balance/due
+    const data = rawData.map((doc) => {
+      const totalAmount = Number(doc?.totalAmount || 0);
+      const paidAmount = Number(doc?.paidAmount || 0);
+      const due = Math.max(totalAmount - paidAmount, 0);
+      const isDependent = doc?.primaryHolderId && String(doc.primaryHolderId) !== String(doc?._id);
+      const familyTotal = Number(doc?.familyTotal || 0);
+      const familyPaid = Number(doc?.familyPaid || 0);
+      const familyDue = Number.isFinite(doc?.familyDue) ? Number(doc.familyDue) : Math.max(familyTotal - familyPaid, 0);
+      
+      // For primary holders, expose family aggregates; for dependents, hide amounts (0)
+      const visibleTotal = isDependent ? 0 : (familyTotal || totalAmount);
+      const visiblePaid = isDependent ? 0 : (familyPaid || paidAmount);
+      const visibleDue = isDependent ? 0 : (familyDue || due);
+      
+      return {
+        ...doc,
+        photo: doc?.photo || doc?.photoUrl || '',
+        passportCopy: doc?.passportCopy || doc?.passportCopyUrl || '',
+        nidCopy: doc?.nidCopy || doc?.nidCopyUrl || '',
+        totalAmount: visibleTotal,
+        paidAmount: visiblePaid,
+        totalPaid: visiblePaid,
+        due: visibleDue,
+        balance: visibleDue, // alias for balance
+        displayTotalAmount: visibleTotal,
+        displayPaidAmount: visiblePaid,
+        displayDue: visibleDue,
+        familyTotal,
+        familyPaid,
+        familyDue
+      };
+    });
 
     res.json({
       success: true,
@@ -10922,6 +10954,9 @@ app.put("/haj-umrah/haji/:id", async (req, res) => {
 
     // Ensure manualSerialNumber always exists (fallback to empty string)
     updates.manualSerialNumber = updates.manualSerialNumber || '';
+    if (updates.hasOwnProperty('pidNo')) updates.pidNo = updates.pidNo || '';
+    if (updates.hasOwnProperty('ngSerialNo')) updates.ngSerialNo = updates.ngSerialNo || '';
+    if (updates.hasOwnProperty('trackingNo')) updates.trackingNo = updates.trackingNo || '';
     updates.photo = updates.photo || updates.photoUrl || '';
     updates.passportCopy = updates.passportCopy || updates.passportCopyUrl || '';
     updates.nidCopy = updates.nidCopy || updates.nidCopyUrl || '';
@@ -11077,7 +11112,10 @@ app.post("/haj-umrah/haji/bulk", async (req, res) => {
           totalAmount: rawData['Total Amount'] || rawData['total amount'] || rawData.totalAmount || 0,
           paidAmount: rawData['Paid Amount'] || rawData['paid amount'] || rawData.paidAmount || 0,
           notes: rawData['Notes'] || rawData['notes'] || rawData.notes || null,
-          serviceStatus: rawData['Service Status'] || rawData['service status'] || rawData.serviceStatus || ''
+          serviceStatus: rawData['Service Status'] || rawData['service status'] || rawData.serviceStatus || '',
+          pidNo: rawData['PID No'] || rawData['pid no'] || rawData['PID'] || rawData.pidNo || '',
+          ngSerialNo: rawData['NG Serial No'] || rawData['ng serial no'] || rawData['NG Serial'] || rawData.ngSerialNo || '',
+          trackingNo: rawData['Tracking No'] || rawData['tracking no'] || rawData['Tracking'] || rawData.trackingNo || ''
         };
 
         // Validate required fields
@@ -11148,6 +11186,9 @@ app.post("/haj-umrah/haji/bulk", async (req, res) => {
 
           referenceBy: data.referenceBy ? String(data.referenceBy).trim() : null,
           manualSerialNumber: rawData.manualSerialNumber || rawData['Manual Serial Number'] || rawData['manual serial number'] || '',
+          pidNo: data.pidNo || '',
+          ngSerialNo: data.ngSerialNo || '',
+          trackingNo: data.trackingNo || '',
 
           serviceType: 'hajj',
           serviceStatus: data.serviceStatus || '',
