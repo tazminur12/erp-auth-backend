@@ -11348,6 +11348,9 @@ app.post("/haj-umrah/umrah", async (req, res) => {
 
       referenceBy: data.referenceBy || null,
       manualSerialNumber: data.manualSerialNumber || '',
+      pidNo: data.pidNo || '',
+      ngSerialNo: data.ngSerialNo || '',
+      trackingNo: data.trackingNo || '',
 
       photo: data.photo || data.photoUrl || '',
       photoUrl: data.photo || data.photoUrl || '',
@@ -11422,7 +11425,10 @@ app.get("/haj-umrah/umrah", async (req, res) => {
         { mobile: { $regex: text, $options: 'i' } },
         { email: { $regex: text, $options: 'i' } },
         { customerId: { $regex: text, $options: 'i' } },
-        { passportNumber: { $regex: text, $options: 'i' } }
+        { passportNumber: { $regex: text, $options: 'i' } },
+        { pidNo: { $regex: text, $options: 'i' } },
+        { ngSerialNo: { $regex: text, $options: 'i' } },
+        { trackingNo: { $regex: text, $options: 'i' } }
       ];
     }
     if (serviceStatus) filter.serviceStatus = serviceStatus;
@@ -11742,6 +11748,9 @@ app.put("/haj-umrah/umrah/:id", async (req, res) => {
     updates.passportCopyUrl = updates.passportCopy || updates.passportCopyUrl || '';
     updates.nidCopy = updates.nidCopy || updates.nidCopyUrl || '';
     updates.nidCopyUrl = updates.nidCopy || updates.nidCopyUrl || '';
+    if (updates.hasOwnProperty('pidNo')) updates.pidNo = updates.pidNo || '';
+    if (updates.hasOwnProperty('ngSerialNo')) updates.ngSerialNo = updates.ngSerialNo || '';
+    if (updates.hasOwnProperty('trackingNo')) updates.trackingNo = updates.trackingNo || '';
 
     if (updates.email) {
       const emailRegex = /^\S+@\S+\.\S+$/;
@@ -11894,7 +11903,10 @@ app.post("/haj-umrah/umrah/bulk", async (req, res) => {
           totalAmount: rawData['Total Amount'] || rawData['total amount'] || rawData.totalAmount || 0,
           paidAmount: rawData['Paid Amount'] || rawData['paid amount'] || rawData.paidAmount || 0,
           notes: rawData['Notes'] || rawData['notes'] || rawData.notes || null,
-          serviceStatus: rawData['Service Status'] || rawData['service status'] || rawData.serviceStatus || ''
+          serviceStatus: rawData['Service Status'] || rawData['service status'] || rawData.serviceStatus || '',
+          pidNo: rawData['PID No'] || rawData['pid no'] || rawData['PID'] || rawData.pidNo || '',
+          ngSerialNo: rawData['NG Serial No'] || rawData['ng serial no'] || rawData['NG Serial'] || rawData.ngSerialNo || '',
+          trackingNo: rawData['Tracking No'] || rawData['tracking no'] || rawData['Tracking'] || rawData.trackingNo || ''
         };
 
         // Validate required fields
@@ -11965,6 +11977,9 @@ app.post("/haj-umrah/umrah/bulk", async (req, res) => {
 
           referenceBy: data.referenceBy ? String(data.referenceBy).trim() : null,
         manualSerialNumber: rawData.manualSerialNumber || rawData['Manual Serial Number'] || rawData['manual serial number'] || '',
+          pidNo: data.pidNo || '',
+          ngSerialNo: data.ngSerialNo || '',
+          trackingNo: data.trackingNo || '',
 
           serviceType: 'umrah',
           serviceStatus: data.serviceStatus || '',
