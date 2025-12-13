@@ -14162,14 +14162,82 @@ app.get('/haj-umrah/packages', async (req, res) => {
         };
       }
       // Ensure assignedPassengerCounts exists
-      if (!pkg.assignedPassengerCounts) {
-        pkg.assignedPassengerCounts = {
-          adult: 0,
-          child: 0,
-          infant: 0
-        };
-      }
-      return pkg;
+      const assignedCounts = pkg.assignedPassengerCounts || {
+        adult: 0,
+        child: 0,
+        infant: 0
+      };
+
+      // Get original prices (from totals.passengerTotals - set during package creation)
+      const originalPrices = {
+        adult: parseFloat(pkg.totals?.passengerTotals?.adult) || 0,
+        child: parseFloat(pkg.totals?.passengerTotals?.child) || 0,
+        infant: parseFloat(pkg.totals?.passengerTotals?.infant) || 0
+      };
+
+      // Get costing prices (from totals.costingPassengerTotals - set during costing)
+      const costingPrices = {
+        adult: parseFloat(pkg.totals?.costingPassengerTotals?.adult) || 0,
+        child: parseFloat(pkg.totals?.costingPassengerTotals?.child) || 0,
+        infant: parseFloat(pkg.totals?.costingPassengerTotals?.infant) || 0
+      };
+
+      // Calculate Total Original Price based on assigned passengers
+      const totalOriginalPrice = 
+        (assignedCounts.adult * originalPrices.adult) +
+        (assignedCounts.child * originalPrices.child) +
+        (assignedCounts.infant * originalPrices.infant);
+
+      // Calculate Total Costing Price based on assigned passengers
+      const totalCostingPrice = 
+        (assignedCounts.adult * costingPrices.adult) +
+        (assignedCounts.child * costingPrices.child) +
+        (assignedCounts.infant * costingPrices.infant);
+
+      // Calculate Profit/Loss
+      const profitOrLoss = totalOriginalPrice - totalCostingPrice;
+
+      // Calculate per-type totals for display
+      const passengerOriginalTotals = {
+        adult: assignedCounts.adult * originalPrices.adult,
+        child: assignedCounts.child * originalPrices.child,
+        infant: assignedCounts.infant * originalPrices.infant
+      };
+
+      const passengerCostingTotals = {
+        adult: assignedCounts.adult * costingPrices.adult,
+        child: assignedCounts.child * costingPrices.child,
+        infant: assignedCounts.infant * costingPrices.infant
+      };
+
+      const passengerProfit = {
+        adult: passengerOriginalTotals.adult - passengerCostingTotals.adult,
+        child: passengerOriginalTotals.child - passengerCostingTotals.child,
+        infant: passengerOriginalTotals.infant - passengerCostingTotals.infant
+      };
+
+      return {
+        ...pkg,
+        assignedPassengerCounts: assignedCounts,
+        totalOriginalPrice: Number(totalOriginalPrice.toFixed(2)),
+        totalCostingPrice: Number(totalCostingPrice.toFixed(2)),
+        profitOrLoss: Number(profitOrLoss.toFixed(2)),
+        passengerOriginalTotals: {
+          adult: Number(passengerOriginalTotals.adult.toFixed(2)),
+          child: Number(passengerOriginalTotals.child.toFixed(2)),
+          infant: Number(passengerOriginalTotals.infant.toFixed(2))
+        },
+        passengerCostingTotals: {
+          adult: Number(passengerCostingTotals.adult.toFixed(2)),
+          child: Number(passengerCostingTotals.child.toFixed(2)),
+          infant: Number(passengerCostingTotals.infant.toFixed(2))
+        },
+        passengerProfit: {
+          adult: Number(passengerProfit.adult.toFixed(2)),
+          child: Number(passengerProfit.child.toFixed(2)),
+          infant: Number(passengerProfit.infant.toFixed(2))
+        }
+      };
     });
 
     const total = await packages.countDocuments(filter);
@@ -14297,6 +14365,25 @@ app.get('/haj-umrah/packages/:id', async (req, res) => {
       success: true,
       data: {
         ...package,
+        assignedPassengerCounts: assignedCounts,
+        totalOriginalPrice: Number(totalOriginalPrice.toFixed(2)),
+        totalCostingPrice: Number(totalCostingPrice.toFixed(2)),
+        profitOrLoss: Number(profitOrLoss.toFixed(2)),
+        passengerOriginalTotals: {
+          adult: Number(passengerOriginalTotals.adult.toFixed(2)),
+          child: Number(passengerOriginalTotals.child.toFixed(2)),
+          infant: Number(passengerOriginalTotals.infant.toFixed(2))
+        },
+        passengerCostingTotals: {
+          adult: Number(passengerCostingTotals.adult.toFixed(2)),
+          child: Number(passengerCostingTotals.child.toFixed(2)),
+          infant: Number(passengerCostingTotals.infant.toFixed(2))
+        },
+        passengerProfit: {
+          adult: Number(passengerProfit.adult.toFixed(2)),
+          child: Number(passengerProfit.child.toFixed(2)),
+          infant: Number(passengerProfit.infant.toFixed(2))
+        },
         profitLoss: {
           assignedPassengerCounts: assignedCounts,
           originalPrices: originalPrices,
