@@ -10781,6 +10781,8 @@ app.post("/haj-umrah/haji", async (req, res) => {
       passportCopy: data.passportCopy || data.passportCopyUrl || '',
       nidCopy: data.nidCopy || data.nidCopyUrl || '',
 
+      licenseId: data.licenseId || data.license?._id || data.license?.id || '',
+
       primaryHolderId: primaryHolderObjectId,
       relations: sanitizedRelations,
 
@@ -11223,6 +11225,10 @@ app.put("/haj-umrah/haji/:id", async (req, res) => {
     updates.photo = updates.photo || updates.photoUrl || '';
     updates.passportCopy = updates.passportCopy || updates.passportCopyUrl || '';
     updates.nidCopy = updates.nidCopy || updates.nidCopyUrl || '';
+    
+    if (updates.hasOwnProperty('licenseId') || updates.hasOwnProperty('license')) {
+      updates.licenseId = updates.licenseId || updates.license?._id || updates.license?.id || '';
+    }
 
     if (updates.email) {
       const emailRegex = /^\S+@\S+\.\S+$/;
