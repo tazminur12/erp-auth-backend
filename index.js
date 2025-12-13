@@ -699,6 +699,49 @@ const generateCustomerId = async (db, customerType) => {
     }
   }
   
+  // Special handling for 'umrah' type: ensure sequential numbering from 1
+  if (customerType && customerType.toLowerCase() === 'umrah') {
+    const umrahCollection = db.collection("umrah");
+    const umrahCount = await umrahCollection.countDocuments({});
+    
+    if (umrahCount === 0) {
+      // If no umrah records exist, reset counter to 0 (so first will be 1)
+      const existingCounter = await counterCollection.findOne({ counterKey });
+      if (existingCounter && existingCounter.sequence > 0) {
+        await counterCollection.updateOne(
+          { counterKey },
+          { $set: { sequence: 0 } }
+        );
+      }
+    } else {
+      // If umrah records exist, sync counter with max customerId from actual data
+      const maxUmrah = await umrahCollection
+        .find({ customerId: { $exists: true, $ne: null } })
+        .sort({ customerId: -1 })
+        .limit(1)
+        .toArray();
+      
+      if (maxUmrah.length > 0 && maxUmrah[0].customerId) {
+        // Extract number from customerId (e.g., "UMRAH-0042" -> 42)
+        const customerIdStr = String(maxUmrah[0].customerId);
+        const match = customerIdStr.match(/-(\d+)$/);
+        if (match) {
+          const maxNumber = parseInt(match[1], 10);
+          const existingCounter = await counterCollection.findOne({ counterKey });
+          
+          // Update counter if it's lower than the max found
+          if (!existingCounter || existingCounter.sequence < maxNumber) {
+            await counterCollection.updateOne(
+              { counterKey },
+              { $set: { sequence: maxNumber } },
+              { upsert: true }
+            );
+          }
+        }
+      }
+    }
+  }
+  
   // Find or create counter
   let counter = await counterCollection.findOne({ counterKey });
   
