@@ -974,7 +974,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customerTypes, airCustomers, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications;
+let db, users, branches, counters, customerTypes, airCustomers, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -1031,6 +1031,8 @@ async function initializeDatabase() {
     airlines = db.collection("airlines");
     // Air Ticketing Tickets
     tickets = db.collection("airTickets");
+    // Licenses
+    licenses = db.collection("licenses");
   
 
 
@@ -2970,6 +2972,145 @@ app.get("/api/categories-summary", async (req, res) => {
   } catch (err) {
     console.error("/api/categories-summary GET error:", err);
     res.status(500).json({ error: true, message: "Failed to load categories summary" });
+  }
+});
+
+// ==================== LICENSE ROUTES ====================
+// Normalize a license document for response
+const normalizeLicenseDoc = (doc) => ({
+  id: String(doc._id || doc.id || ""),
+  ...(doc.name && { name: doc.name }),
+  ...(doc.licenseNumber && { licenseNumber: doc.licenseNumber }),
+  ...(doc.type && { type: doc.type }),
+  ...(doc.issuer && { issuer: doc.issuer }),
+  ...(doc.issueDate && { issueDate: doc.issueDate }),
+  ...(doc.expiryDate && { expiryDate: doc.expiryDate }),
+  ...(doc.status && { status: doc.status }),
+  ...(doc.description && { description: doc.description }),
+  ...(doc.notes && { notes: doc.notes }),
+  ...(doc.attachments && { attachments: doc.attachments }),
+  ...(doc.createdAt && { createdAt: doc.createdAt }),
+  ...(doc.updatedAt && { updatedAt: doc.updatedAt }),
+  // Include any other fields from the document
+  ...Object.fromEntries(
+    Object.entries(doc).filter(([key]) => !['_id', '__v'].includes(key) && !['id', 'name', 'licenseNumber', 'type', 'issuer', 'issueDate', 'expiryDate', 'status', 'description', 'notes', 'attachments', 'createdAt', 'updatedAt'].includes(key))
+  )
+});
+
+// GET all licenses
+app.get("/api/licenses", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    const list = await licenses.find({}).sort({ createdAt: -1 }).toArray();
+    return res.json(list.map(normalizeLicenseDoc));
+  } catch (err) {
+    console.error("/api/licenses GET error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load licenses" });
+  }
+});
+
+// GET single license by ID
+app.get("/api/licenses/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid license id" });
+    }
+    const license = await licenses.findOne({ _id: new ObjectId(id) });
+    if (!license) {
+      return res.status(404).json({ error: true, message: "License not found" });
+    }
+    return res.json(normalizeLicenseDoc(license));
+  } catch (err) {
+    console.error("/api/licenses/:id GET error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load license" });
+  }
+});
+
+// CREATE license
+app.post("/api/licenses", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+    
+    const data = req.body || {};
+    const now = new Date();
+    
+    // Create license document - accept any fields from request body
+    const doc = {
+      ...data,
+      createdAt: now,
+      updatedAt: now
+    };
+    
+    const result = await licenses.insertOne(doc);
+    const created = await licenses.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizeLicenseDoc(created));
+  } catch (err) {
+    console.error("/api/licenses POST error:", err);
+    return res.status(500).json({ error: true, message: "Failed to create license" });
+  }
+});
+
+// UPDATE license
+app.put("/api/licenses/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid license id" });
+    }
+    
+    const data = req.body || {};
+    const update = {
+      ...data,
+      updatedAt: new Date()
+    };
+    
+    // Remove _id if present (cannot update _id)
+    delete update._id;
+    delete update.id;
+    
+    const filter = { _id: new ObjectId(id) };
+    const result = await licenses.findOneAndUpdate(
+      filter,
+      { $set: update },
+      { returnDocument: 'after' }
+    );
+    
+    const updatedDoc = result && (result.value || result);
+    if (!updatedDoc) {
+      return res.status(404).json({ error: true, message: "License not found" });
+    }
+    
+    return res.json(normalizeLicenseDoc(updatedDoc));
+  } catch (err) {
+    console.error("/api/licenses/:id PUT error:", err);
+    return res.status(500).json({ error: true, message: "Failed to update license" });
+  }
+});
+
+// DELETE license
+app.delete("/api/licenses/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid license id" });
+    }
+    
+    const filter = { _id: new ObjectId(id) };
+    const result = await licenses.deleteOne(filter);
+    
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: true, message: "License not found" });
+    }
+    
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("/api/licenses/:id DELETE error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete license" });
   }
 });
 
