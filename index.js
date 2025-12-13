@@ -11738,12 +11738,42 @@ app.get("/haj-umrah/umrah", async (req, res) => {
     if (isActive !== undefined) filter.isActive = String(isActive) === 'true';
 
     const total = await umrah.countDocuments(filter);
-    const data = await umrah
+    const rawData = await umrah
       .find(filter)
       .sort({ createdAt: -1 })
       .skip((pageNum - 1) * limitNum)
       .limit(limitNum)
       .toArray();
+
+    // Fetch all primary holders to get their names (for dependents)
+    const primaryHolderIds = rawData
+      .map((doc) => doc?.primaryHolderId)
+      .filter((id) => id && ObjectId.isValid(id))
+      .map((id) => new ObjectId(id));
+    
+    const primaryHolderMap = {};
+    if (primaryHolderIds.length > 0) {
+      const uniquePrimaryIds = [...new Set(primaryHolderIds.map(String))].map((id) => new ObjectId(id));
+      const primaryHolders = await umrah
+        .find({ _id: { $in: uniquePrimaryIds } })
+        .toArray();
+      primaryHolders.forEach((holder) => {
+        primaryHolderMap[String(holder._id)] = holder.name || null;
+      });
+    }
+
+    // Add primaryHolderName to each document if it's a dependent
+    const data = rawData.map((doc) => {
+      const isDependent = doc?.primaryHolderId && String(doc.primaryHolderId) !== String(doc._id);
+      const primaryHolderName = isDependent && doc?.primaryHolderId 
+        ? primaryHolderMap[String(doc.primaryHolderId)] || null
+        : null;
+      
+      return {
+        ...doc,
+        ...(primaryHolderName ? { primaryHolderName } : {})
+      };
+    });
 
     res.json({
       success: true,
@@ -11807,6 +11837,15 @@ app.get("/haj-umrah/umrah/:id", async (req, res) => {
     })();
     const normalizedServiceStatus = doc?.serviceStatus || (normalizedPaymentStatus === 'paid' ? 'confirmed' : 'pending');
 
+    // Fetch primary holder name if this is a dependent
+    let primaryHolderName = null;
+    if (doc?.primaryHolderId && String(doc.primaryHolderId) !== String(doc._id)) {
+      const primaryHolderDoc = await umrah.findOne({ _id: toObjectId(doc.primaryHolderId) });
+      if (primaryHolderDoc) {
+        primaryHolderName = primaryHolderDoc.name || null;
+      }
+    }
+
     res.json({
       success: true,
       data: {
@@ -11826,7 +11865,8 @@ app.get("/haj-umrah/umrah/:id", async (req, res) => {
         ...(typeof hajjDue === 'number' ? { hajjDue } : {}),
         ...(typeof umrahDue === 'number' ? { umrahDue } : {}),
         paymentStatus: normalizedPaymentStatus,
-        serviceStatus: normalizedServiceStatus
+        serviceStatus: normalizedServiceStatus,
+        ...(primaryHolderName ? { primaryHolderName } : {})
       }
     });
   } catch (error) {
