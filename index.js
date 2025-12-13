@@ -10884,6 +10884,85 @@ app.post("/haj-umrah/haji/:id/relations", async (req, res) => {
   }
 });
 
+// Delete relation for a Haji and clear primaryHolderId on related profile
+app.delete("/haj-umrah/haji/:id/relations/:relatedId", async (req, res) => {
+  try {
+    const { id, relatedId } = req.params;
+
+    const primaryObjectId = toObjectId(id);
+    const relatedObjectId = toObjectId(relatedId);
+
+    if (!primaryObjectId) {
+      return res.status(400).json({ error: true, message: "Invalid primary Haji ID" });
+    }
+    if (!relatedObjectId) {
+      return res.status(400).json({ error: true, message: "Invalid related Haji ID" });
+    }
+    if (String(primaryObjectId) === String(relatedObjectId)) {
+      return res.status(400).json({ error: true, message: "Cannot delete relation to itself" });
+    }
+
+    const primaryDoc = await haji.findOne({ _id: primaryObjectId });
+    if (!primaryDoc) {
+      return res.status(404).json({ error: true, message: "Primary Haji not found" });
+    }
+
+    const relatedDoc = await haji.findOne({ _id: relatedObjectId });
+    if (!relatedDoc) {
+      return res.status(404).json({ error: true, message: "Related Haji not found" });
+    }
+
+    const updatedRelations = Array.isArray(primaryDoc.relations) ? [...primaryDoc.relations] : [];
+    const existingIndex = updatedRelations.findIndex(
+      (rel) => String(rel?.relatedHajiId) === String(relatedObjectId)
+    );
+
+    if (existingIndex < 0) {
+      return res.status(404).json({ error: true, message: "Relation not found" });
+    }
+
+    // Remove the relation from the array
+    updatedRelations.splice(existingIndex, 1);
+
+    // Clear primaryHolderId from related profile if it matches the primary
+    if (String(relatedDoc.primaryHolderId) === String(primaryObjectId)) {
+      await haji.updateOne(
+        { _id: relatedObjectId },
+        { $unset: { primaryHolderId: "" }, $set: { updatedAt: new Date() } }
+      );
+    }
+
+    // Update primary profile with removed relation
+    await haji.updateOne(
+      { _id: primaryObjectId },
+      { $set: { relations: updatedRelations, updatedAt: new Date() } }
+    );
+
+    const summary = await recomputeFamilyTotals(primaryObjectId);
+
+    res.json({
+      success: true,
+      data: {
+        primaryId: String(primaryObjectId),
+        relations: updatedRelations.map((rel) => ({
+          relatedHajiId: rel?.relatedHajiId ? String(rel.relatedHajiId) : null,
+          relationType: rel?.relationType || null,
+        })),
+        familySummary: summary
+          ? {
+              familyTotal: summary.familyTotal,
+              familyPaid: summary.familyPaid,
+              familyDue: summary.familyDue,
+            }
+          : null,
+      },
+    });
+  } catch (error) {
+    console.error('Delete haji relation error:', error);
+    res.status(500).json({ error: true, message: "Failed to delete haji relation" });
+  }
+});
+
 // Get family summary for a primary Haji
 app.get("/haj-umrah/haji/:id/family-summary", async (req, res) => {
   try {
@@ -11609,6 +11688,85 @@ app.post("/haj-umrah/umrah/:id/relations", async (req, res) => {
   } catch (error) {
     console.error('Add umrah relation error:', error);
     res.status(500).json({ error: true, message: "Failed to add umrah relation" });
+  }
+});
+
+// Delete relation for an Umrah profile and clear primaryHolderId on related profile
+app.delete("/haj-umrah/umrah/:id/relations/:relatedId", async (req, res) => {
+  try {
+    const { id, relatedId } = req.params;
+
+    const primaryObjectId = toObjectId(id);
+    const relatedObjectId = toObjectId(relatedId);
+
+    if (!primaryObjectId) {
+      return res.status(400).json({ error: true, message: "Invalid primary Umrah ID" });
+    }
+    if (!relatedObjectId) {
+      return res.status(400).json({ error: true, message: "Invalid related Umrah ID" });
+    }
+    if (String(primaryObjectId) === String(relatedObjectId)) {
+      return res.status(400).json({ error: true, message: "Cannot delete relation to itself" });
+    }
+
+    const primaryDoc = await umrah.findOne({ _id: primaryObjectId });
+    if (!primaryDoc) {
+      return res.status(404).json({ error: true, message: "Primary Umrah not found" });
+    }
+
+    const relatedDoc = await umrah.findOne({ _id: relatedObjectId });
+    if (!relatedDoc) {
+      return res.status(404).json({ error: true, message: "Related Umrah not found" });
+    }
+
+    const updatedRelations = Array.isArray(primaryDoc.relations) ? [...primaryDoc.relations] : [];
+    const existingIndex = updatedRelations.findIndex(
+      (rel) => String(rel?.relatedUmrahId) === String(relatedObjectId)
+    );
+
+    if (existingIndex < 0) {
+      return res.status(404).json({ error: true, message: "Relation not found" });
+    }
+
+    // Remove the relation from the array
+    updatedRelations.splice(existingIndex, 1);
+
+    // Clear primaryHolderId from related profile if it matches the primary
+    if (String(relatedDoc.primaryHolderId) === String(primaryObjectId)) {
+      await umrah.updateOne(
+        { _id: relatedObjectId },
+        { $unset: { primaryHolderId: "" }, $set: { updatedAt: new Date() } }
+      );
+    }
+
+    // Update primary profile with removed relation
+    await umrah.updateOne(
+      { _id: primaryObjectId },
+      { $set: { relations: updatedRelations, updatedAt: new Date() } }
+    );
+
+    const summary = await recomputeUmrahFamilyTotals(primaryObjectId);
+
+    res.json({
+      success: true,
+      data: {
+        primaryId: String(primaryObjectId),
+        relations: updatedRelations.map((rel) => ({
+          relatedUmrahId: rel?.relatedUmrahId ? String(rel.relatedUmrahId) : null,
+          relationType: rel?.relationType || null,
+        })),
+        familySummary: summary
+          ? {
+              familyTotal: summary.familyTotal,
+              familyPaid: summary.familyPaid,
+              familyDue: summary.familyDue,
+            }
+          : null,
+      },
+    });
+  } catch (error) {
+    console.error('Delete umrah relation error:', error);
+    res.status(500).json({ error: true, message: "Failed to delete umrah relation" });
   }
 });
 
