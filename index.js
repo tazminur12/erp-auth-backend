@@ -15006,12 +15006,20 @@ app.get('/haj-umrah/dashboard-summary', async (req, res) => {
     hajjProfitLoss.profitLoss = hajjProfitLoss.totalRevenue - hajjProfitLoss.totalCost;
     umrahProfitLoss.profitLoss = umrahProfitLoss.totalRevenue - umrahProfitLoss.totalCost;
 
-    // 4. Agent-wise Profit/Loss
+    // 4. Agent-wise Profit/Loss (only for active agents)
+    // First, get all active agent IDs
+    const activeAgents = await agents.find({ isActive: { $ne: false } }).toArray();
+    const activeAgentIds = new Set(activeAgents.map(a => String(a._id)));
+
+    // Only process packages from active agents
     const allAgentPackages = await agentPackages.find({}).toArray();
     const agentProfitLossMap = new Map();
 
     allAgentPackages.forEach(pkg => {
       const agentId = String(pkg.agentId);
+      // Only include if agent is active
+      if (!activeAgentIds.has(agentId)) return;
+      
       if (!agentProfitLossMap.has(agentId)) {
         agentProfitLossMap.set(agentId, {
           agentId: agentId,
@@ -15030,13 +15038,19 @@ app.get('/haj-umrah/dashboard-summary', async (req, res) => {
       agentData.packageCount++;
     });
 
-    // Fetch agent names and build profit/loss array
+    // Fetch agent names and build profit/loss array (only active agents)
     const agentProfitLossArray = await Promise.all(
       Array.from(agentProfitLossMap.entries()).map(async ([agentId, data]) => {
-        const agent = await agents.findOne({ _id: new ObjectId(agentId) });
+        const agent = await agents.findOne({ 
+          _id: new ObjectId(agentId),
+          isActive: { $ne: false }
+        });
+        // Skip if agent not found or inactive
+        if (!agent) return null;
+        
         return {
           agentId: agentId,
-          agentName: agent?.tradeName || agent?.ownerName || 'Unknown',
+          agentName: agent.tradeName || agent.ownerName || 'Unknown',
           totalRevenue: Number(data.totalRevenue.toFixed(2)),
           totalCost: Number(data.totalCost.toFixed(2)),
           profitLoss: Number((data.totalRevenue - data.totalCost).toFixed(2)),
@@ -15045,8 +15059,9 @@ app.get('/haj-umrah/dashboard-summary', async (req, res) => {
       })
     );
 
-    // Sort by profit/loss (highest first)
-    agentProfitLossArray.sort((a, b) => b.profitLoss - a.profitLoss);
+    // Filter out null values and sort by profit/loss (highest first)
+    const filteredAgentProfitLoss = agentProfitLossArray.filter(item => item !== null);
+    filteredAgentProfitLoss.sort((a, b) => b.profitLoss - a.profitLoss);
 
     // 5. Agent with most Haji
     // Get primary holders (where primaryHolderId is null or equals their own _id)
@@ -15065,15 +15080,22 @@ app.get('/haj-umrah/dashboard-summary', async (req, res) => {
       {
         $lookup: {
           from: 'agents',
-          localField: 'packageInfo.agentId',
-          foreignField: '_id',
+          let: { agentId: '$packageInfo.agentId' },
+          pipeline: [
+            {
+              $match: {
+                $expr: { $eq: ['$_id', '$$agentId'] },
+                isActive: { $ne: false }
+              }
+            }
+          ],
           as: 'agentDetails'
         }
       },
       {
         $unwind: {
           path: '$agentDetails',
-          preserveNullAndEmptyArrays: true
+          preserveNullAndEmptyArrays: false // Only include if agent exists and is active
         }
       },
       {
@@ -15100,15 +15122,22 @@ app.get('/haj-umrah/dashboard-summary', async (req, res) => {
       {
         $lookup: {
           from: 'agents',
-          localField: 'agentId',
-          foreignField: '_id',
+          let: { agentId: '$agentId' },
+          pipeline: [
+            {
+              $match: {
+                $expr: { $eq: ['$_id', '$$agentId'] },
+                isActive: { $ne: false }
+              }
+            }
+          ],
           as: 'agentInfo'
         }
       },
       {
         $unwind: {
           path: '$agentInfo',
-          preserveNullAndEmptyArrays: true
+          preserveNullAndEmptyArrays: false // Only include if agent exists and is active
         }
       },
       {
@@ -15123,11 +15152,14 @@ app.get('/haj-umrah/dashboard-summary', async (req, res) => {
       { $limit: 10 }
     ]).toArray();
 
-    // Merge and combine results
+    // Merge and combine results (only for active agents)
     const agentHajiMap = new Map();
     hajiByAgentFromPackageInfo.forEach(item => {
       if (!item._id) return;
       const agentId = String(item._id);
+      // Double-check agent is active
+      if (!activeAgentIds.has(agentId)) return;
+      
       if (!agentHajiMap.has(agentId)) {
         agentHajiMap.set(agentId, {
           agentId: agentId,
@@ -15141,6 +15173,9 @@ app.get('/haj-umrah/dashboard-summary', async (req, res) => {
     agentPackagesWithCustomers.forEach(item => {
       if (!item._id) return;
       const agentId = String(item._id);
+      // Double-check agent is active
+      if (!activeAgentIds.has(agentId)) return;
+      
       if (!agentHajiMap.has(agentId)) {
         agentHajiMap.set(agentId, {
           agentId: agentId,
@@ -15291,7 +15326,7 @@ app.get('/haj-umrah/dashboard-summary', async (req, res) => {
       }
     ]).toArray();
 
-    // Agent total due
+    // Agent total due (only active agents)
     const agentTotalDue = await agents.aggregate([
       { $match: { isActive: { $ne: false } } },
       {
@@ -15335,7 +15370,7 @@ app.get('/haj-umrah/dashboard-summary', async (req, res) => {
             isProfit: (hajjProfitLoss.profitLoss + umrahProfitLoss.profitLoss) > 0
           }
         },
-        agentProfitLoss: agentProfitLossArray,
+        agentProfitLoss: filteredAgentProfitLoss,
         topAgentsByHaji: topAgentsByHaji,
         topDistricts: topDistricts,
         financialSummary: {
@@ -15369,13 +15404,6 @@ app.get('/haj-umrah/dashboard-summary', async (req, res) => {
 });
 
 // ==================== BANK ACCOUNTS ROUTES ====================
-// Schema (MongoDB):
-// {
-//   bankName, accountNumber, accountType, accountCategory, branchName, accountHolder, accountTitle,
-//   initialBalance, currentBalance, currency, contactNumber, logo, createdBy, branchId,
-//   status: 'Active'|'Inactive', createdAt, updatedAt, isDeleted, balanceHistory?
-// }
-
 // Create bank account
 app.post("/bank-accounts", async (req, res) => {
   try {
