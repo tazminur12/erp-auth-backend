@@ -14945,6 +14945,429 @@ app.post('/haj-umrah/packages/:id/assign-passenger', async (req, res) => {
   }
 });
 
+// ==================== HAJJ-UMRAH DASHBOARD SUMMARY ====================
+// GET /haj-umrah/dashboard-summary - Get comprehensive dashboard statistics
+app.get('/haj-umrah/dashboard-summary', async (req, res) => {
+  try {
+    // 1. Total Haji and Umrah counts
+    const totalHajiCount = await haji.countDocuments({ isActive: { $ne: false } });
+    const totalUmrahCount = await umrah.countDocuments({ isActive: { $ne: false } });
+    
+    // 2. Total Agents count
+    const totalAgentsCount = await agents.countDocuments({ isActive: { $ne: false } });
+
+    // 3. Profit/Loss for Hajj and Umrah from packages
+    const allPackages = await packages.find({}).toArray();
+    
+    let hajjProfitLoss = {
+      totalRevenue: 0,
+      totalCost: 0,
+      profitLoss: 0,
+      packageCount: 0
+    };
+    
+    let umrahProfitLoss = {
+      totalRevenue: 0,
+      totalCost: 0,
+      profitLoss: 0,
+      packageCount: 0
+    };
+
+    allPackages.forEach(pkg => {
+      const packageType = (pkg.customPackageType || pkg.packageType || '').toLowerCase();
+      const isHajj = packageType.includes('haj') || packageType.includes('hajj');
+      const isUmrah = packageType.includes('umrah');
+      
+      const assignedCounts = pkg.assignedPassengerCounts || { adult: 0, child: 0, infant: 0 };
+      const originalPrices = pkg.totals?.passengerTotals || { adult: 0, child: 0, infant: 0 };
+      const costingPrices = pkg.totals?.costingPassengerTotals || { adult: 0, child: 0, infant: 0 };
+      
+      const revenue = 
+        (assignedCounts.adult * (parseFloat(originalPrices.adult) || 0)) +
+        (assignedCounts.child * (parseFloat(originalPrices.child) || 0)) +
+        (assignedCounts.infant * (parseFloat(originalPrices.infant) || 0));
+      
+      const cost = 
+        (assignedCounts.adult * (parseFloat(costingPrices.adult) || 0)) +
+        (assignedCounts.child * (parseFloat(costingPrices.child) || 0)) +
+        (assignedCounts.infant * (parseFloat(costingPrices.infant) || 0));
+      
+      if (isHajj) {
+        hajjProfitLoss.totalRevenue += revenue;
+        hajjProfitLoss.totalCost += cost;
+        hajjProfitLoss.packageCount++;
+      } else if (isUmrah) {
+        umrahProfitLoss.totalRevenue += revenue;
+        umrahProfitLoss.totalCost += cost;
+        umrahProfitLoss.packageCount++;
+      }
+    });
+
+    hajjProfitLoss.profitLoss = hajjProfitLoss.totalRevenue - hajjProfitLoss.totalCost;
+    umrahProfitLoss.profitLoss = umrahProfitLoss.totalRevenue - umrahProfitLoss.totalCost;
+
+    // 4. Agent-wise Profit/Loss
+    const allAgentPackages = await agentPackages.find({}).toArray();
+    const agentProfitLossMap = new Map();
+
+    allAgentPackages.forEach(pkg => {
+      const agentId = String(pkg.agentId);
+      if (!agentProfitLossMap.has(agentId)) {
+        agentProfitLossMap.set(agentId, {
+          agentId: agentId,
+          totalRevenue: 0,
+          totalCost: 0,
+          packageCount: 0
+        });
+      }
+      
+      const agentData = agentProfitLossMap.get(agentId);
+      const packagePrice = parseFloat(pkg.totalPrice) || 0;
+      const costingPrice = parseFloat(pkg.totals?.grandTotal) || 0;
+      
+      agentData.totalRevenue += packagePrice;
+      agentData.totalCost += costingPrice;
+      agentData.packageCount++;
+    });
+
+    // Fetch agent names and build profit/loss array
+    const agentProfitLossArray = await Promise.all(
+      Array.from(agentProfitLossMap.entries()).map(async ([agentId, data]) => {
+        const agent = await agents.findOne({ _id: new ObjectId(agentId) });
+        return {
+          agentId: agentId,
+          agentName: agent?.tradeName || agent?.ownerName || 'Unknown',
+          totalRevenue: Number(data.totalRevenue.toFixed(2)),
+          totalCost: Number(data.totalCost.toFixed(2)),
+          profitLoss: Number((data.totalRevenue - data.totalCost).toFixed(2)),
+          packageCount: data.packageCount
+        };
+      })
+    );
+
+    // Sort by profit/loss (highest first)
+    agentProfitLossArray.sort((a, b) => b.profitLoss - a.profitLoss);
+
+    // 5. Agent with most Haji
+    // Get primary holders (where primaryHolderId is null or equals their own _id)
+    // Check both packageInfo.agentId from haji and agentPackages
+    const hajiByAgentFromPackageInfo = await haji.aggregate([
+      { 
+        $match: { 
+          isActive: { $ne: false },
+          $or: [
+            { primaryHolderId: null },
+            { $expr: { $eq: ['$primaryHolderId', '$_id'] } }
+          ],
+          'packageInfo.agentId': { $exists: true, $ne: null }
+        } 
+      },
+      {
+        $lookup: {
+          from: 'agents',
+          localField: 'packageInfo.agentId',
+          foreignField: '_id',
+          as: 'agentDetails'
+        }
+      },
+      {
+        $unwind: {
+          path: '$agentDetails',
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $group: {
+          _id: '$agentDetails._id',
+          agentName: { $first: '$agentDetails.tradeName' },
+          ownerName: { $first: '$agentDetails.ownerName' },
+          hajiCount: { $sum: 1 }
+        }
+      }
+    ]).toArray();
+
+    // Also check from agentPackages assignedCustomers
+    const agentPackagesWithCustomers = await agentPackages.aggregate([
+      {
+        $match: { assignedCustomers: { $exists: true, $ne: [] } }
+      },
+      {
+        $project: {
+          agentId: 1,
+          assignedCustomers: 1
+        }
+      },
+      {
+        $lookup: {
+          from: 'agents',
+          localField: 'agentId',
+          foreignField: '_id',
+          as: 'agentInfo'
+        }
+      },
+      {
+        $unwind: {
+          path: '$agentInfo',
+          preserveNullAndEmptyArrays: true
+        }
+      },
+      {
+        $group: {
+          _id: '$agentId',
+          agentName: { $first: '$agentInfo.tradeName' },
+          ownerName: { $first: '$agentInfo.ownerName' },
+          totalCustomers: { $sum: { $size: '$assignedCustomers' } }
+        }
+      },
+      { $sort: { totalCustomers: -1 } },
+      { $limit: 10 }
+    ]).toArray();
+
+    // Merge and combine results
+    const agentHajiMap = new Map();
+    hajiByAgentFromPackageInfo.forEach(item => {
+      if (!item._id) return;
+      const agentId = String(item._id);
+      if (!agentHajiMap.has(agentId)) {
+        agentHajiMap.set(agentId, {
+          agentId: agentId,
+          agentName: item.agentName || item.ownerName || 'Unknown',
+          hajiCount: 0
+        });
+      }
+      agentHajiMap.get(agentId).hajiCount += item.hajiCount || 0;
+    });
+
+    agentPackagesWithCustomers.forEach(item => {
+      if (!item._id) return;
+      const agentId = String(item._id);
+      if (!agentHajiMap.has(agentId)) {
+        agentHajiMap.set(agentId, {
+          agentId: agentId,
+          agentName: item.agentName || item.ownerName || 'Unknown',
+          hajiCount: 0
+        });
+      }
+      agentHajiMap.get(agentId).hajiCount += (item.totalCustomers || 0);
+    });
+
+    const topAgentsByHaji = Array.from(agentHajiMap.values())
+      .sort((a, b) => b.hajiCount - a.hajiCount)
+      .slice(0, 10);
+
+    // 6. District-wise Haji count
+    const hajiByDistrict = await haji.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: '$district',
+          hajiCount: { $sum: 1 },
+          umrahCount: { $sum: { $cond: [{ $eq: ['$serviceType', 'umrah'] }, 1, 0] } }
+        }
+      },
+      { $sort: { hajiCount: -1 } },
+      { $limit: 20 }
+    ]).toArray();
+
+    // Also get Umrah by district
+    const umrahByDistrict = await umrah.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: '$district',
+          umrahCount: { $sum: 1 }
+        }
+      },
+      { $sort: { umrahCount: -1 } },
+      { $limit: 20 }
+    ]).toArray();
+
+    // Merge district data
+    const districtMap = new Map();
+    hajiByDistrict.forEach(item => {
+      const district = item._id || 'Unknown';
+      districtMap.set(district, {
+        district: district,
+        hajiCount: item.hajiCount || 0,
+        umrahCount: item.umrahCount || 0
+      });
+    });
+
+    umrahByDistrict.forEach(item => {
+      const district = item._id || 'Unknown';
+      if (!districtMap.has(district)) {
+        districtMap.set(district, {
+          district: district,
+          hajiCount: 0,
+          umrahCount: 0
+        });
+      }
+      districtMap.get(district).umrahCount += (item.umrahCount || 0);
+    });
+
+    const topDistricts = Array.from(districtMap.values())
+      .map(d => ({
+        ...d,
+        totalCount: d.hajiCount + d.umrahCount
+      }))
+      .sort((a, b) => b.totalCount - a.totalCount)
+      .slice(0, 20);
+
+    // 7. Additional statistics
+    // Total revenue and payments
+    const hajiTransactions = await transactions.aggregate([
+      {
+        $match: {
+          partyType: 'haji',
+          isActive: { $ne: false },
+          transactionType: 'credit'
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalPaid: { $sum: '$amount' }
+        }
+      }
+    ]).toArray();
+
+    const umrahTransactions = await transactions.aggregate([
+      {
+        $match: {
+          partyType: 'umrah',
+          isActive: { $ne: false },
+          transactionType: 'credit'
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalPaid: { $sum: '$amount' }
+        }
+      }
+    ]).toArray();
+
+    const totalHajiPaid = hajiTransactions[0]?.totalPaid || 0;
+    const totalUmrahPaid = umrahTransactions[0]?.totalPaid || 0;
+
+    // Total due amounts (only primary holders)
+    const hajiTotalDue = await haji.aggregate([
+      { 
+        $match: { 
+          isActive: { $ne: false },
+          $or: [
+            { primaryHolderId: null },
+            { $expr: { $eq: ['$primaryHolderId', '$_id'] } }
+          ]
+        } 
+      },
+      {
+        $group: {
+          _id: null,
+          totalDue: { $sum: { $subtract: ['$familyTotal', '$familyPaid'] } },
+          totalAmount: { $sum: '$familyTotal' },
+          totalPaid: { $sum: '$familyPaid' }
+        }
+      }
+    ]).toArray();
+
+    const umrahTotalDue = await umrah.aggregate([
+      { 
+        $match: { 
+          isActive: { $ne: false },
+          $or: [
+            { primaryHolderId: null },
+            { $expr: { $eq: ['$primaryHolderId', '$_id'] } }
+          ]
+        } 
+      },
+      {
+        $group: {
+          _id: null,
+          totalDue: { $sum: { $subtract: ['$familyTotal', '$familyPaid'] } },
+          totalAmount: { $sum: '$familyTotal' },
+          totalPaid: { $sum: '$familyPaid' }
+        }
+      }
+    ]).toArray();
+
+    // Agent total due
+    const agentTotalDue = await agents.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: null,
+          totalDue: { $sum: '$totalDue' },
+          hajDue: { $sum: '$hajDue' },
+          umrahDue: { $sum: '$umrahDue' }
+        }
+      }
+    ]).toArray();
+
+    res.json({
+      success: true,
+      data: {
+        overview: {
+          totalHaji: totalHajiCount,
+          totalUmrah: totalUmrahCount,
+          totalAgents: totalAgentsCount,
+          totalPilgrims: totalHajiCount + totalUmrahCount
+        },
+        profitLoss: {
+          hajj: {
+            totalRevenue: Number(hajjProfitLoss.totalRevenue.toFixed(2)),
+            totalCost: Number(hajjProfitLoss.totalCost.toFixed(2)),
+            profitLoss: Number(hajjProfitLoss.profitLoss.toFixed(2)),
+            packageCount: hajjProfitLoss.packageCount,
+            isProfit: hajjProfitLoss.profitLoss > 0
+          },
+          umrah: {
+            totalRevenue: Number(umrahProfitLoss.totalRevenue.toFixed(2)),
+            totalCost: Number(umrahProfitLoss.totalCost.toFixed(2)),
+            profitLoss: Number(umrahProfitLoss.profitLoss.toFixed(2)),
+            packageCount: umrahProfitLoss.packageCount,
+            isProfit: umrahProfitLoss.profitLoss > 0
+          },
+          combined: {
+            totalRevenue: Number((hajjProfitLoss.totalRevenue + umrahProfitLoss.totalRevenue).toFixed(2)),
+            totalCost: Number((hajjProfitLoss.totalCost + umrahProfitLoss.totalCost).toFixed(2)),
+            profitLoss: Number((hajjProfitLoss.profitLoss + umrahProfitLoss.profitLoss).toFixed(2)),
+            isProfit: (hajjProfitLoss.profitLoss + umrahProfitLoss.profitLoss) > 0
+          }
+        },
+        agentProfitLoss: agentProfitLossArray,
+        topAgentsByHaji: topAgentsByHaji,
+        topDistricts: topDistricts,
+        financialSummary: {
+          haji: {
+            totalAmount: Number((hajiTotalDue[0]?.totalAmount || 0).toFixed(2)),
+            totalPaid: Number((hajiTotalDue[0]?.totalPaid || 0).toFixed(2)),
+            totalDue: Number((hajiTotalDue[0]?.totalDue || 0).toFixed(2))
+          },
+          umrah: {
+            totalAmount: Number((umrahTotalDue[0]?.totalAmount || 0).toFixed(2)),
+            totalPaid: Number((umrahTotalDue[0]?.totalPaid || 0).toFixed(2)),
+            totalDue: Number((umrahTotalDue[0]?.totalDue || 0).toFixed(2))
+          },
+          agents: {
+            totalDue: Number((agentTotalDue[0]?.totalDue || 0).toFixed(2)),
+            hajDue: Number((agentTotalDue[0]?.hajDue || 0).toFixed(2)),
+            umrahDue: Number((agentTotalDue[0]?.umrahDue || 0).toFixed(2))
+          }
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Dashboard summary error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: 'Failed to fetch dashboard summary',
+      details: error.message
+    });
+  }
+});
+
 // ==================== BANK ACCOUNTS ROUTES ====================
 // Schema (MongoDB):
 // {
