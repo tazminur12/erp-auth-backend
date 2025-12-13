@@ -11563,6 +11563,161 @@ app.post("/haj-umrah/haji/bulk", async (req, res) => {
   }
 });
 
+// Get Haji transaction history
+app.get("/haj-umrah/haji/:id/transactions", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { fromDate, toDate, transactionType, page = 1, limit = 20 } = req.query || {};
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid Haji ID"
+      });
+    }
+
+    // Verify Haji exists
+    const hajiDoc = await haji.findOne({ _id: new ObjectId(id) });
+    if (!hajiDoc) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Haji not found"
+      });
+    }
+
+    const hajiIdStr = String(id);
+    const hajiObjectId = new ObjectId(id);
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+
+    // Build filter - match transactions where partyType is 'haji' and partyId matches
+    const filter = {
+      isActive: { $ne: false },
+      partyType: 'haji',
+      $or: [
+        { partyId: hajiIdStr },
+        { partyId: hajiObjectId },
+        { partyId: hajiDoc.customerId } // Also match by customerId
+      ]
+    };
+
+    // Add transaction type filter if provided
+    if (transactionType) {
+      filter.transactionType = String(transactionType);
+    }
+
+    // Add date range filter if provided
+    if (fromDate || toDate) {
+      filter.date = {};
+      if (fromDate) {
+        const start = new Date(fromDate);
+        if (!isNaN(start.getTime())) {
+          filter.date.$gte = start;
+        }
+      }
+      if (toDate) {
+        const end = new Date(toDate);
+        if (!isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+          filter.date.$lte = end;
+        }
+      }
+    }
+
+    // Fetch transactions with pagination
+    const cursor = transactions
+      .find(filter)
+      .sort({ date: -1, createdAt: -1 })
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum);
+
+    // Calculate totals (credit and debit separately)
+    const totalsPipeline = [
+      { $match: filter },
+      {
+        $group: {
+          _id: null,
+          totalCredit: {
+            $sum: {
+              $cond: [{ $eq: ["$transactionType", "credit"] }, "$amount", 0]
+            }
+          },
+          totalDebit: {
+            $sum: {
+              $cond: [{ $eq: ["$transactionType", "debit"] }, "$amount", 0]
+            }
+          },
+          count: { $sum: 1 }
+        }
+      }
+    ];
+
+    const [items, total, totalsResult] = await Promise.all([
+      cursor.toArray(),
+      transactions.countDocuments(filter),
+      transactions.aggregate(totalsPipeline).toArray()
+    ]);
+
+    const totals = totalsResult[0] || {
+      totalCredit: 0,
+      totalDebit: 0,
+      count: 0
+    };
+
+    const netAmount = Number(totals.totalCredit) - Number(totals.totalDebit);
+
+    // Format transaction data
+    const data = items.map((tx) => ({
+      _id: String(tx._id),
+      transactionId: tx.transactionId || null,
+      transactionType: tx.transactionType || null,
+      amount: Number(tx.amount || 0),
+      date: tx.date || tx.createdAt || null,
+      serviceCategory: tx.serviceCategory || null,
+      subCategory: tx.subCategory || null,
+      paymentMethod: tx.paymentMethod || null,
+      notes: tx.notes || null,
+      reference: tx.reference || null,
+      invoiceId: tx.invoiceId || null,
+      branchId: tx.branchId || null,
+      createdBy: tx.createdBy || null,
+      createdAt: tx.createdAt || null,
+      updatedAt: tx.updatedAt || null,
+      partyName: tx.partyName || hajiDoc.name || null,
+      targetAccountId: tx.targetAccountId || null,
+      targetAccountName: tx.targetAccountName || null
+    }));
+
+    res.json({
+      success: true,
+      data,
+      summary: {
+        totalTransactions: totals.count || 0,
+        totalCredit: Number(totals.totalCredit || 0),
+        totalDebit: Number(totals.totalDebit || 0),
+        netAmount: Number(netAmount),
+        balance: Number(netAmount) // alias for netAmount
+      },
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Get Haji transaction history error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Failed to fetch transaction history",
+      details: error.message
+    });
+  }
+});
+
 // ==================== UMRAH ROUTES ====================
 // Create Umrah (customerType: 'umrah')
 app.post("/haj-umrah/umrah", async (req, res) => {
@@ -12469,6 +12624,159 @@ app.post("/haj-umrah/umrah/bulk", async (req, res) => {
       error: true, 
       message: "Internal server error while bulk creating umrah",
       details: error.message 
+    });
+  }
+});
+
+// Get Umrah transaction history
+app.get("/haj-umrah/umrah/:id/transactions", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { fromDate, toDate, transactionType, page = 1, limit = 20 } = req.query || {};
+
+    // Check if id is valid ObjectId or customerId
+    const isOid = ObjectId.isValid(id);
+    const cond = isOid
+      ? { $or: [{ _id: new ObjectId(id) }, { customerId: id }] }
+      : { customerId: id };
+
+    // Verify Umrah exists
+    const umrahDoc = await umrah.findOne(cond);
+    if (!umrahDoc) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Umrah not found"
+      });
+    }
+
+    const umrahIdStr = String(umrahDoc._id);
+    const umrahObjectId = umrahDoc._id;
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+
+    // Build filter - match transactions where partyType is 'umrah' and partyId matches
+    const filter = {
+      isActive: { $ne: false },
+      partyType: 'umrah',
+      $or: [
+        { partyId: umrahIdStr },
+        { partyId: umrahObjectId },
+        { partyId: umrahDoc.customerId } // Also match by customerId
+      ]
+    };
+
+    // Add transaction type filter if provided
+    if (transactionType) {
+      filter.transactionType = String(transactionType);
+    }
+
+    // Add date range filter if provided
+    if (fromDate || toDate) {
+      filter.date = {};
+      if (fromDate) {
+        const start = new Date(fromDate);
+        if (!isNaN(start.getTime())) {
+          filter.date.$gte = start;
+        }
+      }
+      if (toDate) {
+        const end = new Date(toDate);
+        if (!isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+          filter.date.$lte = end;
+        }
+      }
+    }
+
+    // Fetch transactions with pagination
+    const cursor = transactions
+      .find(filter)
+      .sort({ date: -1, createdAt: -1 })
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum);
+
+    // Calculate totals (credit and debit separately)
+    const totalsPipeline = [
+      { $match: filter },
+      {
+        $group: {
+          _id: null,
+          totalCredit: {
+            $sum: {
+              $cond: [{ $eq: ["$transactionType", "credit"] }, "$amount", 0]
+            }
+          },
+          totalDebit: {
+            $sum: {
+              $cond: [{ $eq: ["$transactionType", "debit"] }, "$amount", 0]
+            }
+          },
+          count: { $sum: 1 }
+        }
+      }
+    ];
+
+    const [items, total, totalsResult] = await Promise.all([
+      cursor.toArray(),
+      transactions.countDocuments(filter),
+      transactions.aggregate(totalsPipeline).toArray()
+    ]);
+
+    const totals = totalsResult[0] || {
+      totalCredit: 0,
+      totalDebit: 0,
+      count: 0
+    };
+
+    const netAmount = Number(totals.totalCredit) - Number(totals.totalDebit);
+
+    // Format transaction data
+    const data = items.map((tx) => ({
+      _id: String(tx._id),
+      transactionId: tx.transactionId || null,
+      transactionType: tx.transactionType || null,
+      amount: Number(tx.amount || 0),
+      date: tx.date || tx.createdAt || null,
+      serviceCategory: tx.serviceCategory || null,
+      subCategory: tx.subCategory || null,
+      paymentMethod: tx.paymentMethod || null,
+      notes: tx.notes || null,
+      reference: tx.reference || null,
+      invoiceId: tx.invoiceId || null,
+      branchId: tx.branchId || null,
+      createdBy: tx.createdBy || null,
+      createdAt: tx.createdAt || null,
+      updatedAt: tx.updatedAt || null,
+      partyName: tx.partyName || umrahDoc.name || null,
+      targetAccountId: tx.targetAccountId || null,
+      targetAccountName: tx.targetAccountName || null
+    }));
+
+    res.json({
+      success: true,
+      data,
+      summary: {
+        totalTransactions: totals.count || 0,
+        totalCredit: Number(totals.totalCredit || 0),
+        totalDebit: Number(totals.totalDebit || 0),
+        netAmount: Number(netAmount),
+        balance: Number(netAmount) // alias for netAmount
+      },
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('Get Umrah transaction history error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Failed to fetch transaction history",
+      details: error.message
     });
   }
 });
