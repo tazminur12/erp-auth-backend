@@ -14063,6 +14063,12 @@ app.post('/haj-umrah/packages', async (req, res) => {
       };
     }
 
+    // Normalize costs object - ensure campFee is a number
+    const normalizedCosts = costs || {};
+    if (normalizedCosts.campFee !== undefined) {
+      normalizedCosts.campFee = Number((parseFloat(normalizedCosts.campFee) || 0).toFixed(2));
+    }
+
     // Create package document
     // Important: totalPrice is optional and should be set separately if needed.
     // It should NEVER be updated by the costing endpoint (/packages/:id/costing).
@@ -14080,7 +14086,7 @@ app.post('/haj-umrah/packages', async (req, res) => {
       totalPrice: totalPrice !== undefined && totalPrice !== null && totalPrice !== '' 
         ? Number((parseFloat(totalPrice) || 0).toFixed(2)) 
         : 0, // Optional: only set if provided
-      costs: costs || {},
+      costs: normalizedCosts,
       totals: totalsData, // Contains passengerTotals with adult, child, infant separately
       assignedPassengerCounts: {
         adult: 0,
@@ -14351,6 +14357,13 @@ app.put('/haj-umrah/packages/:id', async (req, res) => {
       updatedAt: new Date()
     };
 
+    // Normalize costs.campFee if costs is being updated
+    if (updateData.costs && typeof updateData.costs === 'object') {
+      if (updateData.costs.campFee !== undefined) {
+        updateData.costs.campFee = Number((parseFloat(updateData.costs.campFee) || 0).toFixed(2));
+      }
+    }
+
     // Preserve assignedPassengerCounts if not provided in update
     if (!updateData.assignedPassengerCounts) {
       const existingCounts = existingPackage.assignedPassengerCounts;
@@ -14539,7 +14552,8 @@ app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
       'otherBdCosts',
       'otherSaudiCosts',
       'train',
-      'airFair'
+      'airFair',
+      'campFee'
     ];
 
     numericCostFields.forEach((field) => {
@@ -14575,6 +14589,7 @@ app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
       toNumber(normalizedCosts.monazzem) +
       toNumber(normalizedCosts.food) +
       toNumber(normalizedCosts.ziyaraFee) +
+      toNumber(normalizedCosts.campFee) +
       toNumber(normalizedCosts.otherSaudiCosts);
 
     const airFareBDT =
