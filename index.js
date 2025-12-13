@@ -14609,7 +14609,9 @@ app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
     const totalBD = bdCosts + saudiCostsBDT + airFareBDT + saudiCostsBD;
     const grandTotal = Math.max(0, totalBD - discount);
 
-    const passengerShared = bdCosts + saudiCostsBDT + hotelSar * sarToBdtRate;
+    // passengerShared should NOT include hotel costs because hotels are added per passenger type
+    // Hotels are variable costs (different for adult/child/infant), not shared costs
+    const passengerShared = bdCosts + saudiCostsBDT;
     const passengerTotals = ['adult', 'child', 'infant'].reduce((acc, type) => {
       const totalHotelForType = Object.keys(normalizedHotelDetails).reduce((sum, key) => {
         const h = normalizedHotelDetails[key] || {};
