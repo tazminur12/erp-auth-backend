@@ -10868,6 +10868,23 @@ app.get("/haj-umrah/haji", async (req, res) => {
       .limit(limitNum)
       .toArray();
 
+    // Fetch all primary holders to get their names (for dependents)
+    const primaryHolderIds = rawData
+      .map((doc) => doc?.primaryHolderId)
+      .filter((id) => id && ObjectId.isValid(id))
+      .map((id) => new ObjectId(id));
+    
+    const primaryHolderMap = {};
+    if (primaryHolderIds.length > 0) {
+      const uniquePrimaryIds = [...new Set(primaryHolderIds.map(String))].map((id) => new ObjectId(id));
+      const primaryHolders = await haji
+        .find({ _id: { $in: uniquePrimaryIds } })
+        .toArray();
+      primaryHolders.forEach((holder) => {
+        primaryHolderMap[String(holder._id)] = holder.name || null;
+      });
+    }
+
     // Ensure photo/passportCopy/nidCopy fields are always present and calculate balance/due
     const data = rawData.map((doc) => {
       const totalAmount = Number(doc?.totalAmount || 0);
@@ -10882,6 +10899,11 @@ app.get("/haj-umrah/haji", async (req, res) => {
       const visibleTotal = isDependent ? 0 : (familyTotal || totalAmount);
       const visiblePaid = isDependent ? 0 : (familyPaid || paidAmount);
       const visibleDue = isDependent ? 0 : (familyDue || due);
+      
+      // Get primary holder name if this is a dependent
+      const primaryHolderName = isDependent && doc?.primaryHolderId 
+        ? primaryHolderMap[String(doc.primaryHolderId)] || null
+        : null;
       
       return {
         ...doc,
@@ -10898,7 +10920,8 @@ app.get("/haj-umrah/haji", async (req, res) => {
         displayDue: visibleDue,
         familyTotal,
         familyPaid,
-        familyDue
+        familyDue,
+        ...(primaryHolderName ? { primaryHolderName } : {})
       };
     });
 
@@ -10960,6 +10983,15 @@ app.get("/haj-umrah/haji/:id", async (req, res) => {
     })();
     const normalizedServiceStatus = doc?.serviceStatus || (normalizedPaymentStatus === 'paid' ? 'confirmed' : 'pending');
 
+    // Fetch primary holder name if this is a dependent
+    let primaryHolderName = null;
+    if (doc?.primaryHolderId && String(doc.primaryHolderId) !== String(doc._id)) {
+      const primaryHolderDoc = await haji.findOne({ _id: toObjectId(doc.primaryHolderId) });
+      if (primaryHolderDoc) {
+        primaryHolderName = primaryHolderDoc.name || null;
+      }
+    }
+
     res.json({
       success: true,
       data: {
@@ -10982,7 +11014,8 @@ app.get("/haj-umrah/haji/:id", async (req, res) => {
         paymentStatus: normalizedPaymentStatus,
         serviceStatus: normalizedServiceStatus || '',
         ...(typeof hajjDue === 'number' ? { hajjDue } : {}),
-        ...(typeof umrahDue === 'number' ? { umrahDue } : {})
+        ...(typeof umrahDue === 'number' ? { umrahDue } : {}),
+        ...(primaryHolderName ? { primaryHolderName } : {})
       }
     });
   } catch (error) {
