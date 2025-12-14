@@ -14759,6 +14759,7 @@ app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
     const discount = toNumber(incomingDiscount, 0);
 
     // Calculate totals similar to the frontend costCalc to keep server as source of truth
+    // BD Costs (NOT multiplied by SAR rate)
     const bdCosts =
       toNumber(normalizedCosts.idCard) +
       toNumber(normalizedCosts.hajjKollan) +
@@ -14767,11 +14768,10 @@ app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
       toNumber(normalizedCosts.govtServiceCharge) +
       toNumber(normalizedCosts.licenseFee) +
       toNumber(normalizedCosts.transportFee) +
-      toNumber(normalizedCosts.visaFee) +
-      toNumber(normalizedCosts.insuranceFee) +
       toNumber(normalizedCosts.otherBdCosts);
 
-    const saudiCostsBDT =
+    // Saudi costs that need to be multiplied by SAR rate (including visaFee and insuranceFee)
+    const saudiCostsSAR =
       toNumber(normalizedCosts.zamzamWater) +
       toNumber(normalizedCosts.maktab) +
       toNumber(normalizedCosts.electronicsFee) +
@@ -14783,7 +14783,11 @@ app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
       toNumber(normalizedCosts.food) +
       toNumber(normalizedCosts.ziyaraFee) +
       toNumber(normalizedCosts.campFee) +
+      toNumber(normalizedCosts.visaFee) +
+      toNumber(normalizedCosts.insuranceFee) +
       toNumber(normalizedCosts.otherSaudiCosts);
+    
+    const saudiCostsBDT = saudiCostsSAR * sarToBdtRate;
 
     const airFareBDT =
       toNumber(normalizedAirFareDetails?.adult?.price) +
