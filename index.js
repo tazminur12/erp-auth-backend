@@ -14461,7 +14461,7 @@ app.get('/haj-umrah/packages/:id', async (req, res) => {
     };
 
     // Remove total, totalBD, and grandTotal from totals object
-    const { total, totalBD, grandTotal, ...cleanedTotals } = package.totals || {};
+    const { total: _totalIgnore, totalBD: _totalBDIgnore, grandTotal: _grandTotalIgnore, ...cleanedTotals } = package.totals || {};
     const cleanedPackage = {
       ...package,
       totals: cleanedTotals
@@ -14802,16 +14802,46 @@ app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
     const totalBD = bdCosts + saudiCostsBDT + airFareBDT + saudiCostsBD;
     const grandTotal = Math.max(0, totalBD - discount);
 
-    // passengerShared should NOT include hotel costs because hotels are added per passenger type
-    // Hotels are variable costs (different for adult/child/infant), not shared costs
-    const passengerShared = bdCosts + saudiCostsBDT;
+    // Calculate hotel costs - can come from hotelDetails (per passenger type) or direct fields (shared)
+    const directHotelCosts = 
+      toNumber(normalizedCosts.makkahHotel1) +
+      toNumber(normalizedCosts.makkahHotel2) +
+      toNumber(normalizedCosts.makkahHotel3) +
+      toNumber(normalizedCosts.madinaHotel1) +
+      toNumber(normalizedCosts.madinaHotel2);
+    
+    // Check if hotelDetails exist and have actual data
+    const hasHotelDetails = Object.keys(normalizedHotelDetails).length > 0;
+    let hasValidHotelDetails = false;
+    if (hasHotelDetails) {
+      // Check if any hotel has valid price and nights data
+      for (const key of Object.keys(normalizedHotelDetails)) {
+        const hotel = normalizedHotelDetails[key];
+        if (hotel && (hotel.adult || hotel.child || hotel.infant)) {
+          for (const type of ['adult', 'child', 'infant']) {
+            if (hotel[type] && (toNumber(hotel[type].price) > 0 || toNumber(hotel[type].nights) > 0)) {
+              hasValidHotelDetails = true;
+              break;
+            }
+          }
+          if (hasValidHotelDetails) break;
+        }
+      }
+    }
+    
+    // passengerShared includes BD costs, Saudi costs, and direct hotel costs (if no valid hotelDetails)
+    const passengerShared = bdCosts + saudiCostsBDT + (hasValidHotelDetails ? 0 : directHotelCosts);
+    
     const passengerTotals = ['adult', 'child', 'infant'].reduce((acc, type) => {
-      const totalHotelForType = Object.keys(normalizedHotelDetails).reduce((sum, key) => {
-        const h = normalizedHotelDetails[key] || {};
-        const price = toNumber(h?.[type]?.price);
-        const nights = toNumber(h?.[type]?.nights);
-        return sum + price * nights * sarToBdtRate;
-      }, 0);
+      // Calculate hotel costs from hotelDetails (per passenger type) if valid, otherwise 0 (already in passengerShared)
+      const totalHotelForType = hasValidHotelDetails 
+        ? Object.keys(normalizedHotelDetails).reduce((sum, key) => {
+            const h = normalizedHotelDetails[key] || {};
+            const price = toNumber(h?.[type]?.price);
+            const nights = toNumber(h?.[type]?.nights);
+            return sum + price * nights * sarToBdtRate;
+          }, 0)
+        : 0;
 
       acc[type] =
         passengerShared +
@@ -14823,10 +14853,27 @@ app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
     // Store costing prices separately - don't update original passengerTotals
     // costingPassengerTotals will be used for profit/loss calculation
     const costingPassengerTotals = {
-      adult: Number(passengerTotals.adult.toFixed(2)),
-      child: Number(passengerTotals.child.toFixed(2)),
-      infant: Number(passengerTotals.infant.toFixed(2))
+      adult: Number((parseFloat(passengerTotals.adult) || 0).toFixed(2)),
+      child: Number((parseFloat(passengerTotals.child) || 0).toFixed(2)),
+      infant: Number((parseFloat(passengerTotals.infant) || 0).toFixed(2))
     };
+
+    // Debug: Log costing calculations for verification
+    console.log('=== COSTING CALCULATION DEBUG ===');
+    console.log('Input Costs:', JSON.stringify(incomingCosts, null, 2));
+    console.log('BD Costs:', bdCosts);
+    console.log('Saudi Costs BDT:', saudiCostsBDT);
+    console.log('Direct Hotel Costs (makkahHotel1, madinaHotel1, etc):', directHotelCosts);
+    console.log('Has Hotel Details:', hasHotelDetails);
+    console.log('Has Valid Hotel Details (with actual data):', hasValidHotelDetails);
+    console.log('Passenger Shared (BD + Saudi BDT + Direct Hotels if no valid hotelDetails):', passengerShared);
+    console.log('Airfare Details:', JSON.stringify(normalizedAirFareDetails, null, 2));
+    console.log('Hotel Details:', JSON.stringify(normalizedHotelDetails, null, 2));
+    console.log('SAR to BDT Rate:', sarToBdtRate);
+    console.log('Calculated Passenger Totals:', passengerTotals);
+    console.log('Final Costing Passenger Totals:', costingPassengerTotals);
+    console.log('Original Prices:', preservedPassengerTotals);
+    console.log('=== END DEBUG ===');
 
     // Preserve existing passengerTotals (original prices) if they exist
     const existingTotals = existingPackage.totals || {};
@@ -14907,10 +14954,116 @@ app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
 
     const updatedPackage = await packages.findOne({ _id: new ObjectId(id) });
 
+    // Calculate Profit/Loss for the response (same logic as GET endpoint)
+    const assignedCounts = updatedPackage.assignedPassengerCounts || {
+      adult: 0,
+      child: 0,
+      infant: 0
+    };
+
+    // Get original prices (from totals.passengerTotals - set during package creation)
+    const originalPrices = {
+      adult: parseFloat(updatedPackage.totals?.passengerTotals?.adult) || 0,
+      child: parseFloat(updatedPackage.totals?.passengerTotals?.child) || 0,
+      infant: parseFloat(updatedPackage.totals?.passengerTotals?.infant) || 0
+    };
+
+    // Get costing prices (from totals.costingPassengerTotals - just calculated above)
+    const costingPrices = {
+      adult: parseFloat(updatedPackage.totals?.costingPassengerTotals?.adult) || 0,
+      child: parseFloat(updatedPackage.totals?.costingPassengerTotals?.child) || 0,
+      infant: parseFloat(updatedPackage.totals?.costingPassengerTotals?.infant) || 0
+    };
+
+    // Calculate Total Original Price based on assigned passengers
+    const totalOriginalPrice = 
+      (assignedCounts.adult * originalPrices.adult) +
+      (assignedCounts.child * originalPrices.child) +
+      (assignedCounts.infant * originalPrices.infant);
+
+    // Calculate Total Costing Price based on assigned passengers
+    const totalCostingPrice = 
+      (assignedCounts.adult * costingPrices.adult) +
+      (assignedCounts.child * costingPrices.child) +
+      (assignedCounts.infant * costingPrices.infant);
+
+    // Calculate Profit/Loss
+    const profitOrLoss = totalOriginalPrice - totalCostingPrice;
+
+    // Calculate per-type totals for display
+    const passengerOriginalTotals = {
+      adult: assignedCounts.adult * originalPrices.adult,
+      child: assignedCounts.child * originalPrices.child,
+      infant: assignedCounts.infant * originalPrices.infant
+    };
+
+    const passengerCostingTotals = {
+      adult: assignedCounts.adult * costingPrices.adult,
+      child: assignedCounts.child * costingPrices.child,
+      infant: assignedCounts.infant * costingPrices.infant
+    };
+
+    const passengerProfit = {
+      adult: passengerOriginalTotals.adult - passengerCostingTotals.adult,
+      child: passengerOriginalTotals.child - passengerCostingTotals.child,
+      infant: passengerOriginalTotals.infant - passengerCostingTotals.infant
+    };
+
+    // Remove total, totalBD, and grandTotal from totals object for response
+    const { total: _total, totalBD: _totalBD, grandTotal: _grandTotal, ...cleanedTotals } = updatedPackage.totals || {};
+    const cleanedPackage = {
+      ...updatedPackage,
+      totals: cleanedTotals
+    };
+
     res.status(200).json({
       success: true,
       message: 'Package costing added/updated successfully',
-      data: updatedPackage
+      data: {
+        ...cleanedPackage,
+        assignedPassengerCounts: assignedCounts,
+        totalOriginalPrice: Number(totalOriginalPrice.toFixed(2)),
+        totalCostingPrice: Number(totalCostingPrice.toFixed(2)),
+        profitOrLoss: Number(profitOrLoss.toFixed(2)),
+        passengerOriginalTotals: {
+          adult: Number(passengerOriginalTotals.adult.toFixed(2)),
+          child: Number(passengerOriginalTotals.child.toFixed(2)),
+          infant: Number(passengerOriginalTotals.infant.toFixed(2))
+        },
+        passengerCostingTotals: {
+          adult: Number(passengerCostingTotals.adult.toFixed(2)),
+          child: Number(passengerCostingTotals.child.toFixed(2)),
+          infant: Number(passengerCostingTotals.infant.toFixed(2))
+        },
+        passengerProfit: {
+          adult: Number(passengerProfit.adult.toFixed(2)),
+          child: Number(passengerProfit.child.toFixed(2)),
+          infant: Number(passengerProfit.infant.toFixed(2))
+        },
+        profitLoss: {
+          assignedPassengerCounts: assignedCounts,
+          originalPrices: originalPrices,
+          costingPrices: costingPrices,
+          totalOriginalPrice: Number(totalOriginalPrice.toFixed(2)),
+          totalCostingPrice: Number(totalCostingPrice.toFixed(2)),
+          profitOrLoss: Number(profitOrLoss.toFixed(2)),
+          passengerOriginalTotals: {
+            adult: Number(passengerOriginalTotals.adult.toFixed(2)),
+            child: Number(passengerOriginalTotals.child.toFixed(2)),
+            infant: Number(passengerOriginalTotals.infant.toFixed(2))
+          },
+          passengerCostingTotals: {
+            adult: Number(passengerCostingTotals.adult.toFixed(2)),
+            child: Number(passengerCostingTotals.child.toFixed(2)),
+            infant: Number(passengerCostingTotals.infant.toFixed(2))
+          },
+          passengerProfit: {
+            adult: Number(passengerProfit.adult.toFixed(2)),
+            child: Number(passengerProfit.child.toFixed(2)),
+            infant: Number(passengerProfit.infant.toFixed(2))
+          }
+        }
+      }
     });
   } catch (error) {
     console.error('Add package costing error:', error);
