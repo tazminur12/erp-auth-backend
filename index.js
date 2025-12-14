@@ -14758,6 +14758,14 @@ app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
     const sarToBdtRate = toNumber(incomingSarToBdtRate, 1);
     const discount = toNumber(incomingDiscount, 0);
 
+    // Preserve existing passengerTotals (original prices) if they exist - define early to avoid reference errors
+    const existingTotals = existingPackage.totals || {};
+    const preservedPassengerTotals = existingTotals.passengerTotals || {
+      adult: 0,
+      child: 0,
+      infant: 0
+    };
+
     // Calculate totals similar to the frontend costCalc to keep server as source of truth
     // BD Costs (NOT multiplied by SAR rate)
     const bdCosts =
@@ -14860,31 +14868,6 @@ app.post('/haj-umrah/packages/:id/costing', async (req, res) => {
       adult: Number((parseFloat(passengerTotals.adult) || 0).toFixed(2)),
       child: Number((parseFloat(passengerTotals.child) || 0).toFixed(2)),
       infant: Number((parseFloat(passengerTotals.infant) || 0).toFixed(2))
-    };
-
-    // Debug: Log costing calculations for verification
-    console.log('=== COSTING CALCULATION DEBUG ===');
-    console.log('Input Costs:', JSON.stringify(incomingCosts, null, 2));
-    console.log('BD Costs:', bdCosts);
-    console.log('Saudi Costs BDT:', saudiCostsBDT);
-    console.log('Direct Hotel Costs (makkahHotel1, madinaHotel1, etc):', directHotelCosts);
-    console.log('Has Hotel Details:', hasHotelDetails);
-    console.log('Has Valid Hotel Details (with actual data):', hasValidHotelDetails);
-    console.log('Passenger Shared (BD + Saudi BDT + Direct Hotels if no valid hotelDetails):', passengerShared);
-    console.log('Airfare Details:', JSON.stringify(normalizedAirFareDetails, null, 2));
-    console.log('Hotel Details:', JSON.stringify(normalizedHotelDetails, null, 2));
-    console.log('SAR to BDT Rate:', sarToBdtRate);
-    console.log('Calculated Passenger Totals:', passengerTotals);
-    console.log('Final Costing Passenger Totals:', costingPassengerTotals);
-    console.log('Original Prices:', preservedPassengerTotals);
-    console.log('=== END DEBUG ===');
-
-    // Preserve existing passengerTotals (original prices) if they exist
-    const existingTotals = existingPackage.totals || {};
-    const preservedPassengerTotals = existingTotals.passengerTotals || {
-      adult: 0,
-      child: 0,
-      infant: 0
     };
 
     const computedTotals = {
