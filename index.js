@@ -8632,6 +8632,223 @@ app.put("/loans/:loanId", async (req, res) => {
   }
 });
 
+// ✅ GET: Loan dashboard summary (volume + profit/loss)
+app.get("/loans/dashboard/summary", async (req, res) => {
+  try {
+    const { fromDate, toDate, loanDirection, status, branchId } = req.query || {};
+
+    // Build loan filter
+    const loanFilter = { isActive: { $ne: false } };
+    if (loanDirection) {
+      loanFilter.loanDirection = String(loanDirection).toLowerCase();
+    }
+    if (status) {
+      loanFilter.status = status;
+    }
+    if (branchId) {
+      loanFilter.branchId = branchId;
+    }
+    if (fromDate || toDate) {
+      loanFilter.createdAt = {};
+      if (fromDate) {
+        const start = new Date(fromDate);
+        if (isNaN(start.getTime())) {
+          return res.status(400).json({ success: false, message: 'Invalid fromDate' });
+        }
+        loanFilter.createdAt.$gte = start;
+      }
+      if (toDate) {
+        const end = new Date(toDate);
+        if (isNaN(end.getTime())) {
+          return res.status(400).json({ success: false, message: 'Invalid toDate' });
+        }
+        end.setHours(23, 59, 59, 999);
+        loanFilter.createdAt.$lte = end;
+      }
+    }
+
+    // Build transaction filter (completed loan transactions)
+    const txFilter = { isActive: { $ne: false }, status: 'completed', partyType: 'loan' };
+    if (branchId) {
+      txFilter.branchId = branchId;
+    }
+    if (fromDate || toDate) {
+      txFilter.date = {};
+      if (fromDate) {
+        const start = new Date(fromDate);
+        if (!isNaN(start.getTime())) {
+          txFilter.date.$gte = start;
+        }
+      }
+      if (toDate) {
+        const end = new Date(toDate);
+        if (!isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+          txFilter.date.$lte = end;
+        }
+      }
+    }
+
+    // Base totals from loan profiles
+    const baseAgg = await loans.aggregate([
+      { $match: loanFilter },
+      {
+        $group: {
+          _id: null,
+          totalLoans: { $sum: 1 },
+          totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
+          paidAmount: { $sum: { $ifNull: ["$paidAmount", 0] } },
+          totalDue: { $sum: { $ifNull: ["$totalDue", 0] } },
+          active: { $sum: { $cond: [{ $eq: ["$status", "Active"] }, 1, 0] } },
+          pending: { $sum: { $cond: [{ $eq: ["$status", "Pending"] }, 1, 0] } },
+          closed: { $sum: { $cond: [{ $eq: ["$status", "Closed"] }, 1, 0] } },
+          rejected: { $sum: { $cond: [{ $eq: ["$status", "Rejected"] }, 1, 0] } }
+        }
+      }
+    ]).toArray();
+    const base = baseAgg[0] || {
+      totalLoans: 0,
+      totalAmount: 0,
+      paidAmount: 0,
+      totalDue: 0,
+      active: 0,
+      pending: 0,
+      closed: 0,
+      rejected: 0
+    };
+
+    // Breakdown by loan direction
+    const directionBreakdown = await loans.aggregate([
+      { $match: loanFilter },
+      {
+        $group: {
+          _id: "$loanDirection",
+          count: { $sum: 1 },
+          totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
+          paidAmount: { $sum: { $ifNull: ["$paidAmount", 0] } },
+          totalDue: { $sum: { $ifNull: ["$totalDue", 0] } }
+        }
+      },
+      { $sort: { count: -1 } }
+    ]).toArray();
+
+    // Status breakdown
+    const statusBreakdown = await loans.aggregate([
+      { $match: loanFilter },
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
+          totalDue: { $sum: { $ifNull: ["$totalDue", 0] } }
+        }
+      },
+      { $sort: { count: -1 } }
+    ]).toArray();
+
+    // Transaction totals (profit/loss computed from cashflow)
+    const txTotalsAgg = await transactions.aggregate([
+      { $match: txFilter },
+      {
+        $group: {
+          _id: null,
+          totalTransactions: { $sum: 1 },
+          totalDebit: { $sum: { $cond: [{ $eq: ["$transactionType", "debit"] }, "$amount", 0] } },
+          totalCredit: { $sum: { $cond: [{ $eq: ["$transactionType", "credit"] }, "$amount", 0] } }
+        }
+      }
+    ]).toArray();
+    const txTotals = txTotalsAgg[0] || {
+      totalTransactions: 0,
+      totalDebit: 0,
+      totalCredit: 0
+    };
+
+    // Transactions grouped by loan direction (via lookup)
+    const txByDirectionRaw = await transactions.aggregate([
+      { $match: txFilter },
+      {
+        $lookup: {
+          from: "loans",
+          let: { pid: "$partyId" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $or: [
+                    { $eq: ["$loanId", "$$pid"] },
+                    { $eq: [{ $toString: "$_id" }, "$$pid"] }
+                  ]
+                }
+              }
+            },
+            { $project: { loanDirection: 1 } }
+          ],
+          as: "loan"
+        }
+      },
+      { $unwind: { path: "$loan", preserveNullAndEmptyArrays: true } },
+      {
+        $group: {
+          _id: "$loan.loanDirection",
+          count: { $sum: 1 },
+          debit: { $sum: { $cond: [{ $eq: ["$transactionType", "debit"] }, "$amount", 0] } },
+          credit: { $sum: { $cond: [{ $eq: ["$transactionType", "credit"] }, "$amount", 0] } }
+        }
+      }
+    ]).toArray();
+
+    const txByDirection = txByDirectionRaw.map((row) => ({
+      loanDirection: row._id || 'unknown',
+      count: row.count || 0,
+      totalDebit: Number(row.debit || 0),
+      totalCredit: Number(row.credit || 0),
+      netCashflow: Number(row.credit || 0) - Number(row.debit || 0)
+    }));
+
+    const response = {
+      totals: {
+        totalLoans: base.totalLoans,
+        active: base.active,
+        pending: base.pending,
+        closed: base.closed,
+        rejected: base.rejected
+      },
+      financial: {
+        totalAmount: Number(base.totalAmount || 0),
+        paidAmount: Number(base.paidAmount || 0),
+        totalDue: Number(base.totalDue || 0),
+        profitLoss: Number(txTotals.totalCredit || 0) - Number(txTotals.totalDebit || 0)
+      },
+      directionBreakdown: directionBreakdown.map((d) => ({
+        loanDirection: d._id || 'unknown',
+        count: d.count || 0,
+        totalAmount: Number(d.totalAmount || 0),
+        paidAmount: Number(d.paidAmount || 0),
+        totalDue: Number(d.totalDue || 0)
+      })),
+      statusBreakdown: statusBreakdown.map((s) => ({
+        status: s._id || 'unknown',
+        count: s.count || 0,
+        totalAmount: Number(s.totalAmount || 0),
+        totalDue: Number(s.totalDue || 0)
+      })),
+      transactions: {
+        totalTransactions: txTotals.totalTransactions || 0,
+        totalDebit: Number(txTotals.totalDebit || 0),
+        totalCredit: Number(txTotals.totalCredit || 0),
+        netCashflow: Number(txTotals.totalCredit || 0) - Number(txTotals.totalDebit || 0),
+        byDirection: txByDirection
+      }
+    };
+
+    return res.json({ success: true, data: response });
+  } catch (error) {
+    console.error('Loan dashboard summary error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch loan dashboard summary' });
+  }
+});
+
 
 
 // ✅ GET: Vendor Analytics (Enhanced)
