@@ -10435,6 +10435,296 @@ app.get("/api/air-ticketing/tickets", async (req, res) => {
   }
 });
 
+// ✅ GET: Air Ticketing dashboard summary (profit/loss, trends)
+app.get("/api/air-ticketing/dashboard/summary", async (req, res) => {
+  try {
+    const {
+      dateFrom,
+      dateTo,
+      airline,
+      agentId,
+      status,
+      flightType,
+      tripType
+    } = req.query || {};
+
+    // Build filter for the aggregation
+    const match = { isActive: { $ne: false } };
+
+    // Selling/issue date filter
+    if (dateFrom || dateTo) {
+      match.date = {};
+      if (dateFrom) {
+        const start = new Date(dateFrom);
+        if (isNaN(start.getTime())) {
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid dateFrom value'
+          });
+        }
+        match.date.$gte = start;
+      }
+      if (dateTo) {
+        const end = new Date(dateTo);
+        if (isNaN(end.getTime())) {
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid dateTo value'
+          });
+        }
+        end.setHours(23, 59, 59, 999);
+        match.date.$lte = end;
+      }
+    }
+
+    if (airline) {
+      match.airline = { $regex: airline, $options: 'i' };
+    }
+    if (agentId) {
+      match.agentId = agentId;
+    }
+    if (status) {
+      match.status = status;
+    }
+    if (flightType) {
+      match.flightType = flightType;
+    }
+    if (tripType) {
+      match.tripType = tripType;
+    }
+
+    // Common profit expression with fallback when profit field is missing
+    const profitExpression = {
+      $ifNull: [
+        "$profit",
+        {
+          $subtract: [
+            { $ifNull: ["$customerDeal", 0] },
+            { $ifNull: ["$vendorAmount", 0] }
+          ]
+        }
+      ]
+    };
+
+    // Base financial and volume stats
+    const baseStatsAgg = await tickets.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: null,
+          totalTickets: { $sum: 1 },
+          totalSegments: { $sum: { $ifNull: ["$segmentCount", 0] } },
+          adults: { $sum: { $ifNull: ["$adultCount", 0] } },
+          children: { $sum: { $ifNull: ["$childCount", 0] } },
+          infants: { $sum: { $ifNull: ["$infantCount", 0] } },
+          customerDeal: { $sum: { $ifNull: ["$customerDeal", 0] } },
+          customerPaid: { $sum: { $ifNull: ["$customerPaid", 0] } },
+          customerDue: { $sum: { $ifNull: ["$customerDue", 0] } },
+          vendorAmount: { $sum: { $ifNull: ["$vendorAmount", 0] } },
+          vendorPaid: { $sum: { $ifNull: ["$vendorPaidFh", 0] } },
+          vendorDue: { $sum: { $ifNull: ["$vendorDue", 0] } },
+          profit: { $sum: profitExpression }
+        }
+      }
+    ]).toArray();
+
+    const baseStats = baseStatsAgg[0] || {
+      totalTickets: 0,
+      totalSegments: 0,
+      adults: 0,
+      children: 0,
+      infants: 0,
+      customerDeal: 0,
+      customerPaid: 0,
+      customerDue: 0,
+      vendorAmount: 0,
+      vendorPaid: 0,
+      vendorDue: 0,
+      profit: 0
+    };
+
+    // Status breakdown
+    const statusBreakdownRaw = await tickets.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          revenue: { $sum: { $ifNull: ["$customerDeal", 0] } },
+          profit: { $sum: profitExpression }
+        }
+      },
+      { $sort: { count: -1 } }
+    ]).toArray();
+
+    const statusBreakdown = statusBreakdownRaw.reduce((acc, item) => {
+      const key = item._id || 'unknown';
+      acc[key] = {
+        count: item.count,
+        revenue: Number((item.revenue || 0).toFixed(2)),
+        profit: Number((item.profit || 0).toFixed(2))
+      };
+      return acc;
+    }, {});
+
+    // Flight type breakdown
+    const flightTypeBreakdown = await tickets.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: "$flightType",
+          count: { $sum: 1 },
+          revenue: { $sum: { $ifNull: ["$customerDeal", 0] } },
+          profit: { $sum: profitExpression }
+        }
+      },
+      { $sort: { count: -1 } }
+    ]).toArray();
+
+    // Trip type breakdown
+    const tripTypeBreakdown = await tickets.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: "$tripType",
+          count: { $sum: 1 },
+          revenue: { $sum: { $ifNull: ["$customerDeal", 0] } },
+          profit: { $sum: profitExpression }
+        }
+      },
+      { $sort: { count: -1 } }
+    ]).toArray();
+
+    // Top airlines
+    const topAirlines = await tickets.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: "$airline",
+          count: { $sum: 1 },
+          revenue: { $sum: { $ifNull: ["$customerDeal", 0] } },
+          profit: { $sum: profitExpression }
+        }
+      },
+      { $sort: { revenue: -1, count: -1 } },
+      { $limit: 5 }
+    ]).toArray();
+
+    // Top agents
+    const topAgents = await tickets.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: { agentId: "$agentId", agent: "$agent" },
+          count: { $sum: 1 },
+          revenue: { $sum: { $ifNull: ["$customerDeal", 0] } },
+          profit: { $sum: profitExpression }
+        }
+      },
+      { $sort: { revenue: -1, count: -1 } },
+      { $limit: 5 }
+    ]).toArray();
+
+    // Recent tickets for quick view
+    const recentTickets = await tickets
+      .find(match)
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
+
+    const normalizedRecent = recentTickets.map(t => {
+      const profitValue = typeof t.profit === 'number'
+        ? t.profit
+        : ((parseFloat(t.customerDeal) || 0) - (parseFloat(t.vendorAmount) || 0));
+
+      return {
+        id: t._id,
+        bookingId: t.bookingId,
+        airline: t.airline,
+        agent: t.agent || '',
+        customerName: t.customerName,
+        flightType: t.flightType,
+        tripType: t.tripType,
+        status: t.status,
+        flightDate: t.flightDate,
+        createdAt: t.createdAt,
+        profit: Number((profitValue || 0).toFixed(2))
+      };
+    });
+
+    res.json({
+      success: true,
+      filtersApplied: {
+        dateFrom: dateFrom || null,
+        dateTo: dateTo || null,
+        airline: airline || null,
+        agentId: agentId || null,
+        status: status || null,
+        flightType: flightType || null,
+        tripType: tripType || null
+      },
+      totals: {
+        tickets: baseStats.totalTickets,
+        segments: baseStats.totalSegments,
+        passengers: {
+          adults: baseStats.adults,
+          children: baseStats.children,
+          infants: baseStats.infants
+        },
+        averageProfitPerTicket: baseStats.totalTickets > 0
+          ? Number((baseStats.profit / baseStats.totalTickets).toFixed(2))
+          : 0
+      },
+      financials: {
+        revenue: Number((baseStats.customerDeal || 0).toFixed(2)),
+        customerPaid: Number((baseStats.customerPaid || 0).toFixed(2)),
+        customerDue: Number((baseStats.customerDue || 0).toFixed(2)),
+        vendorAmount: Number((baseStats.vendorAmount || 0).toFixed(2)),
+        vendorPaid: Number((baseStats.vendorPaid || 0).toFixed(2)),
+        vendorDue: Number((baseStats.vendorDue || 0).toFixed(2)),
+        profit: Number((baseStats.profit || 0).toFixed(2)),
+        netMarginPct: baseStats.customerDeal > 0
+          ? Number(((baseStats.profit / baseStats.customerDeal) * 100).toFixed(2))
+          : 0
+      },
+      statusBreakdown,
+      flightTypeBreakdown: flightTypeBreakdown.map(item => ({
+        flightType: item._id || 'unknown',
+        count: item.count,
+        revenue: Number((item.revenue || 0).toFixed(2)),
+        profit: Number((item.profit || 0).toFixed(2))
+      })),
+      tripTypeBreakdown: tripTypeBreakdown.map(item => ({
+        tripType: item._id || 'unknown',
+        count: item.count,
+        revenue: Number((item.revenue || 0).toFixed(2)),
+        profit: Number((item.profit || 0).toFixed(2))
+      })),
+      topAirlines: topAirlines.map(item => ({
+        airline: item._id || 'unknown',
+        count: item.count,
+        revenue: Number((item.revenue || 0).toFixed(2)),
+        profit: Number((item.profit || 0).toFixed(2))
+      })),
+      topAgents: topAgents.map(item => ({
+        agentId: item._id?.agentId || '',
+        agent: item._id?.agent || '',
+        count: item.count,
+        revenue: Number((item.revenue || 0).toFixed(2)),
+        profit: Number((item.profit || 0).toFixed(2))
+      })),
+      recentTickets: normalizedRecent
+    });
+  } catch (error) {
+    console.error('Air ticketing dashboard summary error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch air ticketing dashboard summary',
+      error: error.message
+    });
+  }
+});
+
 // ✅ GET: Get single Air Ticket by ID
 app.get("/api/air-ticketing/tickets/:id", async (req, res) => {
   try {
