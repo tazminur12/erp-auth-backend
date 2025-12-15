@@ -19869,9 +19869,33 @@ app.get("/api/dashboard/summary", async (req, res) => {
     };
 
     // ==================== GRAND TOTALS ====================
+    // Profit/Loss breakdown (includes all major income/expense streams)
+    const incomeBreakdown = {
+      transactionCredit: Number(totalCredit.toFixed(2)),
+      invoicePaid: Number((invoiceStat.paidAmount || 0).toFixed(2)),
+      exchangeSell: Number(exchangeSell.toFixed(2)),
+      farmIncomes: Number((farmIncomeStat.totalIncomes || 0).toFixed(2)),
+      ticketSales: Number((ticketStat.totalAmount || 0).toFixed(2))
+    };
+
+    const expenseBreakdown = {
+      transactionDebit: Number(totalDebit.toFixed(2)),
+      exchangeBuy: Number(exchangeBuy.toFixed(2)),
+      farmExpenses: Number((farmExpenseStat.totalExpenses || 0).toFixed(2)),
+      farmSalaries: Number((totalFarmSalary || 0).toFixed(2))
+    };
+
+    const totalRevenue = Number(
+      Object.values(incomeBreakdown).reduce((sum, val) => sum + (val || 0), 0).toFixed(2)
+    );
+    const totalExpenses = Number(
+      Object.values(expenseBreakdown).reduce((sum, val) => sum + (val || 0), 0).toFixed(2)
+    );
+    const netProfitLoss = Number((totalRevenue - totalExpenses).toFixed(2));
+
     const grandTotals = {
-      totalRevenue: parseFloat((totalCredit + (invoiceStat.paidAmount || 0) + exchangeSell).toFixed(2)),
-      totalExpenses: parseFloat((totalDebit + exchangeBuy + (farmExpenseStat.totalExpenses || 0)).toFixed(2)),
+      totalRevenue,
+      totalExpenses,
       totalDue: parseFloat((
         (paymentStats.dueAmount || 0) +
         (agentPayStats.dueAmount || 0) +
@@ -19883,11 +19907,14 @@ app.get("/api/dashboard/summary", async (req, res) => {
         (accountStat.totalBalance || 0) +
         (bankAccountStat.totalBalance || 0)
       ).toFixed(2)),
-      netProfit: parseFloat((
-        (totalCredit - totalDebit) +
-        (exchangeSell - exchangeBuy) +
-        ((farmIncomeStat.totalIncomes || 0) - (farmExpenseStat.totalExpenses || 0))
-      ).toFixed(2))
+      netProfit: netProfitLoss,
+      profitLoss: {
+        totalIncome: totalRevenue,
+        totalExpenses,
+        netProfit: netProfitLoss,
+        incomeBreakdown,
+        expenseBreakdown
+      }
     };
 
     // Response
