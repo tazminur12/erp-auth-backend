@@ -1639,7 +1639,7 @@ app.patch("/users/profile/:email", async (req, res) => {
     });
 
     // If name is provided, also update displayName for consistency
-    if (filteredUpdateData.name && !filteredUpdateData.displayName) {
+    if (filteredUpdateData.name) {
       filteredUpdateData.displayName = filteredUpdateData.name;
     }
 
@@ -1680,7 +1680,7 @@ app.patch("/users/profile/:email", async (req, res) => {
       user: {
         uniqueId: updatedUser.uniqueId,
         displayName: updatedUser.displayName,
-        name: updatedUser.displayName,
+        name: updatedUser.displayName || updatedUser.name,
         email: updatedUser.email,
         phone: updatedUser.phone || '',
         address: updatedUser.address || '',
@@ -1691,6 +1691,7 @@ app.patch("/users/profile/:email", async (req, res) => {
         photoURL: updatedUser.photoURL || null,
         createdAt: updatedUser.createdAt,
         updatedAt: updatedUser.updatedAt,
+        lastLoginAt: updatedUser.lastLoginAt,
         isActive: updatedUser.isActive
       }
     });
