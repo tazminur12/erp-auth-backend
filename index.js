@@ -1588,12 +1588,18 @@ app.get("/users/profile/:email", async (req, res) => {
     res.send({
       uniqueId: user.uniqueId,
       displayName: user.displayName,
+      name: user.displayName || user.name, // Ensure name is available
       email: user.email,
+      phone: user.phone || '',
+      address: user.address || '',
+      department: user.department || '',
       role: user.role,
       branchId: user.branchId,
       branchName: user.branchName,
       photoURL: user.photoURL || null,
-      createdAt: user.createdAt
+      createdAt: user.createdAt,
+      lastLoginAt: user.lastLoginAt, // Added for frontend "Last Login"
+      isActive: user.isActive // Added for frontend "Status"
     });
   } catch (error) {
     console.error('Get user profile error:', error);
