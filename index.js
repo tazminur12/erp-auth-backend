@@ -16648,141 +16648,203 @@ app.get("/bank-accounts/category/:category", async (req, res) => {
 app.get("/bank-accounts/:id/transactions", async (req, res) => {
   try {
     const { id } = req.params;
-    const { page = 1, limit = 50, type, startDate, endDate, includeBalanceHistory = false } = req.query;
+    const { fromDate, toDate, page = 1, limit = 20, type } = req.query || {};
 
     // Validate ObjectId
     if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ success: false, error: "Invalid bank account ID format" });
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid bank account ID'
+      });
     }
 
     // Validate bank account exists
     const account = await bankAccounts.findOne({ _id: new ObjectId(id), isDeleted: { $ne: true } });
     if (!account) {
-      return res.status(404).json({ success: false, error: "Bank account not found" });
+      return res.status(404).json({
+        success: false,
+        message: 'Bank account not found'
+      });
     }
 
-    // Build query for transactions - includes direct bankAccountId, paymentDetails match, and transfer transactions
-    const query = {
+    const accountIdStr = String(id);
+    const accountIdObj = new ObjectId(id);
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+
+    // Build comprehensive filter for bank account transactions
+    const filter = {
+      isActive: { $ne: false },
       $or: [
-        { bankAccountId: new ObjectId(id) },
+        // Direct bankAccountId match
+        { bankAccountId: accountIdObj },
+        // targetAccountId match (for credit/debit transactions)
+        { targetAccountId: accountIdStr },
+        { targetAccountId: accountIdObj },
+        // fromAccountId match (for transfers out)
+        { fromAccountId: accountIdStr },
+        { fromAccountId: accountIdObj },
+        // toAccountId match (for transfers in)
+        { toAccountId: accountIdStr },
+        { toAccountId: accountIdObj },
+        // paymentDetails match
         {
           "paymentDetails.bankName": account.bankName,
           "paymentDetails.accountNumber": account.accountNumber
         },
-        // Include transfers where this account is source
-        {
-          "transferDetails.fromAccountId": new ObjectId(id),
-          isTransfer: true
-        },
-        // Include transfers where this account is destination
-        {
-          "transferDetails.toAccountId": new ObjectId(id),
-          isTransfer: true
-        }
-      ],
-      isActive: { $ne: false }
+        // transferDetails match
+        { "transferDetails.fromAccountId": accountIdStr },
+        { "transferDetails.fromAccountId": accountIdObj },
+        { "transferDetails.toAccountId": accountIdStr },
+        { "transferDetails.toAccountId": accountIdObj }
+      ]
     };
 
-    // Add filters
+    // Add transaction type filter
     if (type && ['credit', 'debit', 'transfer'].includes(type)) {
       if (type === 'transfer') {
-        query.isTransfer = true;
+        filter.isTransfer = true;
       } else {
-        query.transactionType = type;
-        query.isTransfer = { $ne: true }; // Exclude transfers when filtering by credit/debit
+        filter.transactionType = type;
+        filter.isTransfer = { $ne: true };
       }
     }
 
-    if (startDate || endDate) {
-      query.date = {};
-      if (startDate) query.date.$gte = new Date(startDate);
-      if (endDate) query.date.$lte = new Date(endDate);
+    // Add date filter
+    if (fromDate || toDate) {
+      filter.date = {};
+      if (fromDate) filter.date.$gte = new Date(fromDate);
+      if (toDate) {
+        const end = new Date(toDate);
+        if (!isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+        }
+        filter.date.$lte = end;
+      }
     }
 
-    // Calculate pagination
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const totalCount = await transactions.countDocuments(query);
+    // Build cursor for transactions
+    const cursor = transactions
+      .find(filter)
+      .sort({ date: -1, createdAt: -1 })
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum);
 
-    // Get transactions
-    const data = await transactions
-      .find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .toArray();
+    // Build aggregation pipeline for totals
+    const totalsPipeline = [
+      { $match: filter },
+      {
+        $group: {
+          _id: null,
+          totalCredit: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ['$transactionType', 'credit'] },
+                    { $ne: ['$isTransfer', true] }
+                  ]
+                },
+                { $ifNull: ['$amount', { $ifNull: ['$paymentDetails.amount', 0] }] },
+                0
+              ]
+            }
+          },
+          totalDebit: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $eq: ['$transactionType', 'debit'] },
+                    { $ne: ['$isTransfer', true] }
+                  ]
+                },
+                { $ifNull: ['$amount', { $ifNull: ['$paymentDetails.amount', 0] }] },
+                0
+              ]
+            }
+          },
+          lastTransactionDate: {
+            $max: '$date'
+          }
+        }
+      }
+    ];
 
-    // Calculate summary statistics
-    const summaryQuery = { ...query };
-    delete summaryQuery.isActive; // Include all for summary
-    const allTransactions = await transactions.find(summaryQuery).toArray();
+    // Build filter for transfer transactions only
+    const transferFilter = {
+      ...filter,
+      isTransfer: true
+    };
+
+    // Execute queries in parallel
+    const [items, total, totalsAgg, transferTransactions] = await Promise.all([
+      cursor.toArray(),
+      transactions.countDocuments(filter),
+      transactions.aggregate(totalsPipeline).toArray(),
+      transactions.find(transferFilter).toArray()
+    ]);
+
+    const totals = totalsAgg?.[0] || {};
+    const totalCredit = totals.totalCredit || 0;
+    const totalDebit = totals.totalDebit || 0;
     
-    let totalCredit = 0;
-    let totalDebit = 0;
+    // Calculate transfer amounts from transfer transactions
     let totalTransferIn = 0;
     let totalTransferOut = 0;
-
-    allTransactions.forEach(tx => {
-      if (tx.isTransfer) {
-        if (tx.transferDetails?.toAccountId?.toString() === id) {
-          totalTransferIn += tx.transferDetails?.transferAmount || 0;
-        }
-        if (tx.transferDetails?.fromAccountId?.toString() === id) {
-          totalTransferOut += tx.transferDetails?.transferAmount || 0;
-        }
-      } else {
-        if (tx.transactionType === 'credit') {
-          totalCredit += tx.paymentDetails?.amount || tx.amount || 0;
-        } else if (tx.transactionType === 'debit') {
-          totalDebit += tx.paymentDetails?.amount || tx.amount || 0;
-        }
+    
+    transferTransactions.forEach(tx => {
+      const transferAmount = tx.amount || tx.transferDetails?.transferAmount || 0;
+      const toAccountId = tx.toAccountId?.toString() || tx.transferDetails?.toAccountId?.toString();
+      const fromAccountId = tx.fromAccountId?.toString() || tx.transferDetails?.fromAccountId?.toString();
+      
+      if (toAccountId === accountIdStr || (toAccountId && ObjectId.isValid(toAccountId) && new ObjectId(toAccountId).equals(accountIdObj))) {
+        totalTransferIn += transferAmount;
+      }
+      if (fromAccountId === accountIdStr || (fromAccountId && ObjectId.isValid(fromAccountId) && new ObjectId(fromAccountId).equals(accountIdObj))) {
+        totalTransferOut += transferAmount;
       }
     });
+    
+    const net = totalCredit + totalTransferIn - totalDebit - totalTransferOut;
 
-    // Prepare response data
-    const responseData = {
+    res.json({
+      success: true,
+      data: items,
       account: {
-        _id: account._id,
+        id: String(account._id),
         bankName: account.bankName,
         accountNumber: account.accountNumber,
         accountHolder: account.accountHolder,
         accountTitle: account.accountTitle,
         currentBalance: account.currentBalance,
+        initialBalance: account.initialBalance,
         currency: account.currency,
-        accountCategory: account.accountCategory
+        accountCategory: account.accountCategory,
+        status: account.status
       },
-      transactions: data,
-      summary: {
-        totalTransactions: totalCount,
+      totals: {
         totalCredit,
         totalDebit,
         totalTransferIn,
         totalTransferOut,
-        netAmount: totalCredit + totalTransferIn - totalDebit - totalTransferOut
+        net,
+        lastTransactionDate: totals.lastTransactionDate || null
       },
       pagination: {
-        currentPage: parseInt(page),
-        totalPages: Math.ceil(totalCount / parseInt(limit)),
-        totalCount,
-        hasNext: skip + data.length < totalCount,
-        hasPrev: parseInt(page) > 1,
-        limit: parseInt(limit)
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
       }
-    };
-
-    // Include balance history if requested
-    if (includeBalanceHistory === 'true' && account.balanceHistory) {
-      responseData.balanceHistory = account.balanceHistory
-        .sort((a, b) => new Date(b.at) - new Date(a.at))
-        .slice(0, 100); // Limit to last 100 balance changes
-    }
-
-    res.json({
-      success: true,
-      data: responseData
     });
   } catch (error) {
-    console.error("❌ Error getting bank account transactions:", error);
-    res.status(500).json({ success: false, error: "Failed to get bank account transactions" });
+    console.error('Get bank account transactions error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch transaction history',
+      error: error.message
+    });
   }
 });
 
