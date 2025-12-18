@@ -1968,6 +1968,8 @@ app.post("/api/airCustomers", async (req, res) => {
       
       // Image data
       customerImage,
+      passportCopy,
+      nidCopy,
       
       // Passport information
       passportNumber,
@@ -2063,8 +2065,10 @@ app.post("/api/airCustomers", async (req, res) => {
       whatsappNo: whatsappNo || null,
       customerType: customerType || null,
       
-      // Image data
-      customerImage: customerImage || null,
+     passportCopy: passportCopy || null,
+     nidCopy: nidCopy || null,
+     customerImage: customerImage || null,
+
       
       // Passport information
       passportNumber: passportNumber || null,
