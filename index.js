@@ -8643,6 +8643,42 @@ app.put("/loans/:loanId", async (req, res) => {
   }
 });
 
+// ✅ DELETE: Delete Loan by loanId (soft delete)
+app.delete("/loans/:loanId", async (req, res) => {
+  try {
+    const { loanId } = req.params;
+
+    const condition = ObjectId.isValid(loanId)
+      ? { $or: [{ loanId: String(loanId) }, { _id: new ObjectId(loanId) }], isActive: { $ne: false } }
+      : { loanId: String(loanId), isActive: { $ne: false } };
+
+    const existing = await loans.findOne(condition);
+    if (!existing) {
+      return res.status(404).json({ error: true, message: "Loan not found" });
+    }
+
+    // Soft delete (set isActive to false)
+    const result = await loans.updateOne(
+      { _id: existing._id },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: true, message: "Loan not found" });
+    }
+
+    return res.json({ success: true, message: "Loan deleted successfully" });
+  } catch (error) {
+    console.error('Delete loan error:', error);
+    return res.status(500).json({ error: true, message: 'Failed to delete loan' });
+  }
+});
+
 // ✅ GET: Loan dashboard summary (volume + profit/loss)
 app.get("/loans/dashboard/summary", async (req, res) => {
   try {
