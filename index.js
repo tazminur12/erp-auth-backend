@@ -974,7 +974,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customerTypes, airCustomers, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses;
+let db, users, branches, counters, customerTypes, airCustomers, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses, vendorBankAccounts;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -1007,6 +1007,7 @@ async function initializeDatabase() {
     invoices = db.collection("invoices");
     accounts = db.collection("accounts");
     vendorBills = db.collection("vendorBills");
+    vendorBankAccounts = db.collection("vendorBankAccounts");
     loans = db.collection("loans");
     // Miraj vai Section 
     cattle = db.collection("cattle");
@@ -3984,6 +3985,380 @@ app.delete("/vendors/:id", async (req, res) => {
   }
 });
 
+// ==================== VENDOR BANK ACCOUNTS ROUTES ====================
+
+// ✅ POST: Create vendor bank account
+app.post("/vendors/:vendorId/bank-accounts", async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    
+    if (!ObjectId.isValid(vendorId)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Invalid vendor ID" 
+      });
+    }
+
+    // Check if vendor exists
+    const vendor = await vendors.findOne({ 
+      _id: new ObjectId(vendorId), 
+      isActive: true 
+    });
+
+    if (!vendor) {
+      return res.status(404).json({ 
+        success: false, 
+        error: "Vendor not found" 
+      });
+    }
+
+    const {
+      bankName,
+      accountNumber,
+      accountType,
+      branchName,
+      accountHolder,
+      accountTitle,
+      initialBalance = 0,
+      currency = 'BDT',
+      contactNumber,
+      isPrimary = false,
+      notes
+    } = req.body;
+
+    // Validation
+    if (!bankName || !accountNumber || !accountHolder) {
+      return res.status(400).json({
+        success: false,
+        error: "Bank Name, Account Number, and Account Holder are required"
+      });
+    }
+
+    // Check if account number already exists for this vendor
+    const existingAccount = await vendorBankAccounts.findOne({
+      vendorId: new ObjectId(vendorId),
+      accountNumber: accountNumber.trim(),
+      isDeleted: { $ne: true }
+    });
+
+    if (existingAccount) {
+      return res.status(400).json({
+        success: false,
+        error: "Account with this number already exists for this vendor"
+      });
+    }
+
+    // If setting as primary, unset other primary accounts for this vendor
+    if (isPrimary) {
+      await vendorBankAccounts.updateMany(
+        { 
+          vendorId: new ObjectId(vendorId), 
+          isDeleted: { $ne: true } 
+        },
+        { 
+          $set: { isPrimary: false, updatedAt: new Date() } 
+        }
+      );
+    }
+
+    const numericInitialBalance = Number(parseFloat(initialBalance) || 0);
+
+    const bankAccountDoc = {
+      vendorId: new ObjectId(vendorId),
+      bankName: bankName.trim(),
+      accountNumber: accountNumber.trim(),
+      accountType: accountType || 'Savings',
+      branchName: branchName?.trim() || '',
+      accountHolder: accountHolder.trim(),
+      accountTitle: accountTitle?.trim() || accountHolder.trim(),
+      initialBalance: numericInitialBalance,
+      currentBalance: numericInitialBalance,
+      currency: currency || 'BDT',
+      contactNumber: contactNumber?.trim() || null,
+      isPrimary: Boolean(isPrimary),
+      notes: notes?.trim() || '',
+      status: 'Active',
+      isDeleted: false,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await vendorBankAccounts.insertOne(bankAccountDoc);
+
+    res.status(201).json({
+      success: true,
+      message: "Vendor bank account created successfully",
+      data: { _id: result.insertedId, ...bankAccountDoc }
+    });
+  } catch (error) {
+    console.error("Error creating vendor bank account:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error while creating vendor bank account"
+    });
+  }
+});
+
+// ✅ GET: Get all bank accounts for a vendor
+app.get("/vendors/:vendorId/bank-accounts", async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+
+    if (!ObjectId.isValid(vendorId)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Invalid vendor ID" 
+      });
+    }
+
+    // Check if vendor exists
+    const vendor = await vendors.findOne({ 
+      _id: new ObjectId(vendorId), 
+      isActive: true 
+    });
+
+    if (!vendor) {
+      return res.status(404).json({ 
+        success: false, 
+        error: "Vendor not found" 
+      });
+    }
+
+    const bankAccounts = await vendorBankAccounts
+      .find({ 
+        vendorId: new ObjectId(vendorId), 
+        isDeleted: { $ne: true } 
+      })
+      .sort({ isPrimary: -1, createdAt: -1 })
+      .toArray();
+
+    res.json({
+      success: true,
+      data: bankAccounts,
+      count: bankAccounts.length
+    });
+  } catch (error) {
+    console.error("Error fetching vendor bank accounts:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error while fetching vendor bank accounts"
+    });
+  }
+});
+
+// ✅ GET: Get single vendor bank account
+app.get("/vendors/:vendorId/bank-accounts/:accountId", async (req, res) => {
+  try {
+    const { vendorId, accountId } = req.params;
+
+    if (!ObjectId.isValid(vendorId) || !ObjectId.isValid(accountId)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Invalid vendor ID or account ID" 
+      });
+    }
+
+    const bankAccount = await vendorBankAccounts.findOne({
+      _id: new ObjectId(accountId),
+      vendorId: new ObjectId(vendorId),
+      isDeleted: { $ne: true }
+    });
+
+    if (!bankAccount) {
+      return res.status(404).json({ 
+        success: false, 
+        error: "Vendor bank account not found" 
+      });
+    }
+
+    res.json({
+      success: true,
+      data: bankAccount
+    });
+  } catch (error) {
+    console.error("Error fetching vendor bank account:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error while fetching vendor bank account"
+    });
+  }
+});
+
+// ✅ PATCH: Update vendor bank account
+app.patch("/vendors/:vendorId/bank-accounts/:accountId", async (req, res) => {
+  try {
+    const { vendorId, accountId } = req.params;
+
+    if (!ObjectId.isValid(vendorId) || !ObjectId.isValid(accountId)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Invalid vendor ID or account ID" 
+      });
+    }
+
+    // Check if bank account exists and belongs to vendor
+    const existingAccount = await vendorBankAccounts.findOne({
+      _id: new ObjectId(accountId),
+      vendorId: new ObjectId(vendorId),
+      isDeleted: { $ne: true }
+    });
+
+    if (!existingAccount) {
+      return res.status(404).json({ 
+        success: false, 
+        error: "Vendor bank account not found" 
+      });
+    }
+
+    const updateData = req.body;
+    const allowedFields = [
+      'bankName',
+      'accountNumber',
+      'accountType',
+      'branchName',
+      'accountHolder',
+      'accountTitle',
+      'currency',
+      'contactNumber',
+      'isPrimary',
+      'notes',
+      'status'
+    ];
+
+    const filteredUpdate = {};
+    
+    allowedFields.forEach(field => {
+      if (updateData[field] !== undefined) {
+        if (field === 'accountNumber' || field === 'bankName' || field === 'accountHolder' || field === 'accountTitle' || field === 'branchName' || field === 'contactNumber' || field === 'notes') {
+          filteredUpdate[field] = String(updateData[field]).trim();
+        } else if (field === 'isPrimary') {
+          filteredUpdate[field] = Boolean(updateData[field]);
+        } else {
+          filteredUpdate[field] = updateData[field];
+        }
+      }
+    });
+
+    // If updating account number, check for duplicates
+    if (filteredUpdate.accountNumber && filteredUpdate.accountNumber !== existingAccount.accountNumber) {
+      const duplicateAccount = await vendorBankAccounts.findOne({
+        vendorId: new ObjectId(vendorId),
+        accountNumber: filteredUpdate.accountNumber,
+        _id: { $ne: new ObjectId(accountId) },
+        isDeleted: { $ne: true }
+      });
+
+      if (duplicateAccount) {
+        return res.status(400).json({
+          success: false,
+          error: "Account with this number already exists for this vendor"
+        });
+      }
+    }
+
+    // If setting as primary, unset other primary accounts for this vendor
+    if (filteredUpdate.isPrimary === true) {
+      await vendorBankAccounts.updateMany(
+        { 
+          vendorId: new ObjectId(vendorId),
+          _id: { $ne: new ObjectId(accountId) },
+          isDeleted: { $ne: true } 
+        },
+        { 
+          $set: { isPrimary: false, updatedAt: new Date() } 
+        }
+      );
+    }
+
+    filteredUpdate.updatedAt = new Date();
+
+    const result = await vendorBankAccounts.updateOne(
+      { _id: new ObjectId(accountId) },
+      { $set: filteredUpdate }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "Vendor bank account not found"
+      });
+    }
+
+    const updatedAccount = await vendorBankAccounts.findOne({
+      _id: new ObjectId(accountId)
+    });
+
+    res.json({
+      success: true,
+      message: "Vendor bank account updated successfully",
+      data: updatedAccount
+    });
+  } catch (error) {
+    console.error("Error updating vendor bank account:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error while updating vendor bank account"
+    });
+  }
+});
+
+// ✅ DELETE: Delete vendor bank account (soft delete)
+app.delete("/vendors/:vendorId/bank-accounts/:accountId", async (req, res) => {
+  try {
+    const { vendorId, accountId } = req.params;
+
+    if (!ObjectId.isValid(vendorId) || !ObjectId.isValid(accountId)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Invalid vendor ID or account ID" 
+      });
+    }
+
+    // Check if bank account exists and belongs to vendor
+    const existingAccount = await vendorBankAccounts.findOne({
+      _id: new ObjectId(accountId),
+      vendorId: new ObjectId(vendorId),
+      isDeleted: { $ne: true }
+    });
+
+    if (!existingAccount) {
+      return res.status(404).json({ 
+        success: false, 
+        error: "Vendor bank account not found" 
+      });
+    }
+
+    // Soft delete
+    const result = await vendorBankAccounts.updateOne(
+      { _id: new ObjectId(accountId) },
+      { 
+        $set: { 
+          isDeleted: true,
+          status: 'Inactive',
+          updatedAt: new Date()
+        } 
+      }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "Vendor bank account not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Vendor bank account deleted successfully"
+    });
+  } catch (error) {
+    console.error("Error deleting vendor bank account:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error while deleting vendor bank account"
+    });
+  }
+});
 
 // ✅ GET: Vendor statistics overview
 app.get("/vendors/stats/overview", async (req, res) => {
