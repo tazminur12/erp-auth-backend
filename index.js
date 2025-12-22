@@ -5312,6 +5312,8 @@ app.post("/api/transactions", async (req, res) => {
     let finalPartyType = String(partyType || req.body?.customerType || '').toLowerCase();
 
     // 1. Validation - আগে সব validate করুন
+    console.log('Transaction Payload:', JSON.stringify(req.body, null, 2)); // Debug log
+
     if (!transactionType || !finalAmount || !finalPartyId) {
       return res.status(400).json({
         success: false,
@@ -5336,8 +5338,11 @@ app.post("/api/transactions", async (req, res) => {
 
     // Validate charge if present
     let chargeAmount = 0;
-    if (paymentDetails && (paymentDetails.charge !== undefined && paymentDetails.charge !== null)) {
-      chargeAmount = parseFloat(paymentDetails.charge);
+    // Check both req.body.charge and req.body.paymentDetails.charge
+    const rawCharge = req.body.charge !== undefined ? req.body.charge : (paymentDetails?.charge);
+    
+    if (rawCharge !== undefined && rawCharge !== null) {
+      chargeAmount = parseFloat(rawCharge);
       if (isNaN(chargeAmount) || chargeAmount < 0) {
         return res.status(400).json({
           success: false,
