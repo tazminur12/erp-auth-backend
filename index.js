@@ -6347,9 +6347,22 @@ app.get("/api/transactions", async (req, res) => {
       transactions.countDocuments(filter)
     ]);
 
+    // Calculate total charge for the filtered transactions
+    const summary = await transactions.aggregate([
+      { $match: filter },
+      { $group: { _id: null, totalCharge: { $sum: "$charge" }, totalAmount: { $sum: "$amount" } } }
+    ]).toArray();
+
+    const totalCharge = summary[0]?.totalCharge || 0;
+    const totalAmount = summary[0]?.totalAmount || 0;
+
     res.json({
       success: true,
       data: items,
+      summary: {
+        totalCharge,
+        totalAmount
+      },
       pagination: {
         page: pageNum,
         limit: limitNum,
