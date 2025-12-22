@@ -1110,7 +1110,20 @@ async function initializeDatabase() {
         airCustomers.createIndex({ name: "text", mobile: "text", email: "text", passportNumber: "text" }, { name: "airCustomers_text_search" }),
         // Notifications
         notifications.createIndex({ userId: 1, isRead: 1, isActive: 1, createdAt: -1 }, { name: "notifications_user_read_active_createdAt" }),
-        notifications.createIndex({ isActive: 1, createdAt: -1 }, { name: "notifications_active_createdAt" })
+        notifications.createIndex({ isActive: 1, createdAt: -1 }, { name: "notifications_active_createdAt" }),
+        // HR Management
+        hrManagement.createIndex({
+          name: "text",
+          email: "text",
+          phone: "text",
+          employeeId: "text",
+          position: "text",
+          firstName: "text",
+          lastName: "text"
+        }, {
+          name: "hr_search_index",
+          background: true
+        })
       ]);
     } catch (e) {
       console.warn("⚠️ Index creation warning:", e.message);
@@ -5321,6 +5334,18 @@ app.post("/api/transactions", async (req, res) => {
       });
     }
 
+    // Validate charge if present
+    let chargeAmount = 0;
+    if (paymentDetails && (paymentDetails.charge !== undefined && paymentDetails.charge !== null)) {
+      chargeAmount = parseFloat(paymentDetails.charge);
+      if (isNaN(chargeAmount) || chargeAmount < 0) {
+        return res.status(400).json({
+          success: false,
+          message: "Charge must be a valid non-negative number"
+        });
+      }
+    }
+
     // 2. Validate party - আগে validate করুন
     let party = null;
     const searchPartyId = finalPartyId;
@@ -5652,7 +5677,11 @@ app.post("/api/transactions", async (req, res) => {
         // Include nested objects for compatibility
         debitAccount: debitAccount || (transactionType === 'debit' ? { id: finalTargetAccountId } : null),
         creditAccount: creditAccount || (transactionType === 'credit' ? { id: finalTargetAccountId } : null),
-        paymentDetails: paymentDetails || { amount: numericAmount },
+        paymentDetails: {
+          ...(paymentDetails || {}),
+          amount: numericAmount,
+          charge: chargeAmount || 0
+        },
         customerBankAccount: customerBankAccount || null,
         meta: Object.keys(meta || {}).length ? meta : undefined,
         // Store money exchange information if available
@@ -5668,6 +5697,8 @@ app.post("/api/transactions", async (req, res) => {
           amount_bdt: moneyExchangeInfo.amount_bdt || moneyExchangeInfo.amount || party?.amount_bdt || null
         } : null,
         amount: numericAmount,
+        charge: chargeAmount,
+        totalAmount: numericAmount + chargeAmount,
         branchId: branch.branchId,
         branchName: branch.branchName,
         branchCode: branch.branchCode,
@@ -17573,7 +17604,7 @@ app.post("/bank-accounts/transfers", async (req, res) => {
 // ==================== HR MANAGEMENT ROUTES ====================
 
 // ✅ POST: Create new employee
-app.post("/hr/employers", async (req, res) => {
+app.post("/api/hr/employers", async (req, res) => {
   try {
     const {
       // Personal Information
@@ -17725,7 +17756,7 @@ app.post("/hr/employers", async (req, res) => {
 });
 
 // ✅ GET: Get all employees with filters
-app.get("/hr/employers", async (req, res) => {
+app.get("/api/hr/employers", async (req, res) => {
   try {
     const {
       page = 1,
@@ -17814,7 +17845,7 @@ app.get("/hr/employers", async (req, res) => {
 });
 
 // ✅ GET: Get single employee by ID
-app.get("/hr/employers/:id", async (req, res) => {
+app.get("/api/hr/employers/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -17855,7 +17886,7 @@ app.get("/hr/employers/:id", async (req, res) => {
 });
 
 // ✅ PUT: Update employee
-app.put("/hr/employers/:id", async (req, res) => {
+app.put("/api/hr/employers/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const updateData = req.body;
@@ -17985,7 +18016,7 @@ app.put("/hr/employers/:id", async (req, res) => {
 });
 
 // ✅ DELETE: Delete employee (soft delete)
-app.delete("/hr/employers/:id", async (req, res) => {
+app.delete("/api/hr/employers/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -18050,7 +18081,7 @@ app.delete("/hr/employers/:id", async (req, res) => {
 });
 
 // ✅ GET: Get employee statistics
-app.get("/hr/employers/stats/overview", async (req, res) => {
+app.get("/api/hr/employers/stats/overview", async (req, res) => {
   try {
     const { branch, branchId } = req.query;
 
