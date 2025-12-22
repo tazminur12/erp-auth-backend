@@ -14353,52 +14353,86 @@ app.post('/api/haj-umrah/agent-packages/:id/assign-customers', async (req, res) 
     const isHajjPackage = packageType.includes('haj') || packageType.includes('hajj');
     const isUmrahPackage = packageType.includes('umrah');
 
+    // Log package info for debugging
+    console.log('Assigning customers to package:', {
+      packageId: id,
+      packageName: package.packageName,
+      packagePrice,
+      packageType,
+      isHajjPackage,
+      isUmrahPackage
+    });
+
     // Handle array of customer IDs
     if (customerIds && Array.isArray(customerIds)) {
       const existingIds = existingCustomers.map(c => c._id?.toString() || c.toString());
       const newIds = customerIds
         .map(id => new ObjectId(id))
         .filter(id => !existingIds.includes(id.toString()));
+      
+      if (newIds.length === 0) {
+        return res.json({
+          success: true,
+          message: 'All customers are already assigned to this package'
+        });
+      }
 
       // Update customer profiles with package amount
+      let updatedCount = 0;
+      let notFoundCount = 0;
+      const updateErrors = [];
+
       for (const customerId of newIds) {
         try {
-          // Try to find in haji collection
-          if (isHajjPackage) {
-            const hajiCustomer = await haji.findOne({ 
-              $or: [{ _id: customerId }, { customerId: customerId.toString() }] 
-            });
-            if (hajiCustomer) {
-              const currentTotal = parseFloat(hajiCustomer.totalAmount || 0);
-              const newTotal = currentTotal + packagePrice;
-              await haji.updateOne(
-                { _id: hajiCustomer._id },
-                {
-                  $set: {
-                    totalAmount: newTotal,
-                    packageInfo: {
-                      packageId: new ObjectId(id),
-                      packageName: package.packageName,
-                      packageType: package.packageType || 'Regular',
-                      customPackageType: package.customPackageType || '',
-                      agentId: package.agentId,
-                      assignedAt: new Date()
-                    },
-                    updatedAt: new Date()
-                  }
+          const customerIdStr = customerId.toString();
+          let customerUpdated = false;
+
+          // Try to find in haji collection (check both _id and customerId field)
+          const hajiCustomer = await haji.findOne({ 
+            $or: [
+              { _id: customerId },
+              { customerId: customerIdStr }
+            ],
+            isActive: { $ne: false }
+          });
+          
+          if (hajiCustomer) {
+            const currentTotal = parseFloat(hajiCustomer.totalAmount || hajiCustomer.familyTotal || 0);
+            const newTotal = currentTotal + packagePrice;
+            await haji.updateOne(
+              { _id: hajiCustomer._id },
+              {
+                $set: {
+                  totalAmount: newTotal,
+                  packageInfo: {
+                    packageId: new ObjectId(id),
+                    packageName: package.packageName,
+                    packageType: package.packageType || 'Regular',
+                    customPackageType: package.customPackageType || '',
+                    agentId: package.agentId,
+                    assignedAt: new Date()
+                  },
+                  updatedAt: new Date()
                 }
-              );
-              continue;
-            }
+              }
+            );
+              console.log(`Updated Haji customer ${customerIdStr} with amount ${packagePrice}, new total: ${newTotal}`);
+              customerUpdated = true;
+              updatedCount++;
           }
 
-          // Try to find in umrah collection
-          if (isUmrahPackage) {
+          // Try to find in umrah collection (check both _id and customerId field)
+          if (!customerUpdated) {
             const umrahCustomer = await umrah.findOne({ 
-              $or: [{ _id: customerId }, { customerId: customerId.toString() }] 
+              $or: [
+                { _id: customerId },
+                { customerId: customerIdStr }
+              ],
+              isActive: { $ne: false }
             });
+            
             if (umrahCustomer) {
-              const currentTotal = parseFloat(umrahCustomer.totalAmount || 0);
+              const currentTotal = parseFloat(umrahCustomer.totalAmount || umrahCustomer.familyTotal || 0);
               const newTotal = currentTotal + packagePrice;
               await umrah.updateOne(
                 { _id: umrahCustomer._id },
@@ -14417,29 +14451,51 @@ app.post('/api/haj-umrah/agent-packages/:id/assign-customers', async (req, res) 
                   }
                 }
               );
-              continue;
+              console.log(`Updated Umrah customer ${customerIdStr} with amount ${packagePrice}, new total: ${newTotal}`);
+              customerUpdated = true;
+              updatedCount++;
             }
           }
 
           // Try to find in airCustomers collection
-          const airCustomer = await airCustomers.findOne({ 
-            $or: [{ _id: customerId }, { customerId: customerId.toString() }] 
-          });
-          if (airCustomer) {
-            const currentTotal = parseFloat(airCustomer.totalAmount || 0);
-            const newTotal = currentTotal + packagePrice;
-            await airCustomers.updateOne(
-              { _id: airCustomer._id },
-              {
-                $set: {
-                  totalAmount: newTotal,
-                  updatedAt: new Date()
+          if (!customerUpdated) {
+            const airCustomer = await airCustomers.findOne({ 
+              $or: [
+                { _id: customerId },
+                { customerId: customerIdStr }
+              ],
+              isActive: { $ne: false }
+            });
+            
+            if (airCustomer) {
+              const currentTotal = parseFloat(airCustomer.totalAmount || 0);
+              const newTotal = currentTotal + packagePrice;
+              await airCustomers.updateOne(
+                { _id: airCustomer._id },
+                {
+                  $set: {
+                    totalAmount: newTotal,
+                    updatedAt: new Date()
+                  }
                 }
-              }
-            );
+              );
+              console.log(`Updated AirCustomer ${customerIdStr} with amount ${packagePrice}, new total: ${newTotal}`);
+              customerUpdated = true;
+              updatedCount++;
+            }
+          }
+
+          if (!customerUpdated) {
+            console.warn(`Customer ${customerIdStr} not found in any collection (haji, umrah, airCustomers)`);
+            notFoundCount++;
           }
         } catch (err) {
           console.error(`Error updating customer ${customerId}:`, err);
+          console.error('Error stack:', err.stack);
+          updateErrors.push({
+            customerId: customerId.toString(),
+            error: err.message
+          });
           // Continue with other customers even if one fails
         }
       }
@@ -14456,9 +14512,20 @@ app.post('/api/haj-umrah/agent-packages/:id/assign-customers', async (req, res) 
         }
       );
 
+      const responseMessage = updatedCount > 0 
+        ? `${newIds.length} customers assigned, ${updatedCount} profiles updated with package amount`
+        : `${newIds.length} customers assigned, but ${notFoundCount} customer profiles not found`;
+
       return res.json({
         success: true,
-        message: `${newIds.length} customers assigned successfully`
+        message: responseMessage,
+        data: {
+          assigned: newIds.length,
+          profilesUpdated: updatedCount,
+          notFound: notFoundCount,
+          packagePrice,
+          errors: updateErrors.length > 0 ? updateErrors : undefined
+        }
       });
     }
 
