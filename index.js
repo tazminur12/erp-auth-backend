@@ -5343,10 +5343,10 @@ app.post("/api/transactions", async (req, res) => {
     
     if (rawCharge !== undefined && rawCharge !== null) {
       chargeAmount = parseFloat(rawCharge);
-      if (isNaN(chargeAmount) || chargeAmount < 0) {
+      if (isNaN(chargeAmount)) {
         return res.status(400).json({
           success: false,
-          message: "Charge must be a valid non-negative number"
+          message: "Charge must be a valid number"
         });
       }
     }
