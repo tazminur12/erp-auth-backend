@@ -19763,7 +19763,7 @@ app.get("/api/dashboard/summary", async (req, res) => {
           _id: null,
           totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
           paidAmount: { $sum: { $ifNull: ["$paidAmount", 0] } },
-          dueAmount: { $sum: { $ifNull: ["$dueAmount", 0] } }
+          dueAmount: { $sum: { $ifNull: ["$totalDue", 0] } }
         }
       }
     ]).toArray();
@@ -19805,7 +19805,7 @@ app.get("/api/dashboard/summary", async (req, res) => {
           _id: null,
           totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
           paidAmount: { $sum: { $ifNull: ["$paidAmount", 0] } },
-          dueAmount: { $sum: { $ifNull: ["$dueAmount", 0] } }
+          dueAmount: { $sum: { $ifNull: ["$totalDue", 0] } }
         }
       }
     ]).toArray();
@@ -19841,7 +19841,7 @@ app.get("/api/dashboard/summary", async (req, res) => {
           _id: null,
           totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
           paidAmount: { $sum: { $ifNull: ["$paidAmount", 0] } },
-          dueAmount: { $sum: { $ifNull: ["$dueAmount", 0] } }
+          dueAmount: { $sum: { $ifNull: ["$totalDue", 0] } }
         }
       }
     ]).toArray();
