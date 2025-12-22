@@ -3552,7 +3552,8 @@ app.post("/vendors", async (req, res) => {
       contactNo,
       dob,
       nid,
-      passport
+      passport,
+      logo
     } = req.body;
 
     if (!tradeName || !tradeLocation || !ownerName || !contactNo) {
@@ -3574,6 +3575,7 @@ app.post("/vendors", async (req, res) => {
       dob: dob || null,
       nid: nid?.trim() || "",
       passport: passport?.trim() || "",
+      logo: logo || "",
       isActive: true,
       createdAt: new Date(),
     };
@@ -3620,6 +3622,7 @@ app.post("/vendors/bulk", async (req, res) => {
         dob,
         nid,
         passport,
+        logo,
       } = item;
 
       // Basic required validations (same as single add)
@@ -3642,6 +3645,7 @@ app.post("/vendors/bulk", async (req, res) => {
         dob: dob || null,
         nid: nid ? String(nid).trim() : "",
         passport: passport ? String(passport).trim() : "",
+        logo: logo || "",
         isActive: true,
         createdAt: now,
         updatedAt: now,
@@ -3833,13 +3837,13 @@ app.patch("/vendors/:id", async (req, res) => {
     }
 
     // Prepare update data - only allow specific fields to be updated
-    const allowedFields = ['tradeName', 'tradeLocation', 'ownerName', 'contactNo', 'dob', 'nid', 'passport'];
+    const allowedFields = ['tradeName', 'tradeLocation', 'ownerName', 'contactNo', 'dob', 'nid', 'passport', 'logo'];
     const filteredUpdateData = {};
 
     // Only allow specific fields to be updated
     allowedFields.forEach(field => {
       if (updateData[field] !== undefined) {
-        // Trim string fields
+        // Trim string fields (except logo which can be empty string)
         if (typeof updateData[field] === 'string') {
           filteredUpdateData[field] = updateData[field].trim();
         } else {
@@ -14889,6 +14893,37 @@ app.post('/haj-umrah/packages', async (req, res) => {
       });
     }
 
+    // Auto-generate package name with serial number
+    // Find existing packages with similar base name pattern (baseName + " " + number)
+    const basePackageName = String(packageName).trim();
+    
+    // Find all packages that start with the base name and have a number suffix
+    // Pattern: "Base Name 01", "Base Name 02", etc.
+    const existingPackages = await packages.find({
+      packageName: { $regex: new RegExp(`^${basePackageName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s+\\d+$`, 'i') }
+    }).toArray();
+
+    let nextSerialNumber = 1; // Start from 01
+
+    if (existingPackages.length > 0) {
+      // Extract numbers from existing package names and find the highest
+      const numbers = existingPackages
+        .map(pkg => {
+          const match = pkg.packageName.match(/(\d+)$/);
+          return match ? parseInt(match[1], 10) : 0;
+        })
+        .filter(num => num > 0);
+
+      if (numbers.length > 0) {
+        const maxNumber = Math.max(...numbers);
+        nextSerialNumber = maxNumber + 1;
+      }
+    }
+
+    // Format serial number with leading zero (01, 02, ..., 99, 100, etc.)
+    const serialSuffix = String(nextSerialNumber).padStart(2, '0');
+    const finalPackageName = `${basePackageName} ${serialSuffix}`;
+
     // Ensure totals.passengerTotals structure exists
     // Passenger totals are stored separately: adult, child, infant
     const totalsData = totals || {};
@@ -14919,7 +14954,7 @@ app.post('/haj-umrah/packages', async (req, res) => {
     // The costing endpoint only updates costs, totals.grandTotal, etc.
     // Passenger totals (adult, child, infant) are stored separately in totals.passengerTotals
     const packageDoc = {
-      packageName: String(packageName),
+      packageName: finalPackageName,
       packageYear: String(packageYear),
       packageMonth: packageMonth || '',
       packageType: packageType || 'Regular',
