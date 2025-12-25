@@ -9202,6 +9202,75 @@ app.get("/loans/dashboard/summary", async (req, res) => {
       rejected: 0
     };
 
+    // Calculate actual cash flow from transactions
+    // 1. Total Principal Disbursed (We gave loan) = Debit transactions on 'giving' loans
+    // 2. Total Principal Repaid to us (We received back) = Credit transactions on 'giving' loans
+    // 3. Total Principal Received (We took loan) = Credit transactions on 'receiving' loans
+    // 4. Total Principal Repaid by us (We paid back) = Debit transactions on 'receiving' loans
+    
+    // Profit calculation:
+    // For 'giving' loans: Profit = (Total Repaid by borrower) - (Principal Disbursed) [Simple view, but actually profit comes from interest/extra]
+    // Note: The system currently tracks totalAmount and paidAmount.
+    // Let's rely on transaction summation for accurate cash flow.
+
+    const cashFlowAgg = await transactions.aggregate([
+      { $match: txFilter },
+      {
+        $lookup: {
+          from: "loans",
+          let: { pid: "$partyId" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $or: [
+                    { $eq: ["$loanId", "$$pid"] },
+                    { $eq: [{ $toString: "$_id" }, "$$pid"] }
+                  ]
+                }
+              }
+            },
+            { $project: { loanDirection: 1 } }
+          ],
+          as: "loan"
+        }
+      },
+      { $unwind: { path: "$loan", preserveNullAndEmptyArrays: true } },
+      {
+        $group: {
+          _id: "$loan.loanDirection",
+          totalDebit: { $sum: { $cond: [{ $eq: ["$transactionType", "debit"] }, "$amount", 0] } },
+          totalCredit: { $sum: { $cond: [{ $eq: ["$transactionType", "credit"] }, "$amount", 0] } }
+        }
+      }
+    ]).toArray();
+
+    let givingDisbursed = 0; // We gave out (Debit)
+    let givingRepaid = 0;    // We got back (Credit)
+    let receivingTaken = 0;  // We took loan (Credit)
+    let receivingRepaid = 0; // We paid back (Debit)
+
+    cashFlowAgg.forEach(row => {
+      if (row._id === 'giving') {
+        givingDisbursed = row.totalDebit || 0;
+        givingRepaid = row.totalCredit || 0;
+      } else if (row._id === 'receiving') {
+        receivingTaken = row.totalCredit || 0;
+        receivingRepaid = row.totalDebit || 0;
+      }
+    });
+
+    // Net Profit/Loss logic:
+    // Profit from Giving Loans = Repaid - Disbursed (if Repaid > Disbursed, else it's just recovery so far)
+    // Actually, simple cashflow:
+    // Net Cash In = (Giving Repaid + Receiving Taken)
+    // Net Cash Out = (Giving Disbursed + Receiving Repaid)
+    // Net Cash Flow = Net Cash In - Net Cash Out
+    
+    const totalCashIn = givingRepaid + receivingTaken;
+    const totalCashOut = givingDisbursed + receivingRepaid;
+    const netCashFlow = totalCashIn - totalCashOut;
+
     // Breakdown by loan direction
     const directionBreakdown = await loans.aggregate([
       { $match: loanFilter },
@@ -9303,7 +9372,16 @@ app.get("/loans/dashboard/summary", async (req, res) => {
         totalAmount: Number(base.totalAmount || 0),
         paidAmount: Number(base.paidAmount || 0),
         totalDue: Number(base.totalDue || 0),
-        profitLoss: Number(txTotals.totalCredit || 0) - Number(txTotals.totalDebit || 0)
+        // Profit/Loss based on Net Cash Flow
+        netCashFlow: netCashFlow,
+        // Detailed cash flow
+        cashIn: totalCashIn,
+        cashOut: totalCashOut,
+        // Breakdown
+        givingDisbursed,
+        givingRepaid,
+        receivingTaken,
+        receivingRepaid
       },
       directionBreakdown: directionBreakdown.map((d) => ({
         loanDirection: d._id || 'unknown',
