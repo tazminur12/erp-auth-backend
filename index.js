@@ -9634,715 +9634,6 @@ app.get("/orders/analytics", async (req, res) => {
   }
 });
 
-// Helper: Generate unique Haj-Umrah Agent ID
-const generateHajUmrahAgentId = async (db) => {
-  const counterCollection = db.collection("counters");
-  
-  // Create counter key for haj-umrah agent
-  const counterKey = `haj_umrah_agent`;
-  
-  // Find or create counter
-  let counter = await counterCollection.findOne({ counterKey });
-  
-  if (!counter) {
-    // Create new counter starting from 0
-    await counterCollection.insertOne({ counterKey, sequence: 0 });
-    counter = { sequence: 0 };
-  }
-  
-  // Increment sequence
-  const newSequence = counter.sequence + 1;
-  
-  // Update counter
-  await counterCollection.updateOne(
-    { counterKey },
-    { $set: { sequence: newSequence } }
-  );
-  
-  // Format: HU + 00001 (e.g., HU00001)
-  const serial = String(newSequence).padStart(5, '0');
-  
-  return `HUAGE${serial}`;
-};
-
-// ==================== AGENT ROUTES ====================
-// Helper functions for financial calculations
-// Helper function to safely convert mixed string/number values
-const toNumeric = (value) => {
-  if (value === undefined || value === null) return null;
-  if (typeof value === 'number' && !Number.isNaN(value)) return value;
-  if (typeof value === 'string') {
-    const cleaned = value.replace(/[^0-9.-]/g, '');
-    if (!cleaned) return null;
-    const numericValue = Number(cleaned);
-    return Number.isNaN(numericValue) ? null : numericValue;
-  }
-  return null;
-};
-
-// Helper function to resolve number from multiple possible values
-const resolveNumber = (...values) => {
-  for (const value of values) {
-    const numericValue = toNumeric(value);
-    if (numericValue !== null) {
-      return numericValue;
-    }
-  }
-  return 0;
-};
-
-// Calculate profit/loss for a package
-const calculateProfitLoss = (pkg = {}) => {
-  const totals = pkg.totals || {};
-  const profitLossFromApi = pkg.profitLoss || {};
-
-  const costingPrice =
-    resolveNumber(
-      profitLossFromApi.totalCostingPrice,
-      profitLossFromApi.costingPrice,
-      totals.costingPrice,
-      totals.grandTotal,
-      pkg.costingPrice
-    ) || 0;
-
-  const packagePrice =
-    resolveNumber(
-      profitLossFromApi.packagePrice,
-      pkg.totalPrice,
-      totals.packagePrice,
-      totals.subtotal,
-      totals.grandTotal
-    ) || 0;
-
-  const profitValue =
-    resolveNumber(
-      profitLossFromApi.profitOrLoss,
-      profitLossFromApi.profitLoss
-    ) || (packagePrice - costingPrice);
-
-  return {
-    costingPrice,
-    packagePrice,
-    profitValue,
-  };
-};
-
-// Check if package is Hajj type
-const isHajjPackage = (pkg) => {
-  return (
-    pkg.packageType === 'Hajj' ||
-    pkg.packageType === 'হজ্জ' ||
-    pkg.customPackageType === 'Custom Hajj' ||
-    pkg.customPackageType === 'Hajj'
-  );
-};
-
-// Check if package is Umrah type
-const isUmrahPackage = (pkg) => {
-  return (
-    pkg.packageType === 'Umrah' ||
-    pkg.packageType === 'উমরাহ' ||
-    pkg.customPackageType === 'Custom Umrah' ||
-    pkg.customPackageType === 'Umrah'
-  );
-};
-
-// Calculate financial summary from packages
-const calculateFinancialSummary = (packages = []) => {
-  const summary = {
-    overall: {
-      customers: 0,
-      billed: 0,
-      paid: 0,
-      due: 0,
-      costingPrice: 0,
-      advance: 0,
-      profit: 0,
-    },
-    hajj: {
-      customers: 0,
-      billed: 0,
-      paid: 0,
-      due: 0,
-      costingPrice: 0,
-      advance: 0,
-      profit: 0,
-    },
-    umrah: {
-      customers: 0,
-      billed: 0,
-      paid: 0,
-      due: 0,
-      costingPrice: 0,
-      advance: 0,
-      profit: 0,
-    },
-  };
-
-  packages.forEach((pkg) => {
-    // Calculate assigned customers count
-    const assignedCount = Array.isArray(pkg.assignedCustomers)
-      ? pkg.assignedCustomers.length
-      : 0;
-
-    // Calculate billed amount (package total price)
-    const billed = resolveNumber(
-      pkg.financialSummary?.totalBilled,
-      pkg.financialSummary?.billTotal,
-      pkg.financialSummary?.subtotal,
-      pkg.paymentSummary?.totalBilled,
-      pkg.paymentSummary?.billTotal,
-      pkg.totalPrice,
-      pkg.totalPriceBdt,
-      pkg.totals?.grandTotal,
-      pkg.totals?.subtotal,
-      pkg.profitLoss?.packagePrice,
-      pkg.profitLoss?.totalOriginalPrice
-    );
-
-    // Calculate paid amount
-    const paid = resolveNumber(
-      pkg.financialSummary?.totalPaid,
-      pkg.financialSummary?.paidAmount,
-      pkg.paymentSummary?.totalPaid,
-      pkg.paymentSummary?.paid,
-      pkg.payments?.totalPaid,
-      pkg.payments?.paid,
-      pkg.totalPaid,
-      pkg.depositReceived,
-      pkg.receivedAmount
-    );
-
-    // Calculate due (billed - paid)
-    const due = Math.max(billed - paid, 0);
-
-    // Calculate profit/loss
-    const profit = calculateProfitLoss(pkg);
-    const profitValue = profit.profitValue || 0;
-    const costingPrice = profit.costingPrice || 0;
-
-    // Determine package type
-    const isHajj = isHajjPackage(pkg);
-    const isUmrah = isUmrahPackage(pkg);
-
-    // Add to overall summary
-    summary.overall.customers += assignedCount;
-    summary.overall.billed += billed;
-    summary.overall.paid += paid;
-    summary.overall.due += due;
-    summary.overall.costingPrice += costingPrice;
-    summary.overall.profit += profitValue;
-
-    // Add to type-specific summary
-    if (isHajj) {
-      summary.hajj.customers += assignedCount;
-      summary.hajj.billed += billed;
-      summary.hajj.paid += paid;
-      summary.hajj.due += due;
-      summary.hajj.costingPrice += costingPrice;
-      summary.hajj.profit += profitValue;
-    } else if (isUmrah) {
-      summary.umrah.customers += assignedCount;
-      summary.umrah.billed += billed;
-      summary.umrah.paid += paid;
-      summary.umrah.due += due;
-      summary.umrah.costingPrice += costingPrice;
-      summary.umrah.profit += profitValue;
-    }
-  });
-
-  // Calculate advance = paid - costingPrice (can be negative)
-  summary.overall.advance = summary.overall.paid - summary.overall.costingPrice;
-  summary.hajj.advance = summary.hajj.paid - summary.hajj.costingPrice;
-  summary.umrah.advance = summary.umrah.paid - summary.umrah.costingPrice;
-
-  return summary;
-};
-
-// Create Agent
-app.post("/api/haj-umrah/agents", async (req, res) => {
-  try {
-    const {
-      tradeName,
-      tradeLocation,
-      ownerName,
-      contactNo,
-      dob,
-      nid,
-      passport
-    } = req.body;
-
-    if (!tradeName || !tradeLocation || !ownerName || !contactNo) {
-      return res.status(400).send({
-        error: true,
-        message: "tradeName, tradeLocation, ownerName and contactNo are required"
-      });
-    }
-
-    // Basic validations similar to frontend
-    const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
-    if (!phoneRegex.test(String(contactNo).trim())) {
-      return res.status(400).send({ error: true, message: "Enter a valid phone number" });
-    }
-    if (nid && !/^[0-9]{8,20}$/.test(String(nid).trim())) {
-      return res.status(400).send({ error: true, message: "NID should be 8-20 digits" });
-    }
-    if (passport && !/^[A-Za-z0-9]{6,12}$/.test(String(passport).trim())) {
-      return res.status(400).send({ error: true, message: "Passport should be 6-12 chars" });
-    }
-    if (dob && !isValidDate(dob)) {
-      return res.status(400).send({ error: true, message: "Invalid date format for dob (YYYY-MM-DD)" });
-    }
-
-    // Generate unique agent ID
-    const agentId = await generateHajUmrahAgentId(db);
-
-    const now = new Date();
-    const doc = {
-      agentId,
-      tradeName: String(tradeName).trim(),
-      tradeLocation: String(tradeLocation).trim(),
-      ownerName: String(ownerName).trim(),
-      contactNo: String(contactNo).trim(),
-      dob: dob || null,
-      nid: nid || "",
-      passport: passport || "",
-      isActive: true,
-      createdAt: now,
-      updatedAt: now
-    };
-
-    const result = await agents.insertOne(doc);
-    return res.status(201).send({
-      success: true,
-      message: "Agent created successfully",
-      data: { _id: result.insertedId, ...doc }
-    });
-  } catch (error) {
-    console.error('Create agent error:', error);
-    res.status(500).json({ error: true, message: "Internal server error while creating agent" });
-  }
-});
-
-// Bulk Create Agents
-app.post("/api/haj-umrah/agents/bulk", async (req, res) => {
-  try {
-    // Support both: body = [...]  or  body = { agents: [...] }
-    const agentsPayload = Array.isArray(req.body) ? req.body : req.body?.agents;
-
-    if (!Array.isArray(agentsPayload) || agentsPayload.length === 0) {
-      return res.status(400).send({
-        error: true,
-        message: "agents array is required and should not be empty"
-      });
-    }
-
-    const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
-
-    const docs = [];
-    for (let i = 0; i < agentsPayload.length; i++) {
-      const item = agentsPayload[i] || {};
-      const {
-        tradeName,
-        tradeLocation,
-        ownerName,
-        contactNo,
-        dob,
-        nid,
-        passport
-      } = item;
-
-      // Basic required fields
-      if (!tradeName || !tradeLocation || !ownerName || !contactNo) {
-        return res.status(400).send({
-          error: true,
-          message: `Row ${i + 1}: tradeName, tradeLocation, ownerName and contactNo are required`
-        });
-      }
-
-      // Same validations as single create
-      if (!phoneRegex.test(String(contactNo).trim())) {
-        return res.status(400).send({
-          error: true,
-          message: `Row ${i + 1}: Enter a valid phone number`
-        });
-      }
-      if (nid && !/^[0-9]{8,20}$/.test(String(nid).trim())) {
-        return res.status(400).send({
-          error: true,
-          message: `Row ${i + 1}: NID should be 8-20 digits`
-        });
-      }
-      if (passport && !/^[A-Za-z0-9]{6,12}$/.test(String(passport).trim())) {
-        return res.status(400).send({
-          error: true,
-          message: `Row ${i + 1}: Passport should be 6-12 chars`
-        });
-      }
-      if (dob && !isValidDate(dob)) {
-        return res.status(400).send({
-          error: true,
-          message: `Row ${i + 1}: Invalid date format for dob (YYYY-MM-DD)`
-        });
-      }
-
-      // Generate unique agent ID for each row
-      const agentId = await generateHajUmrahAgentId(db);
-      const now = new Date();
-
-      docs.push({
-        agentId,
-        tradeName: String(tradeName).trim(),
-        tradeLocation: String(tradeLocation).trim(),
-        ownerName: String(ownerName).trim(),
-        contactNo: String(contactNo).trim(),
-        dob: dob || null,
-        nid: nid || "",
-        passport: passport || "",
-        isActive: true,
-        createdAt: now,
-        updatedAt: now
-      });
-    }
-
-    const result = await agents.insertMany(docs);
-    const insertedIds = result.insertedIds || {};
-
-    const responseData = docs.map((doc, index) => ({
-      _id: insertedIds[index] || null,
-      ...doc
-    }));
-
-    return res.status(201).send({
-      success: true,
-      message: "Agents created successfully",
-      count: responseData.length,
-      data: responseData
-    });
-  } catch (error) {
-    console.error('Bulk create agents error:', error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while creating agents in bulk"
-    });
-  }
-});
-
-// List Agents (with pagination and search)
-app.get("/api/haj-umrah/agents", async (req, res) => {
-  try {
-    const { page = 1, limit = 50, q } = req.query;
-    const pageNum = Math.max(parseInt(page) || 1, 1);
-    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 20000);
-
-    const filter = { isActive: { $ne: false } };
-    if (q && String(q).trim()) {
-      const text = String(q).trim();
-      filter.$or = [
-        { tradeName: { $regex: text, $options: 'i' } },
-        { tradeLocation: { $regex: text, $options: 'i' } },
-        { ownerName: { $regex: text, $options: 'i' } },
-        { contactNo: { $regex: text, $options: 'i' } },
-        { nid: { $regex: text, $options: 'i' } },
-        { passport: { $regex: text, $options: 'i' } }
-      ];
-    }
-
-    const total = await agents.countDocuments(filter);
-    const data = await agents
-      .find(filter)
-      .sort({ createdAt: -1 })
-      .skip((pageNum - 1) * limitNum)
-      .limit(limitNum)
-      .toArray();
-
-    // Initialize due amounts if missing (migration for old agents)
-    for (const agent of data) {
-      if (agent.totalDue === undefined || agent.hajDue === undefined || agent.umrahDue === undefined) {
-        console.log('🔄 Migrating agent to add due amounts:', agent._id);
-        const updateDoc = {};
-        if (agent.totalDue === undefined) updateDoc.totalDue = 0;
-        if (agent.hajDue === undefined) updateDoc.hajDue = 0;
-        if (agent.umrahDue === undefined) updateDoc.umrahDue = 0;
-        updateDoc.updatedAt = new Date();
-
-        await agents.updateOne(
-          { _id: agent._id },
-          { $set: updateDoc }
-        );
-
-        Object.assign(agent, updateDoc);
-        console.log('✅ Agent migrated successfully');
-      }
-    }
-
-    res.send({
-      success: true,
-      data,
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
-        total,
-        totalPages: Math.ceil(total / limitNum)
-      }
-    });
-  } catch (error) {
-    console.error('List agents error:', error);
-    res.status(500).json({ error: true, message: "Internal server error while listing agents" });
-  }
-});
-
-// Get single agent by id - UPDATED VERSION
-app.get("/api/haj-umrah/agents/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).send({ error: true, message: "Invalid agent id" });
-    }
-
-    const agent = await agents.findOne({ _id: new ObjectId(id) });
-    if (!agent) {
-      return res.status(404).send({ error: true, message: "Agent not found" });
-    }
-
-    // Fetch all packages for this agent
-    const packages = await agentPackages
-      .find({ agentId: new ObjectId(id) })
-      .toArray();
-
-    // Calculate financial summary from packages
-    const financialSummary = calculateFinancialSummary(packages);
-
-    // Initialize due amounts if missing (migration for old agents)
-    if (
-      agent.totalDue === undefined ||
-      agent.hajDue === undefined ||
-      agent.umrahDue === undefined
-    ) {
-      console.log("🔄 Migrating agent to add due amounts:", agent._id);
-      const updateDoc = {};
-      if (agent.totalDue === undefined) updateDoc.totalDue = 0;
-      if (agent.hajDue === undefined) updateDoc.hajDue = 0;
-      if (agent.umrahDue === undefined) updateDoc.umrahDue = 0;
-      updateDoc.updatedAt = new Date();
-
-      await agents.updateOne({ _id: new ObjectId(id) }, { $set: updateDoc });
-
-      Object.assign(agent, updateDoc);
-      console.log("✅ Agent migrated successfully");
-    }
-
-    // Add calculated financial summary to agent object
-    // Frontend will use these values with pickNumberFromObject function
-    const agentWithSummary = {
-      ...agent,
-      // Overall summary
-      totalHaji: financialSummary.overall.customers,
-      totalCustomers: financialSummary.overall.customers,
-      totalBilled: financialSummary.overall.billed,
-      totalBill: financialSummary.overall.billed,
-      totalBillAmount: financialSummary.overall.billed,
-      totalRevenue: financialSummary.overall.billed,
-      totalPaid: financialSummary.overall.paid,
-      totalDeposit: financialSummary.overall.paid,
-      totalReceived: financialSummary.overall.paid,
-      totalCollection: financialSummary.overall.paid,
-      totalDue: financialSummary.overall.due,
-      totalAdvance: financialSummary.overall.advance,
-      totalProfit: financialSummary.overall.profit,
-      totalCostingPrice: financialSummary.overall.costingPrice,
-
-      // Hajj summary
-      hajCustomers: financialSummary.hajj.customers,
-      hajjCustomers: financialSummary.hajj.customers,
-      totalHajjCustomers: financialSummary.hajj.customers,
-      totalHajCustomers: financialSummary.hajj.customers,
-      hajBill: financialSummary.hajj.billed,
-      hajjBill: financialSummary.hajj.billed,
-      totalHajjBill: financialSummary.hajj.billed,
-      hajTotalBill: financialSummary.hajj.billed,
-      hajPaid: financialSummary.hajj.paid,
-      hajjPaid: financialSummary.hajj.paid,
-      hajjDeposit: financialSummary.hajj.paid,
-      hajDeposit: financialSummary.hajj.paid,
-      totalHajjPaid: financialSummary.hajj.paid,
-      hajDue: financialSummary.hajj.due,
-      hajAdvance: financialSummary.hajj.advance,
-      hajProfit: financialSummary.hajj.profit,
-      hajCostingPrice: financialSummary.hajj.costingPrice,
-
-      // Umrah summary
-      umrahCustomers: financialSummary.umrah.customers,
-      totalUmrahCustomers: financialSummary.umrah.customers,
-      totalUmrahHaji: financialSummary.umrah.customers,
-      umrahBill: financialSummary.umrah.billed,
-      totalUmrahBill: financialSummary.umrah.billed,
-      umrahPaid: financialSummary.umrah.paid,
-      umrahDeposit: financialSummary.umrah.paid,
-      totalUmrahPaid: financialSummary.umrah.paid,
-      umrahDue: financialSummary.umrah.due,
-      umrahAdvance: financialSummary.umrah.advance,
-      umrahProfit: financialSummary.umrah.profit,
-      umrahCostingPrice: financialSummary.umrah.costingPrice,
-
-      // Include the full financial summary object for reference
-      financialSummary: financialSummary,
-    };
-
-    res.send({ success: true, data: agentWithSummary });
-  } catch (error) {
-    console.error("Get agent error:", error);
-    res
-      .status(500)
-      .json({
-        error: true,
-        message: "Internal server error while fetching agent",
-      });
-  }
-});
-
-// PUT /api/haj-umrah/agents/:id
-app.put("/api/haj-umrah/agents/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).send({ error: true, message: "Invalid agent id" });
-    }
-
-    const {
-      tradeName,
-      tradeLocation,
-      ownerName,
-      contactNo,
-      dob,
-      nid,
-      passport,
-      isActive,
-      totalDue,
-      hajDue,
-      umrahDue,
-    } = req.body;
-
-    // Helpers
-    const isValidDateYMD = (str) => {
-      if (typeof str !== "string") return false;
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(str)) return false;
-      const d = new Date(str);
-      // Ensure date is valid and preserved in UTC string (avoid 31->next month issues)
-      return !Number.isNaN(d.getTime()) && str === d.toISOString().slice(0, 10);
-    };
-
-    const parseNumberField = (value, fieldName) => {
-      if (value === "" || value === null) return 0; // allow empty/null as 0 if you want
-      const n = typeof value === "number" ? value : parseFloat(value);
-      if (!Number.isFinite(n)) {
-        throw new Error(`${fieldName} must be a valid number`);
-      }
-      return n;
-    };
-
-    const update = { $set: { updatedAt: new Date() } };
-
-    if (tradeName !== undefined) update.$set.tradeName = String(tradeName).trim();
-    if (tradeLocation !== undefined) update.$set.tradeLocation = String(tradeLocation).trim();
-    if (ownerName !== undefined) update.$set.ownerName = String(ownerName).trim();
-    if (contactNo !== undefined) update.$set.contactNo = String(contactNo).trim();
-    if (dob !== undefined) {
-      if (dob && !isValidDateYMD(dob)) {
-        return res.status(400).send({ error: true, message: "Invalid date format for dob (YYYY-MM-DD)" });
-      }
-      update.$set.dob = dob || null;
-    }
-    if (nid !== undefined) update.$set.nid = String(nid ?? "").trim();
-    if (passport !== undefined) update.$set.passport = String(passport ?? "").trim();
-    if (isActive !== undefined) update.$set.isActive = Boolean(isActive);
-    if (totalDue !== undefined) update.$set.totalDue = parseNumberField(totalDue, "totalDue");
-    if (hajDue !== undefined) update.$set.hajDue = parseNumberField(hajDue, "hajDue");
-    if (umrahDue !== undefined) update.$set.umrahDue = parseNumberField(umrahDue, "umrahDue");
-
-    // Field-level validations (only if present)
-    if (update.$set.contactNo) {
-      const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
-      if (!phoneRegex.test(update.$set.contactNo)) {
-        return res.status(400).send({ error: true, message: "Enter a valid phone number" });
-      }
-    }
-    if (update.$set.nid) {
-      if (!/^[0-9]{8,20}$/.test(update.$set.nid)) {
-        return res.status(400).send({ error: true, message: "NID should be 8-20 digits" });
-      }
-    }
-    if (update.$set.passport) {
-      if (!/^[A-Za-z0-9]{6,12}$/.test(update.$set.passport)) {
-        return res.status(400).send({ error: true, message: "Passport should be 6-12 chars" });
-      }
-    }
-
-    const result = await agents.updateOne({ _id: new ObjectId(id) }, update);
-    if (result.matchedCount === 0) {
-      return res.status(404).send({ error: true, message: "Agent not found" });
-    }
-
-    const updated = await agents.findOne({ _id: new ObjectId(id) });
-    return res.send({ success: true, message: "Agent updated successfully", data: updated });
-  } catch (err) {
-    console.error("Update agent error:", err);
-    const message = err?.message || "Internal server error while updating agent";
-    // 400 for known validation errors, else 500
-    const status = /must be a valid number|Invalid date format/i.test(message) ? 400 : 500;
-    return res.status(status).json({ error: true, message });
-  }
-});
-
-// DELETE /api/haj-umrah/agents/:id
-app.delete("/api/haj-umrah/agents/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid agent id"
-      });
-    }
-
-    const agent = await agents.findOne({ 
-      _id: new ObjectId(id)
-    });
-
-    if (!agent) {
-      return res.status(404).json({
-        success: false,
-        message: "Haj-Umrah Agent not found"
-      });
-    }
-
-    // Soft delete
-    await agents.updateOne(
-      { _id: new ObjectId(id) },
-      {
-        $set: {
-          isActive: false,
-          updatedAt: new Date()
-        }
-      }
-    );
-
-    res.json({
-      success: true,
-      message: "Haj-Umrah Agent deleted successfully"
-    });
-
-  } catch (error) {
-    console.error('Delete haj-umrah agent error:', error);
-    res.status(500).json({
-      success: false,
-      message: "Failed to delete haj-umrah agent",
-      error: error.message
-    });
-  }
-});
-
 // Helper: Generate unique Air Ticketing Agent ID
 const generateAirAgentId = async (db) => {
   const counterCollection = db.collection("counters");
@@ -14115,6 +13406,718 @@ app.get("/haj-umrah/umrah/:id/transactions", async (req, res) => {
     });
   }
 });
+
+// Helper: Generate unique Haj-Umrah Agent ID
+const generateHajUmrahAgentId = async (db) => {
+  const counterCollection = db.collection("counters");
+  
+  // Create counter key for haj-umrah agent
+  const counterKey = `haj_umrah_agent`;
+  
+  // Find or create counter
+  let counter = await counterCollection.findOne({ counterKey });
+  
+  if (!counter) {
+    // Create new counter starting from 0
+    await counterCollection.insertOne({ counterKey, sequence: 0 });
+    counter = { sequence: 0 };
+  }
+  
+  // Increment sequence
+  const newSequence = counter.sequence + 1;
+  
+  // Update counter
+  await counterCollection.updateOne(
+    { counterKey },
+    { $set: { sequence: newSequence } }
+  );
+  
+  // Format: HU + 00001 (e.g., HU00001)
+  const serial = String(newSequence).padStart(5, '0');
+  
+  return `HUAGE${serial}`;
+};
+
+// ==================== AGENT ROUTES ====================
+// Helper functions for financial calculations
+// Helper function to safely convert mixed string/number values
+const toNumeric = (value) => {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number' && !Number.isNaN(value)) return value;
+  if (typeof value === 'string') {
+    const cleaned = value.replace(/[^0-9.-]/g, '');
+    if (!cleaned) return null;
+    const numericValue = Number(cleaned);
+    return Number.isNaN(numericValue) ? null : numericValue;
+  }
+  return null;
+};
+
+// Helper function to resolve number from multiple possible values
+const resolveNumber = (...values) => {
+  for (const value of values) {
+    const numericValue = toNumeric(value);
+    if (numericValue !== null) {
+      return numericValue;
+    }
+  }
+  return 0;
+};
+
+// Calculate profit/loss for a package
+const calculateProfitLoss = (pkg = {}) => {
+  const totals = pkg.totals || {};
+  const profitLossFromApi = pkg.profitLoss || {};
+
+  const costingPrice =
+    resolveNumber(
+      profitLossFromApi.totalCostingPrice,
+      profitLossFromApi.costingPrice,
+      totals.costingPrice,
+      totals.grandTotal,
+      pkg.costingPrice
+    ) || 0;
+
+  const packagePrice =
+    resolveNumber(
+      profitLossFromApi.packagePrice,
+      pkg.totalPrice,
+      totals.packagePrice,
+      totals.subtotal,
+      totals.grandTotal
+    ) || 0;
+
+  const profitValue =
+    resolveNumber(
+      profitLossFromApi.profitOrLoss,
+      profitLossFromApi.profitLoss
+    ) || (packagePrice - costingPrice);
+
+  return {
+    costingPrice,
+    packagePrice,
+    profitValue,
+  };
+};
+
+// Check if package is Hajj type
+const isHajjPackage = (pkg) => {
+  return (
+    pkg.packageType === 'Hajj' ||
+    pkg.packageType === 'হজ্জ' ||
+    pkg.customPackageType === 'Custom Hajj' ||
+    pkg.customPackageType === 'Hajj'
+  );
+};
+
+// Check if package is Umrah type
+const isUmrahPackage = (pkg) => {
+  return (
+    pkg.packageType === 'Umrah' ||
+    pkg.packageType === 'উমরাহ' ||
+    pkg.customPackageType === 'Custom Umrah' ||
+    pkg.customPackageType === 'Umrah'
+  );
+};
+
+// Calculate financial summary from packages
+const calculateFinancialSummary = (packages = []) => {
+  const summary = {
+    overall: {
+      customers: 0,
+      billed: 0,
+      paid: 0,
+      due: 0,
+      costingPrice: 0,
+      advance: 0,
+      profit: 0,
+    },
+    hajj: {
+      customers: 0,
+      billed: 0,
+      paid: 0,
+      due: 0,
+      costingPrice: 0,
+      advance: 0,
+      profit: 0,
+    },
+    umrah: {
+      customers: 0,
+      billed: 0,
+      paid: 0,
+      due: 0,
+      costingPrice: 0,
+      advance: 0,
+      profit: 0,
+    },
+  };
+
+  packages.forEach((pkg) => {
+    // Calculate assigned customers count
+    const assignedCount = Array.isArray(pkg.assignedCustomers)
+      ? pkg.assignedCustomers.length
+      : 0;
+
+    // Calculate billed amount (package total price)
+    const billed = resolveNumber(
+      pkg.financialSummary?.totalBilled,
+      pkg.financialSummary?.billTotal,
+      pkg.financialSummary?.subtotal,
+      pkg.paymentSummary?.totalBilled,
+      pkg.paymentSummary?.billTotal,
+      pkg.totalPrice,
+      pkg.totalPriceBdt,
+      pkg.totals?.grandTotal,
+      pkg.totals?.subtotal,
+      pkg.profitLoss?.packagePrice,
+      pkg.profitLoss?.totalOriginalPrice
+    );
+
+    // Calculate paid amount
+    const paid = resolveNumber(
+      pkg.financialSummary?.totalPaid,
+      pkg.financialSummary?.paidAmount,
+      pkg.paymentSummary?.totalPaid,
+      pkg.paymentSummary?.paid,
+      pkg.payments?.totalPaid,
+      pkg.payments?.paid,
+      pkg.totalPaid,
+      pkg.depositReceived,
+      pkg.receivedAmount
+    );
+
+    // Calculate due (billed - paid)
+    const due = Math.max(billed - paid, 0);
+
+    // Calculate profit/loss
+    const profit = calculateProfitLoss(pkg);
+    const profitValue = profit.profitValue || 0;
+    const costingPrice = profit.costingPrice || 0;
+
+    // Determine package type
+    const isHajj = isHajjPackage(pkg);
+    const isUmrah = isUmrahPackage(pkg);
+
+    // Add to overall summary
+    summary.overall.customers += assignedCount;
+    summary.overall.billed += billed;
+    summary.overall.paid += paid;
+    summary.overall.due += due;
+    summary.overall.costingPrice += costingPrice;
+    summary.overall.profit += profitValue;
+
+    // Add to type-specific summary
+    if (isHajj) {
+      summary.hajj.customers += assignedCount;
+      summary.hajj.billed += billed;
+      summary.hajj.paid += paid;
+      summary.hajj.due += due;
+      summary.hajj.costingPrice += costingPrice;
+      summary.hajj.profit += profitValue;
+    } else if (isUmrah) {
+      summary.umrah.customers += assignedCount;
+      summary.umrah.billed += billed;
+      summary.umrah.paid += paid;
+      summary.umrah.due += due;
+      summary.umrah.costingPrice += costingPrice;
+      summary.umrah.profit += profitValue;
+    }
+  });
+
+  // Calculate advance = paid - costingPrice (can be negative)
+  summary.overall.advance = summary.overall.paid - summary.overall.costingPrice;
+  summary.hajj.advance = summary.hajj.paid - summary.hajj.costingPrice;
+  summary.umrah.advance = summary.umrah.paid - summary.umrah.costingPrice;
+
+  return summary;
+};
+
+// Create Agent
+app.post("/api/haj-umrah/agents", async (req, res) => {
+  try {
+    const {
+      tradeName,
+      tradeLocation,
+      ownerName,
+      contactNo,
+      dob,
+      nid,
+      passport
+    } = req.body;
+
+    if (!tradeName || !tradeLocation || !ownerName || !contactNo) {
+      return res.status(400).send({
+        error: true,
+        message: "tradeName, tradeLocation, ownerName and contactNo are required"
+      });
+    }
+
+    // Basic validations similar to frontend
+    const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+    if (!phoneRegex.test(String(contactNo).trim())) {
+      return res.status(400).send({ error: true, message: "Enter a valid phone number" });
+    }
+    if (nid && !/^[0-9]{8,20}$/.test(String(nid).trim())) {
+      return res.status(400).send({ error: true, message: "NID should be 8-20 digits" });
+    }
+    if (passport && !/^[A-Za-z0-9]{6,12}$/.test(String(passport).trim())) {
+      return res.status(400).send({ error: true, message: "Passport should be 6-12 chars" });
+    }
+    if (dob && !isValidDate(dob)) {
+      return res.status(400).send({ error: true, message: "Invalid date format for dob (YYYY-MM-DD)" });
+    }
+
+    // Generate unique agent ID
+    const agentId = await generateHajUmrahAgentId(db);
+
+    const now = new Date();
+    const doc = {
+      agentId,
+      tradeName: String(tradeName).trim(),
+      tradeLocation: String(tradeLocation).trim(),
+      ownerName: String(ownerName).trim(),
+      contactNo: String(contactNo).trim(),
+      dob: dob || null,
+      nid: nid || "",
+      passport: passport || "",
+      isActive: true,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    const result = await agents.insertOne(doc);
+    return res.status(201).send({
+      success: true,
+      message: "Agent created successfully",
+      data: { _id: result.insertedId, ...doc }
+    });
+  } catch (error) {
+    console.error('Create agent error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while creating agent" });
+  }
+});
+
+// Bulk Create Agents
+app.post("/api/haj-umrah/agents/bulk", async (req, res) => {
+  try {
+    // Support both: body = [...]  or  body = { agents: [...] }
+    const agentsPayload = Array.isArray(req.body) ? req.body : req.body?.agents;
+
+    if (!Array.isArray(agentsPayload) || agentsPayload.length === 0) {
+      return res.status(400).send({
+        error: true,
+        message: "agents array is required and should not be empty"
+      });
+    }
+
+    const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+
+    const docs = [];
+    for (let i = 0; i < agentsPayload.length; i++) {
+      const item = agentsPayload[i] || {};
+      const {
+        tradeName,
+        tradeLocation,
+        ownerName,
+        contactNo,
+        dob,
+        nid,
+        passport
+      } = item;
+
+      // Basic required fields
+      if (!tradeName || !tradeLocation || !ownerName || !contactNo) {
+        return res.status(400).send({
+          error: true,
+          message: `Row ${i + 1}: tradeName, tradeLocation, ownerName and contactNo are required`
+        });
+      }
+
+      // Same validations as single create
+      if (!phoneRegex.test(String(contactNo).trim())) {
+        return res.status(400).send({
+          error: true,
+          message: `Row ${i + 1}: Enter a valid phone number`
+        });
+      }
+      if (nid && !/^[0-9]{8,20}$/.test(String(nid).trim())) {
+        return res.status(400).send({
+          error: true,
+          message: `Row ${i + 1}: NID should be 8-20 digits`
+        });
+      }
+      if (passport && !/^[A-Za-z0-9]{6,12}$/.test(String(passport).trim())) {
+        return res.status(400).send({
+          error: true,
+          message: `Row ${i + 1}: Passport should be 6-12 chars`
+        });
+      }
+      if (dob && !isValidDate(dob)) {
+        return res.status(400).send({
+          error: true,
+          message: `Row ${i + 1}: Invalid date format for dob (YYYY-MM-DD)`
+        });
+      }
+
+      // Generate unique agent ID for each row
+      const agentId = await generateHajUmrahAgentId(db);
+      const now = new Date();
+
+      docs.push({
+        agentId,
+        tradeName: String(tradeName).trim(),
+        tradeLocation: String(tradeLocation).trim(),
+        ownerName: String(ownerName).trim(),
+        contactNo: String(contactNo).trim(),
+        dob: dob || null,
+        nid: nid || "",
+        passport: passport || "",
+        isActive: true,
+        createdAt: now,
+        updatedAt: now
+      });
+    }
+
+    const result = await agents.insertMany(docs);
+    const insertedIds = result.insertedIds || {};
+
+    const responseData = docs.map((doc, index) => ({
+      _id: insertedIds[index] || null,
+      ...doc
+    }));
+
+    return res.status(201).send({
+      success: true,
+      message: "Agents created successfully",
+      count: responseData.length,
+      data: responseData
+    });
+  } catch (error) {
+    console.error('Bulk create agents error:', error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while creating agents in bulk"
+    });
+  }
+});
+
+// List Agents (with pagination and search)
+app.get("/api/haj-umrah/agents", async (req, res) => {
+  try {
+    const { page = 1, limit = 50, q } = req.query;
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 20000);
+
+    const filter = { isActive: { $ne: false } };
+    if (q && String(q).trim()) {
+      const text = String(q).trim();
+      filter.$or = [
+        { tradeName: { $regex: text, $options: 'i' } },
+        { tradeLocation: { $regex: text, $options: 'i' } },
+        { ownerName: { $regex: text, $options: 'i' } },
+        { contactNo: { $regex: text, $options: 'i' } },
+        { nid: { $regex: text, $options: 'i' } },
+        { passport: { $regex: text, $options: 'i' } }
+      ];
+    }
+
+    const total = await agents.countDocuments(filter);
+    const data = await agents
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum)
+      .toArray();
+
+    // Initialize due amounts if missing (migration for old agents)
+    for (const agent of data) {
+      if (agent.totalDue === undefined || agent.hajDue === undefined || agent.umrahDue === undefined) {
+        console.log('🔄 Migrating agent to add due amounts:', agent._id);
+        const updateDoc = {};
+        if (agent.totalDue === undefined) updateDoc.totalDue = 0;
+        if (agent.hajDue === undefined) updateDoc.hajDue = 0;
+        if (agent.umrahDue === undefined) updateDoc.umrahDue = 0;
+        updateDoc.updatedAt = new Date();
+
+        await agents.updateOne(
+          { _id: agent._id },
+          { $set: updateDoc }
+        );
+
+        Object.assign(agent, updateDoc);
+        console.log('✅ Agent migrated successfully');
+      }
+    }
+
+    res.send({
+      success: true,
+      data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('List agents error:', error);
+    res.status(500).json({ error: true, message: "Internal server error while listing agents" });
+  }
+});
+
+// Get single agent by id - UPDATED VERSION
+app.get("/api/haj-umrah/agents/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ error: true, message: "Invalid agent id" });
+    }
+
+    const agent = await agents.findOne({ _id: new ObjectId(id) });
+    if (!agent) {
+      return res.status(404).send({ error: true, message: "Agent not found" });
+    }
+
+    // Fetch all packages for this agent
+    const packages = await agentPackages
+      .find({ agentId: new ObjectId(id) })
+      .toArray();
+
+    // Calculate financial summary from packages
+    const financialSummary = calculateFinancialSummary(packages);
+
+    // Initialize due amounts if missing (migration for old agents)
+    if (
+      agent.totalDue === undefined ||
+      agent.hajDue === undefined ||
+      agent.umrahDue === undefined
+    ) {
+      console.log("🔄 Migrating agent to add due amounts:", agent._id);
+      const updateDoc = {};
+      if (agent.totalDue === undefined) updateDoc.totalDue = 0;
+      if (agent.hajDue === undefined) updateDoc.hajDue = 0;
+      if (agent.umrahDue === undefined) updateDoc.umrahDue = 0;
+      updateDoc.updatedAt = new Date();
+
+      await agents.updateOne({ _id: new ObjectId(id) }, { $set: updateDoc });
+
+      Object.assign(agent, updateDoc);
+      console.log("✅ Agent migrated successfully");
+    }
+
+    // Add calculated financial summary to agent object
+    // Frontend will use these values with pickNumberFromObject function
+    const agentWithSummary = {
+      ...agent,
+      // Overall summary
+      totalHaji: financialSummary.overall.customers,
+      totalCustomers: financialSummary.overall.customers,
+      totalBilled: financialSummary.overall.billed,
+      totalBill: financialSummary.overall.billed,
+      totalBillAmount: financialSummary.overall.billed,
+      totalRevenue: financialSummary.overall.billed,
+      totalPaid: financialSummary.overall.paid,
+      totalDeposit: financialSummary.overall.paid,
+      totalReceived: financialSummary.overall.paid,
+      totalCollection: financialSummary.overall.paid,
+      totalDue: financialSummary.overall.due,
+      totalAdvance: financialSummary.overall.advance,
+      totalProfit: financialSummary.overall.profit,
+      totalCostingPrice: financialSummary.overall.costingPrice,
+
+      // Hajj summary
+      hajCustomers: financialSummary.hajj.customers,
+      hajjCustomers: financialSummary.hajj.customers,
+      totalHajjCustomers: financialSummary.hajj.customers,
+      totalHajCustomers: financialSummary.hajj.customers,
+      hajBill: financialSummary.hajj.billed,
+      hajjBill: financialSummary.hajj.billed,
+      totalHajjBill: financialSummary.hajj.billed,
+      hajTotalBill: financialSummary.hajj.billed,
+      hajPaid: financialSummary.hajj.paid,
+      hajjPaid: financialSummary.hajj.paid,
+      hajjDeposit: financialSummary.hajj.paid,
+      hajDeposit: financialSummary.hajj.paid,
+      totalHajjPaid: financialSummary.hajj.paid,
+      hajDue: financialSummary.hajj.due,
+      hajAdvance: financialSummary.hajj.advance,
+      hajProfit: financialSummary.hajj.profit,
+      hajCostingPrice: financialSummary.hajj.costingPrice,
+
+      // Umrah summary
+      umrahCustomers: financialSummary.umrah.customers,
+      totalUmrahCustomers: financialSummary.umrah.customers,
+      totalUmrahHaji: financialSummary.umrah.customers,
+      umrahBill: financialSummary.umrah.billed,
+      totalUmrahBill: financialSummary.umrah.billed,
+      umrahPaid: financialSummary.umrah.paid,
+      umrahDeposit: financialSummary.umrah.paid,
+      totalUmrahPaid: financialSummary.umrah.paid,
+      umrahDue: financialSummary.umrah.due,
+      umrahAdvance: financialSummary.umrah.advance,
+      umrahProfit: financialSummary.umrah.profit,
+      umrahCostingPrice: financialSummary.umrah.costingPrice,
+
+      // Include the full financial summary object for reference
+      financialSummary: financialSummary,
+    };
+
+    res.send({ success: true, data: agentWithSummary });
+  } catch (error) {
+    console.error("Get agent error:", error);
+    res
+      .status(500)
+      .json({
+        error: true,
+        message: "Internal server error while fetching agent",
+      });
+  }
+});
+
+// PUT /api/haj-umrah/agents/:id
+app.put("/api/haj-umrah/agents/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ error: true, message: "Invalid agent id" });
+    }
+
+    const {
+      tradeName,
+      tradeLocation,
+      ownerName,
+      contactNo,
+      dob,
+      nid,
+      passport,
+      isActive,
+      totalDue,
+      hajDue,
+      umrahDue,
+    } = req.body;
+
+    // Helpers
+    const isValidDateYMD = (str) => {
+      if (typeof str !== "string") return false;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(str)) return false;
+      const d = new Date(str);
+      // Ensure date is valid and preserved in UTC string (avoid 31->next month issues)
+      return !Number.isNaN(d.getTime()) && str === d.toISOString().slice(0, 10);
+    };
+
+    const parseNumberField = (value, fieldName) => {
+      if (value === "" || value === null) return 0; // allow empty/null as 0 if you want
+      const n = typeof value === "number" ? value : parseFloat(value);
+      if (!Number.isFinite(n)) {
+        throw new Error(`${fieldName} must be a valid number`);
+      }
+      return n;
+    };
+
+    const update = { $set: { updatedAt: new Date() } };
+
+    if (tradeName !== undefined) update.$set.tradeName = String(tradeName).trim();
+    if (tradeLocation !== undefined) update.$set.tradeLocation = String(tradeLocation).trim();
+    if (ownerName !== undefined) update.$set.ownerName = String(ownerName).trim();
+    if (contactNo !== undefined) update.$set.contactNo = String(contactNo).trim();
+    if (dob !== undefined) {
+      if (dob && !isValidDateYMD(dob)) {
+        return res.status(400).send({ error: true, message: "Invalid date format for dob (YYYY-MM-DD)" });
+      }
+      update.$set.dob = dob || null;
+    }
+    if (nid !== undefined) update.$set.nid = String(nid ?? "").trim();
+    if (passport !== undefined) update.$set.passport = String(passport ?? "").trim();
+    if (isActive !== undefined) update.$set.isActive = Boolean(isActive);
+    if (totalDue !== undefined) update.$set.totalDue = parseNumberField(totalDue, "totalDue");
+    if (hajDue !== undefined) update.$set.hajDue = parseNumberField(hajDue, "hajDue");
+    if (umrahDue !== undefined) update.$set.umrahDue = parseNumberField(umrahDue, "umrahDue");
+
+    // Field-level validations (only if present)
+    if (update.$set.contactNo) {
+      const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+      if (!phoneRegex.test(update.$set.contactNo)) {
+        return res.status(400).send({ error: true, message: "Enter a valid phone number" });
+      }
+    }
+    if (update.$set.nid) {
+      if (!/^[0-9]{8,20}$/.test(update.$set.nid)) {
+        return res.status(400).send({ error: true, message: "NID should be 8-20 digits" });
+      }
+    }
+    if (update.$set.passport) {
+      if (!/^[A-Za-z0-9]{6,12}$/.test(update.$set.passport)) {
+        return res.status(400).send({ error: true, message: "Passport should be 6-12 chars" });
+      }
+    }
+
+    const result = await agents.updateOne({ _id: new ObjectId(id) }, update);
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ error: true, message: "Agent not found" });
+    }
+
+    const updated = await agents.findOne({ _id: new ObjectId(id) });
+    return res.send({ success: true, message: "Agent updated successfully", data: updated });
+  } catch (err) {
+    console.error("Update agent error:", err);
+    const message = err?.message || "Internal server error while updating agent";
+    // 400 for known validation errors, else 500
+    const status = /must be a valid number|Invalid date format/i.test(message) ? 400 : 500;
+    return res.status(status).json({ error: true, message });
+  }
+});
+
+// DELETE /api/haj-umrah/agents/:id
+app.delete("/api/haj-umrah/agents/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid agent id"
+      });
+    }
+
+    const agent = await agents.findOne({ 
+      _id: new ObjectId(id)
+    });
+
+    if (!agent) {
+      return res.status(404).json({
+        success: false,
+        message: "Haj-Umrah Agent not found"
+      });
+    }
+
+    // Soft delete
+    await agents.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: "Haj-Umrah Agent deleted successfully"
+    });
+
+  } catch (error) {
+    console.error('Delete haj-umrah agent error:', error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete haj-umrah agent",
+      error: error.message
+    });
+  }
+});
+
+
+
 
 // ==================== AGENT PACKAGES ROUTES ====================
 // Create new agent package
