@@ -9666,6 +9666,199 @@ const generateHajUmrahAgentId = async (db) => {
 };
 
 // ==================== AGENT ROUTES ====================
+// Helper functions for financial calculations
+// Helper function to safely convert mixed string/number values
+const toNumeric = (value) => {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number' && !Number.isNaN(value)) return value;
+  if (typeof value === 'string') {
+    const cleaned = value.replace(/[^0-9.-]/g, '');
+    if (!cleaned) return null;
+    const numericValue = Number(cleaned);
+    return Number.isNaN(numericValue) ? null : numericValue;
+  }
+  return null;
+};
+
+// Helper function to resolve number from multiple possible values
+const resolveNumber = (...values) => {
+  for (const value of values) {
+    const numericValue = toNumeric(value);
+    if (numericValue !== null) {
+      return numericValue;
+    }
+  }
+  return 0;
+};
+
+// Calculate profit/loss for a package
+const calculateProfitLoss = (pkg = {}) => {
+  const totals = pkg.totals || {};
+  const profitLossFromApi = pkg.profitLoss || {};
+
+  const costingPrice =
+    resolveNumber(
+      profitLossFromApi.totalCostingPrice,
+      profitLossFromApi.costingPrice,
+      totals.costingPrice,
+      totals.grandTotal,
+      pkg.costingPrice
+    ) || 0;
+
+  const packagePrice =
+    resolveNumber(
+      profitLossFromApi.packagePrice,
+      pkg.totalPrice,
+      totals.packagePrice,
+      totals.subtotal,
+      totals.grandTotal
+    ) || 0;
+
+  const profitValue =
+    resolveNumber(
+      profitLossFromApi.profitOrLoss,
+      profitLossFromApi.profitLoss
+    ) || (packagePrice - costingPrice);
+
+  return {
+    costingPrice,
+    packagePrice,
+    profitValue,
+  };
+};
+
+// Check if package is Hajj type
+const isHajjPackage = (pkg) => {
+  return (
+    pkg.packageType === 'Hajj' ||
+    pkg.packageType === 'হজ্জ' ||
+    pkg.customPackageType === 'Custom Hajj' ||
+    pkg.customPackageType === 'Hajj'
+  );
+};
+
+// Check if package is Umrah type
+const isUmrahPackage = (pkg) => {
+  return (
+    pkg.packageType === 'Umrah' ||
+    pkg.packageType === 'উমরাহ' ||
+    pkg.customPackageType === 'Custom Umrah' ||
+    pkg.customPackageType === 'Umrah'
+  );
+};
+
+// Calculate financial summary from packages
+const calculateFinancialSummary = (packages = []) => {
+  const summary = {
+    overall: {
+      customers: 0,
+      billed: 0,
+      paid: 0,
+      due: 0,
+      costingPrice: 0,
+      advance: 0,
+      profit: 0,
+    },
+    hajj: {
+      customers: 0,
+      billed: 0,
+      paid: 0,
+      due: 0,
+      costingPrice: 0,
+      advance: 0,
+      profit: 0,
+    },
+    umrah: {
+      customers: 0,
+      billed: 0,
+      paid: 0,
+      due: 0,
+      costingPrice: 0,
+      advance: 0,
+      profit: 0,
+    },
+  };
+
+  packages.forEach((pkg) => {
+    // Calculate assigned customers count
+    const assignedCount = Array.isArray(pkg.assignedCustomers)
+      ? pkg.assignedCustomers.length
+      : 0;
+
+    // Calculate billed amount (package total price)
+    const billed = resolveNumber(
+      pkg.financialSummary?.totalBilled,
+      pkg.financialSummary?.billTotal,
+      pkg.financialSummary?.subtotal,
+      pkg.paymentSummary?.totalBilled,
+      pkg.paymentSummary?.billTotal,
+      pkg.totalPrice,
+      pkg.totalPriceBdt,
+      pkg.totals?.grandTotal,
+      pkg.totals?.subtotal,
+      pkg.profitLoss?.packagePrice,
+      pkg.profitLoss?.totalOriginalPrice
+    );
+
+    // Calculate paid amount
+    const paid = resolveNumber(
+      pkg.financialSummary?.totalPaid,
+      pkg.financialSummary?.paidAmount,
+      pkg.paymentSummary?.totalPaid,
+      pkg.paymentSummary?.paid,
+      pkg.payments?.totalPaid,
+      pkg.payments?.paid,
+      pkg.totalPaid,
+      pkg.depositReceived,
+      pkg.receivedAmount
+    );
+
+    // Calculate due (billed - paid)
+    const due = Math.max(billed - paid, 0);
+
+    // Calculate profit/loss
+    const profit = calculateProfitLoss(pkg);
+    const profitValue = profit.profitValue || 0;
+    const costingPrice = profit.costingPrice || 0;
+
+    // Determine package type
+    const isHajj = isHajjPackage(pkg);
+    const isUmrah = isUmrahPackage(pkg);
+
+    // Add to overall summary
+    summary.overall.customers += assignedCount;
+    summary.overall.billed += billed;
+    summary.overall.paid += paid;
+    summary.overall.due += due;
+    summary.overall.costingPrice += costingPrice;
+    summary.overall.profit += profitValue;
+
+    // Add to type-specific summary
+    if (isHajj) {
+      summary.hajj.customers += assignedCount;
+      summary.hajj.billed += billed;
+      summary.hajj.paid += paid;
+      summary.hajj.due += due;
+      summary.hajj.costingPrice += costingPrice;
+      summary.hajj.profit += profitValue;
+    } else if (isUmrah) {
+      summary.umrah.customers += assignedCount;
+      summary.umrah.billed += billed;
+      summary.umrah.paid += paid;
+      summary.umrah.due += due;
+      summary.umrah.costingPrice += costingPrice;
+      summary.umrah.profit += profitValue;
+    }
+  });
+
+  // Calculate advance = paid - costingPrice (can be negative)
+  summary.overall.advance = summary.overall.paid - summary.overall.costingPrice;
+  summary.hajj.advance = summary.hajj.paid - summary.hajj.costingPrice;
+  summary.umrah.advance = summary.umrah.paid - summary.umrah.costingPrice;
+
+  return summary;
+};
+
 // Create Agent
 app.post("/api/haj-umrah/agents", async (req, res) => {
   try {
@@ -9899,40 +10092,112 @@ app.get("/api/haj-umrah/agents", async (req, res) => {
   }
 });
 
-// Get single agent by id
+// Get single agent by id - UPDATED VERSION
 app.get("/api/haj-umrah/agents/:id", async (req, res) => {
   try {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
       return res.status(400).send({ error: true, message: "Invalid agent id" });
     }
+
     const agent = await agents.findOne({ _id: new ObjectId(id) });
     if (!agent) {
       return res.status(404).send({ error: true, message: "Agent not found" });
     }
 
+    // Fetch all packages for this agent
+    const packages = await agentPackages
+      .find({ agentId: new ObjectId(id) })
+      .toArray();
+
+    // Calculate financial summary from packages
+    const financialSummary = calculateFinancialSummary(packages);
+
     // Initialize due amounts if missing (migration for old agents)
-    if (agent.totalDue === undefined || agent.hajDue === undefined || agent.umrahDue === undefined) {
-      console.log('🔄 Migrating agent to add due amounts:', agent._id);
+    if (
+      agent.totalDue === undefined ||
+      agent.hajDue === undefined ||
+      agent.umrahDue === undefined
+    ) {
+      console.log("🔄 Migrating agent to add due amounts:", agent._id);
       const updateDoc = {};
       if (agent.totalDue === undefined) updateDoc.totalDue = 0;
       if (agent.hajDue === undefined) updateDoc.hajDue = 0;
       if (agent.umrahDue === undefined) updateDoc.umrahDue = 0;
       updateDoc.updatedAt = new Date();
 
-      await agents.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: updateDoc }
-      );
+      await agents.updateOne({ _id: new ObjectId(id) }, { $set: updateDoc });
 
       Object.assign(agent, updateDoc);
-      console.log('✅ Agent migrated successfully');
+      console.log("✅ Agent migrated successfully");
     }
 
-    res.send({ success: true, data: agent });
+    // Add calculated financial summary to agent object
+    // Frontend will use these values with pickNumberFromObject function
+    const agentWithSummary = {
+      ...agent,
+      // Overall summary
+      totalHaji: financialSummary.overall.customers,
+      totalCustomers: financialSummary.overall.customers,
+      totalBilled: financialSummary.overall.billed,
+      totalBill: financialSummary.overall.billed,
+      totalBillAmount: financialSummary.overall.billed,
+      totalRevenue: financialSummary.overall.billed,
+      totalPaid: financialSummary.overall.paid,
+      totalDeposit: financialSummary.overall.paid,
+      totalReceived: financialSummary.overall.paid,
+      totalCollection: financialSummary.overall.paid,
+      totalDue: financialSummary.overall.due,
+      totalAdvance: financialSummary.overall.advance,
+      totalProfit: financialSummary.overall.profit,
+      totalCostingPrice: financialSummary.overall.costingPrice,
+
+      // Hajj summary
+      hajCustomers: financialSummary.hajj.customers,
+      hajjCustomers: financialSummary.hajj.customers,
+      totalHajjCustomers: financialSummary.hajj.customers,
+      totalHajCustomers: financialSummary.hajj.customers,
+      hajBill: financialSummary.hajj.billed,
+      hajjBill: financialSummary.hajj.billed,
+      totalHajjBill: financialSummary.hajj.billed,
+      hajTotalBill: financialSummary.hajj.billed,
+      hajPaid: financialSummary.hajj.paid,
+      hajjPaid: financialSummary.hajj.paid,
+      hajjDeposit: financialSummary.hajj.paid,
+      hajDeposit: financialSummary.hajj.paid,
+      totalHajjPaid: financialSummary.hajj.paid,
+      hajDue: financialSummary.hajj.due,
+      hajAdvance: financialSummary.hajj.advance,
+      hajProfit: financialSummary.hajj.profit,
+      hajCostingPrice: financialSummary.hajj.costingPrice,
+
+      // Umrah summary
+      umrahCustomers: financialSummary.umrah.customers,
+      totalUmrahCustomers: financialSummary.umrah.customers,
+      totalUmrahHaji: financialSummary.umrah.customers,
+      umrahBill: financialSummary.umrah.billed,
+      totalUmrahBill: financialSummary.umrah.billed,
+      umrahPaid: financialSummary.umrah.paid,
+      umrahDeposit: financialSummary.umrah.paid,
+      totalUmrahPaid: financialSummary.umrah.paid,
+      umrahDue: financialSummary.umrah.due,
+      umrahAdvance: financialSummary.umrah.advance,
+      umrahProfit: financialSummary.umrah.profit,
+      umrahCostingPrice: financialSummary.umrah.costingPrice,
+
+      // Include the full financial summary object for reference
+      financialSummary: financialSummary,
+    };
+
+    res.send({ success: true, data: agentWithSummary });
   } catch (error) {
-    console.error('Get agent error:', error);
-    res.status(500).json({ error: true, message: "Internal server error while fetching agent" });
+    console.error("Get agent error:", error);
+    res
+      .status(500)
+      .json({
+        error: true,
+        message: "Internal server error while fetching agent",
+      });
   }
 });
 
@@ -16801,62 +17066,41 @@ app.get('/haj-umrah/dashboard-summary', async (req, res) => {
     umrahProfitLoss.totalRevenue = umrahActualRevenue;
     umrahProfitLoss.profitLoss = umrahActualPaid - umrahProfitLoss.totalCost;
 
-    // 4. Agent-wise Profit/Loss (only for active agents)
+    // 4. Agent-wise Profit/Loss (only for active agents) - UPDATED to use calculateFinancialSummary
     // First, get all active agent IDs
     const activeAgents = await agents.find({ isActive: { $ne: false } }).toArray();
     const activeAgentIds = new Set(activeAgents.map(a => String(a._id)));
 
-    // Only process packages from active agents
-    const allAgentPackages = await agentPackages.find({}).toArray();
-    const agentProfitLossMap = new Map();
-
-    allAgentPackages.forEach(pkg => {
-      const agentId = String(pkg.agentId);
-      // Only include if agent is active
-      if (!activeAgentIds.has(agentId)) return;
-      
-      if (!agentProfitLossMap.has(agentId)) {
-        agentProfitLossMap.set(agentId, {
-          agentId: agentId,
-          totalRevenue: 0,
-          totalCost: 0,
-          packageCount: 0
-        });
-      }
-      
-      const agentData = agentProfitLossMap.get(agentId);
-      const packagePrice = parseFloat(pkg.totalPrice) || 0;
-      const costingPrice = parseFloat(pkg.totals?.grandTotal) || 0;
-      
-      agentData.totalRevenue += packagePrice;
-      agentData.totalCost += costingPrice;
-      agentData.packageCount++;
-    });
-
-    // Fetch agent names and build profit/loss array (only active agents)
+    // Calculate profit/loss for each agent using the same logic as GET agent endpoint
     const agentProfitLossArray = await Promise.all(
-      Array.from(agentProfitLossMap.entries()).map(async ([agentId, data]) => {
-        const agent = await agents.findOne({ 
-          _id: new ObjectId(agentId),
-          isActive: { $ne: false }
-        });
-        // Skip if agent not found or inactive
-        if (!agent) return null;
+      activeAgents.map(async (agent) => {
+        const agentId = String(agent._id);
+        
+        // Fetch all packages for this agent
+        const packagesForAgent = await agentPackages
+          .find({ agentId: new ObjectId(agentId) })
+          .toArray();
+        
+        // Calculate financial summary using the same helper function
+        const financialSummary = calculateFinancialSummary(packagesForAgent);
         
         return {
           agentId: agentId,
           agentName: agent.tradeName || agent.ownerName || 'Unknown',
-          totalRevenue: Number(data.totalRevenue.toFixed(2)),
-          totalCost: Number(data.totalCost.toFixed(2)),
-          profitLoss: Number((data.totalRevenue - data.totalCost).toFixed(2)),
-          packageCount: data.packageCount
+          totalRevenue: Number(financialSummary.overall.billed.toFixed(2)),
+          totalCost: Number(financialSummary.overall.costingPrice.toFixed(2)),
+          profitLoss: Number(financialSummary.overall.profit.toFixed(2)),
+          totalPaid: Number(financialSummary.overall.paid.toFixed(2)),
+          totalDue: Number(financialSummary.overall.due.toFixed(2)),
+          totalAdvance: Number(financialSummary.overall.advance.toFixed(2)),
+          packageCount: packagesForAgent.length,
+          customerCount: financialSummary.overall.customers
         };
       })
     );
 
-    // Filter out null values and sort by profit/loss (highest first)
-    const filteredAgentProfitLoss = agentProfitLossArray.filter(item => item !== null);
-    filteredAgentProfitLoss.sort((a, b) => b.profitLoss - a.profitLoss);
+    // Sort by profit/loss (highest first)
+    const filteredAgentProfitLoss = agentProfitLossArray.sort((a, b) => b.profitLoss - a.profitLoss);
 
     // 5. Agent with most Haji
     // Get primary holders (where primaryHolderId is null or equals their own _id)
