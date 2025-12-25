@@ -8795,7 +8795,11 @@ app.post("/loans/giving", async (req, res) => {
       createdAt: new Date(),
       updatedAt: new Date(),
       createdBy: body.createdBy || 'unknown_user',
-      branchId: body.branchId || 'main_branch'
+      branchId: body.branchId || 'main_branch',
+
+      // Dates
+      commencementDate: body.commencementDate || new Date().toISOString().split('T')[0], // Default to today
+      completionDate: body.completionDate || ''
     };
 
     await loans.insertOne(loanDoc);
@@ -8868,7 +8872,11 @@ app.post("/loans/receiving", async (req, res) => {
       createdAt: new Date(),
       updatedAt: new Date(),
       createdBy: body.createdBy || 'unknown_user',
-      branchId: body.branchId || 'main_branch'
+      branchId: body.branchId || 'main_branch',
+
+      // Dates
+      commencementDate: body.commencementDate || new Date().toISOString().split('T')[0], // Default to today
+      completionDate: body.completionDate || ''
     };
 
     await loans.insertOne(loanDoc);
@@ -9014,6 +9022,8 @@ app.put("/loans/:loanId", async (req, res) => {
       'notes',
       // Receiving/business fields
       'businessName','businessType','businessAddress','businessRegistration','businessExperience',
+      // Dates
+      'commencementDate', 'completionDate',
       // Meta edits
       'status','branchId','createdBy'
     ];
