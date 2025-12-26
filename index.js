@@ -974,7 +974,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customerTypes, airCustomers, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses, vendorBankAccounts;
+let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses, vendorBankAccounts;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -989,6 +989,7 @@ async function initializeDatabase() {
     counters = db.collection("counters");
     customerTypes = db.collection("customerTypes");
     airCustomers = db.collection("airCustomers");
+    otherCustomers = db.collection("otherCustomers");
     services = db.collection("services");
     vendors = db.collection("vendors");
     orders = db.collection("orders");
@@ -2559,6 +2560,439 @@ app.delete("/api/airCustomers/:id", async (req, res) => {
       success: false,
       message: "Internal server error while deleting customer",
       error: error.message
+    });
+  }
+});
+
+
+// ==================== OTHER SERVICE CUSTOMER ROUTES ====================
+
+// POST: Create new Other Service Customer
+app.post("/api/other/customers", async (req, res) => {
+  try {
+    const {
+      firstName,
+      lastName,
+      name,
+      phone,
+      email,
+      address,
+      city,
+      country,
+      status = 'active',
+      notes
+    } = req.body;
+
+    // Validation - firstName, lastName, and phone are required
+    if (!firstName || !firstName.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "First name is required"
+      });
+    }
+
+    if (!lastName || !lastName.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Last name is required"
+      });
+    }
+
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Phone number is required"
+      });
+    }
+
+    // Validate phone number format (flexible: supports international and local formats)
+    const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+    if (!phoneRegex.test(phone.trim())) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid phone number format"
+      });
+    }
+
+    // Validate email format if provided
+    if (email && email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid email format"
+        });
+      }
+    }
+
+    // Check if phone number already exists
+    const existingCustomer = await otherCustomers.findOne({
+      phone: phone.trim(),
+      isActive: { $ne: false }
+    });
+
+    if (existingCustomer) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Phone number already exists for another customer"
+      });
+    }
+
+    // Generate full name from firstName and lastName if name not provided
+    const fullName = name || `${firstName.trim()} ${lastName.trim()}`.trim();
+
+    // Create customer document
+    const now = new Date();
+    const customerDoc = {
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      name: fullName,
+      phone: phone.trim(),
+      email: email ? email.trim() : '',
+      address: address ? address.trim() : '',
+      city: city ? city.trim() : '',
+      country: country ? country.trim() : '',
+      status: status || 'active',
+      notes: notes ? notes.trim() : '',
+      isActive: true,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    // Insert customer
+    const result = await otherCustomers.insertOne(customerDoc);
+
+    // Return created customer
+    const createdCustomer = await otherCustomers.findOne({ _id: result.insertedId });
+
+    res.status(201).json({
+      success: true,
+      message: "Customer created successfully",
+      data: createdCustomer
+    });
+
+  } catch (error) {
+    console.error('Create other service customer error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while creating customer",
+      details: error.message
+    });
+  }
+});
+
+// GET: Get all Other Service Customers with pagination and search
+app.get("/api/other/customers", async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 50, 
+      q, 
+      status 
+    } = req.query;
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 200);
+
+    // Build filter
+    const filter = { isActive: { $ne: false } };
+
+    // Filter by status if provided
+    if (status) {
+      filter.status = status;
+    }
+
+    // Search filter
+    if (q && String(q).trim()) {
+      const searchText = String(q).trim();
+      filter.$or = [
+        { firstName: { $regex: searchText, $options: 'i' } },
+        { lastName: { $regex: searchText, $options: 'i' } },
+        { name: { $regex: searchText, $options: 'i' } },
+        { phone: { $regex: searchText, $options: 'i' } },
+        { email: { $regex: searchText, $options: 'i' } },
+        { city: { $regex: searchText, $options: 'i' } },
+        { country: { $regex: searchText, $options: 'i' } }
+      ];
+    }
+
+    // Get total count and data
+    const [total, data] = await Promise.all([
+      otherCustomers.countDocuments(filter),
+      otherCustomers
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .toArray()
+    ]);
+
+    res.json({
+      success: true,
+      data: data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get other service customers error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while fetching customers",
+      details: error.message
+    });
+  }
+});
+
+// GET: Get single Other Service Customer by ID
+app.get("/api/other/customers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid customer ID"
+      });
+    }
+
+    const customer = await otherCustomers.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Customer not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      data: customer
+    });
+
+  } catch (error) {
+    console.error('Get other service customer error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while fetching customer",
+      details: error.message
+    });
+  }
+});
+
+// PUT: Update Other Service Customer
+app.put("/api/other/customers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid customer ID"
+      });
+    }
+
+    // Find customer
+    const customer = await otherCustomers.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Customer not found"
+      });
+    }
+
+    // Validate phone number if being updated
+    if (updateData.phone) {
+      const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+      if (!phoneRegex.test(updateData.phone.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid phone number format"
+        });
+      }
+
+      // Check if phone number already exists for another customer
+      const existingCustomer = await otherCustomers.findOne({
+        phone: updateData.phone.trim(),
+        _id: { $ne: new ObjectId(id) },
+        isActive: { $ne: false }
+      });
+
+      if (existingCustomer) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Phone number already exists for another customer"
+        });
+      }
+    }
+
+    // Validate email format if being updated
+    if (updateData.email && updateData.email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(updateData.email.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid email format"
+        });
+      }
+    }
+
+    // Prepare update object
+    const update = { $set: { updatedAt: new Date() } };
+
+    // Update allowed fields
+    if (updateData.firstName !== undefined) {
+      update.$set.firstName = String(updateData.firstName).trim();
+    }
+    if (updateData.lastName !== undefined) {
+      update.$set.lastName = String(updateData.lastName).trim();
+    }
+    if (updateData.name !== undefined) {
+      update.$set.name = String(updateData.name).trim();
+    } else if (updateData.firstName !== undefined || updateData.lastName !== undefined) {
+      // Auto-generate name if firstName or lastName changed but name not provided
+      const firstName = updateData.firstName !== undefined 
+        ? updateData.firstName.trim() 
+        : customer.firstName;
+      const lastName = updateData.lastName !== undefined 
+        ? updateData.lastName.trim() 
+        : customer.lastName;
+      update.$set.name = `${firstName} ${lastName}`.trim();
+    }
+    if (updateData.phone !== undefined) {
+      update.$set.phone = String(updateData.phone).trim();
+    }
+    if (updateData.email !== undefined) {
+      update.$set.email = updateData.email ? String(updateData.email).trim() : '';
+    }
+    if (updateData.address !== undefined) {
+      update.$set.address = updateData.address ? String(updateData.address).trim() : '';
+    }
+    if (updateData.city !== undefined) {
+      update.$set.city = updateData.city ? String(updateData.city).trim() : '';
+    }
+    if (updateData.country !== undefined) {
+      update.$set.country = updateData.country ? String(updateData.country).trim() : '';
+    }
+    if (updateData.status !== undefined) {
+      update.$set.status = String(updateData.status);
+    }
+    if (updateData.notes !== undefined) {
+      update.$set.notes = updateData.notes ? String(updateData.notes).trim() : '';
+    }
+
+    // Update customer
+    const result = await otherCustomers.updateOne(
+      { _id: new ObjectId(id) },
+      update
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Customer not found"
+      });
+    }
+
+    // Get updated customer
+    const updatedCustomer = await otherCustomers.findOne({ _id: new ObjectId(id) });
+
+    res.json({
+      success: true,
+      message: "Customer updated successfully",
+      data: updatedCustomer
+    });
+
+  } catch (error) {
+    console.error('Update other service customer error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while updating customer",
+      details: error.message
+    });
+  }
+});
+
+// DELETE: Delete Other Service Customer (Soft delete)
+app.delete("/api/other/customers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid customer ID"
+      });
+    }
+
+    // Check if customer exists
+    const customer = await otherCustomers.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!customer) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Customer not found"
+      });
+    }
+
+    // Soft delete
+    await otherCustomers.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: "Customer deleted successfully"
+    });
+
+  } catch (error) {
+    console.error('Delete other service customer error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while deleting customer",
+      details: error.message
     });
   }
 });
