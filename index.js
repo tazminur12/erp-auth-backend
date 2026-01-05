@@ -15,7 +15,7 @@ const port = process.env.PORT || 3000;
 app.use(cors({
   origin: [
     'http://localhost:5173', // Vite dev server
-    'https://erp-dashboard1.netlify.app' // Netlify production
+    'https://erp-dashboard12.netlify.app' // Netlify production
   ],
   credentials: true
 }));
