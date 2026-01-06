@@ -974,7 +974,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses, vendorBankAccounts;
+let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses, vendorBankAccounts;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -990,6 +990,7 @@ async function initializeDatabase() {
     customerTypes = db.collection("customerTypes");
     airCustomers = db.collection("airCustomers");
     otherCustomers = db.collection("otherCustomers");
+    passportServices = db.collection("passportServices");
     services = db.collection("services");
     vendors = db.collection("vendors");
     orders = db.collection("orders");
@@ -2998,45 +2999,559 @@ app.delete("/api/other/customers/:id", async (req, res) => {
 });
 
 
-// ==================== PASSPORT ROUTES ====================
+// ==================== PASSPORT SERVICE ROUTES ====================
 
-// Get passport statistics
-app.get("/customers/passport/stats", async (req, res) => {
+// POST: Create new Passport Service
+app.post("/api/passport-services", async (req, res) => {
   try {
-    const { days = 30 } = req.query;
-    const daysFromNow = new Date();
-    daysFromNow.setDate(daysFromNow.getDate() + parseInt(days));
+    const {
+      clientId,
+      clientName,
+      serviceType = 'new_passport',
+      phone,
+      email,
+      address,
+      date,
+      status = 'pending',
+      notes,
+      expectedDeliveryDate,
+      applicationNumber,
+      dateOfBirth,
+      validity,
+      pages,
+      deliveryType,
+      officeContactPersonId,
+      officeContactPersonName,
+      passportFees = 0,
+      bankCharges = 0,
+      vendorFees = 0,
+      formFillupCharge = 0,
+      totalBill = 0
+    } = req.body;
 
-    const expiringPassports = await airCustomers.find({
-      expiryDate: {
-        $gte: new Date().toISOString().split('T')[0],
-        $lte: daysFromNow.toISOString().split('T')[0]
-      },
-      isActive: true
-    }).sort({ expiryDate: 1 }).toArray();
+    // Validation - clientName, phone, and date are required
+    if (!clientName || !clientName.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Client name is required"
+      });
+    }
 
-    const expiredPassports = await airCustomers.find({
-      expiryDate: {
-        $lt: new Date().toISOString().split('T')[0]
-      },
-      isActive: true
-    }).sort({ expiryDate: -1 }).toArray();
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Phone number is required"
+      });
+    }
 
-    res.send({
-      success: true,
-      stats: {
-        expiringWithinDays: parseInt(days),
-        expiringCount: expiringPassports.length,
-        expiredCount: expiredPassports.length,
-        expiringPassports,
-        expiredPassports
+    if (!date) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Date is required"
+      });
+    }
+
+    // Validate phone number format
+    const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+    if (!phoneRegex.test(phone.trim())) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid phone number format"
+      });
+    }
+
+    // Validate email format if provided
+    if (email && email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid email format"
+        });
       }
+    }
+
+    // Validate service type
+    const validServiceTypes = ['new_passport', 'renewal', 'replacement', 'visa_stamping', 'other'];
+    if (!validServiceTypes.includes(serviceType)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid service type"
+      });
+    }
+
+    // Validate status
+    const validStatuses = ['pending', 'in_process', 'completed', 'cancelled'];
+    if (status && !validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid status"
+      });
+    }
+
+    // Calculate total bill if not provided
+    const calculatedTotal = (parseFloat(passportFees) || 0) + 
+                           (parseFloat(bankCharges) || 0) + 
+                           (parseFloat(vendorFees) || 0) + 
+                           (parseFloat(formFillupCharge) || 0);
+    const finalTotalBill = totalBill || calculatedTotal;
+
+    // Create passport service document
+    const now = new Date();
+    const serviceDoc = {
+      clientId: clientId || null,
+      clientName: clientName.trim(),
+      serviceType: serviceType,
+      phone: phone.trim(),
+      email: email ? email.trim() : '',
+      address: address ? address.trim() : '',
+      date: new Date(date),
+      status: status,
+      notes: notes ? notes.trim() : '',
+      expectedDeliveryDate: expectedDeliveryDate ? new Date(expectedDeliveryDate) : null,
+      applicationNumber: applicationNumber ? applicationNumber.trim() : '',
+      dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : null,
+      validity: validity || '',
+      pages: pages || '',
+      deliveryType: deliveryType || '',
+      officeContactPersonId: officeContactPersonId || null,
+      officeContactPersonName: officeContactPersonName ? officeContactPersonName.trim() : '',
+      passportFees: parseFloat(passportFees) || 0,
+      bankCharges: parseFloat(bankCharges) || 0,
+      vendorFees: parseFloat(vendorFees) || 0,
+      formFillupCharge: parseFloat(formFillupCharge) || 0,
+      totalBill: parseFloat(finalTotalBill),
+      isActive: true,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    // Insert passport service
+    const result = await passportServices.insertOne(serviceDoc);
+
+    // Return created service
+    const createdService = await passportServices.findOne({ _id: result.insertedId });
+
+    res.status(201).json({
+      success: true,
+      message: "Passport service created successfully",
+      data: createdService
     });
+
   } catch (error) {
-    console.error('Get passport stats error:', error);
-    res.status(500).send({ error: true, message: "Internal server error" });
+    console.error('Create passport service error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while creating passport service",
+      details: error.message
+    });
   }
 });
+
+// GET: Get all Passport Services with pagination and search
+app.get("/api/passport-services", async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 50, 
+      q, 
+      status,
+      serviceType,
+      clientId,
+      dateFrom,
+      dateTo
+    } = req.query;
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 200);
+
+    // Build filter
+    const filter = { isActive: { $ne: false } };
+
+    // Filter by status if provided
+    if (status) {
+      filter.status = status;
+    }
+
+    // Filter by service type if provided
+    if (serviceType) {
+      filter.serviceType = serviceType;
+    }
+
+    // Filter by client ID if provided
+    if (clientId) {
+      filter.clientId = clientId;
+    }
+
+    // Date range filter
+    if (dateFrom || dateTo) {
+      filter.date = {};
+      if (dateFrom) {
+        const start = new Date(dateFrom);
+        start.setHours(0, 0, 0, 0);
+        filter.date.$gte = start;
+      }
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        filter.date.$lte = end;
+      }
+    }
+
+    // Search filter
+    if (q && String(q).trim()) {
+      const searchText = String(q).trim();
+      filter.$or = [
+        { clientName: { $regex: searchText, $options: 'i' } },
+        { phone: { $regex: searchText, $options: 'i' } },
+        { email: { $regex: searchText, $options: 'i' } },
+        { applicationNumber: { $regex: searchText, $options: 'i' } },
+        { address: { $regex: searchText, $options: 'i' } },
+        { officeContactPersonName: { $regex: searchText, $options: 'i' } }
+      ];
+    }
+
+    // Get total count and data
+    const [total, data] = await Promise.all([
+      passportServices.countDocuments(filter),
+      passportServices
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .toArray()
+    ]);
+
+    res.json({
+      success: true,
+      data: data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get passport services error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while fetching passport services",
+      details: error.message
+    });
+  }
+});
+
+// GET: Get single Passport Service by ID
+app.get("/api/passport-services/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid passport service ID"
+      });
+    }
+
+    const service = await passportServices.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Passport service not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      data: service
+    });
+
+  } catch (error) {
+    console.error('Get passport service error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while fetching passport service",
+      details: error.message
+    });
+  }
+});
+
+// PUT: Update Passport Service
+app.put("/api/passport-services/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid passport service ID"
+      });
+    }
+
+    // Find service
+    const service = await passportServices.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Passport service not found"
+      });
+    }
+
+    // Validate phone number if being updated
+    if (updateData.phone) {
+      const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+      if (!phoneRegex.test(updateData.phone.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid phone number format"
+        });
+      }
+    }
+
+    // Validate email format if being updated
+    if (updateData.email && updateData.email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(updateData.email.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid email format"
+        });
+      }
+    }
+
+    // Validate service type if being updated
+    if (updateData.serviceType) {
+      const validServiceTypes = ['new_passport', 'renewal', 'replacement', 'visa_stamping', 'other'];
+      if (!validServiceTypes.includes(updateData.serviceType)) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid service type"
+        });
+      }
+    }
+
+    // Validate status if being updated
+    if (updateData.status) {
+      const validStatuses = ['pending', 'in_process', 'completed', 'cancelled'];
+      if (!validStatuses.includes(updateData.status)) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid status"
+        });
+      }
+    }
+
+    // Prepare update object
+    const update = { $set: { updatedAt: new Date() } };
+
+    // Update allowed fields
+    if (updateData.clientId !== undefined) {
+      update.$set.clientId = updateData.clientId || null;
+    }
+    if (updateData.clientName !== undefined) {
+      update.$set.clientName = String(updateData.clientName).trim();
+    }
+    if (updateData.serviceType !== undefined) {
+      update.$set.serviceType = String(updateData.serviceType);
+    }
+    if (updateData.phone !== undefined) {
+      update.$set.phone = String(updateData.phone).trim();
+    }
+    if (updateData.email !== undefined) {
+      update.$set.email = updateData.email ? String(updateData.email).trim() : '';
+    }
+    if (updateData.address !== undefined) {
+      update.$set.address = updateData.address ? String(updateData.address).trim() : '';
+    }
+    if (updateData.date !== undefined) {
+      update.$set.date = new Date(updateData.date);
+    }
+    if (updateData.status !== undefined) {
+      update.$set.status = String(updateData.status);
+    }
+    if (updateData.notes !== undefined) {
+      update.$set.notes = updateData.notes ? String(updateData.notes).trim() : '';
+    }
+    if (updateData.expectedDeliveryDate !== undefined) {
+      update.$set.expectedDeliveryDate = updateData.expectedDeliveryDate ? new Date(updateData.expectedDeliveryDate) : null;
+    }
+    if (updateData.applicationNumber !== undefined) {
+      update.$set.applicationNumber = updateData.applicationNumber ? String(updateData.applicationNumber).trim() : '';
+    }
+    if (updateData.dateOfBirth !== undefined) {
+      update.$set.dateOfBirth = updateData.dateOfBirth ? new Date(updateData.dateOfBirth) : null;
+    }
+    if (updateData.validity !== undefined) {
+      update.$set.validity = updateData.validity ? String(updateData.validity) : '';
+    }
+    if (updateData.pages !== undefined) {
+      update.$set.pages = updateData.pages ? String(updateData.pages) : '';
+    }
+    if (updateData.deliveryType !== undefined) {
+      update.$set.deliveryType = updateData.deliveryType ? String(updateData.deliveryType) : '';
+    }
+    if (updateData.officeContactPersonId !== undefined) {
+      update.$set.officeContactPersonId = updateData.officeContactPersonId || null;
+    }
+    if (updateData.officeContactPersonName !== undefined) {
+      update.$set.officeContactPersonName = updateData.officeContactPersonName ? String(updateData.officeContactPersonName).trim() : '';
+    }
+    if (updateData.passportFees !== undefined) {
+      update.$set.passportFees = parseFloat(updateData.passportFees) || 0;
+    }
+    if (updateData.bankCharges !== undefined) {
+      update.$set.bankCharges = parseFloat(updateData.bankCharges) || 0;
+    }
+    if (updateData.vendorFees !== undefined) {
+      update.$set.vendorFees = parseFloat(updateData.vendorFees) || 0;
+    }
+    if (updateData.formFillupCharge !== undefined) {
+      update.$set.formFillupCharge = parseFloat(updateData.formFillupCharge) || 0;
+    }
+
+    // Recalculate total bill if any fee field is updated
+    if (updateData.passportFees !== undefined || 
+        updateData.bankCharges !== undefined || 
+        updateData.vendorFees !== undefined || 
+        updateData.formFillupCharge !== undefined ||
+        updateData.totalBill !== undefined) {
+      
+      const passportFees = updateData.passportFees !== undefined 
+        ? parseFloat(updateData.passportFees) || 0 
+        : service.passportFees || 0;
+      const bankCharges = updateData.bankCharges !== undefined 
+        ? parseFloat(updateData.bankCharges) || 0 
+        : service.bankCharges || 0;
+      const vendorFees = updateData.vendorFees !== undefined 
+        ? parseFloat(updateData.vendorFees) || 0 
+        : service.vendorFees || 0;
+      const formFillupCharge = updateData.formFillupCharge !== undefined 
+        ? parseFloat(updateData.formFillupCharge) || 0 
+        : service.formFillupCharge || 0;
+      
+      const calculatedTotal = passportFees + bankCharges + vendorFees + formFillupCharge;
+      update.$set.totalBill = updateData.totalBill !== undefined 
+        ? parseFloat(updateData.totalBill) 
+        : calculatedTotal;
+    }
+
+    // Update service
+    const result = await passportServices.updateOne(
+      { _id: new ObjectId(id) },
+      update
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Passport service not found"
+      });
+    }
+
+    // Get updated service
+    const updatedService = await passportServices.findOne({ _id: new ObjectId(id) });
+
+    res.json({
+      success: true,
+      message: "Passport service updated successfully",
+      data: updatedService
+    });
+
+  } catch (error) {
+    console.error('Update passport service error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while updating passport service",
+      details: error.message
+    });
+  }
+});
+
+// DELETE: Delete Passport Service (Soft delete)
+app.delete("/api/passport-services/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid passport service ID"
+      });
+    }
+
+    // Check if service exists
+    const service = await passportServices.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Passport service not found"
+      });
+    }
+
+    // Soft delete
+    await passportServices.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: "Passport service deleted successfully"
+    });
+
+  } catch (error) {
+    console.error('Delete passport service error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while deleting passport service",
+      details: error.message
+    });
+  }
+});
+
 
 
 // Add new service type
