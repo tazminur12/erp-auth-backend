@@ -974,7 +974,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses, vendorBankAccounts;
+let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses, vendorBankAccounts;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -991,6 +991,7 @@ async function initializeDatabase() {
     airCustomers = db.collection("airCustomers");
     otherCustomers = db.collection("otherCustomers");
     passportServices = db.collection("passportServices");
+    manpowerServices = db.collection("manpowerServices");
     services = db.collection("services");
     vendors = db.collection("vendors");
     orders = db.collection("orders");
@@ -3552,6 +3553,529 @@ app.delete("/api/passport-services/:id", async (req, res) => {
   }
 });
 
+
+// ==================== MANPOWER SERVICE ROUTES ====================
+
+// POST: Create new Manpower Service
+app.post("/api/manpower-services", async (req, res) => {
+  try {
+    const {
+      clientId,
+      clientName,
+      serviceType = 'recruitment',
+      phone,
+      email,
+      address,
+      appliedDate,
+      expectedDeliveryDate,
+      vendorId,
+      vendorName,
+      vendorBill = 0,
+      othersBill = 0,
+      serviceCharge = 0,
+      totalBill = 0,
+      status = 'active',
+      notes
+    } = req.body;
+
+    // Validation - clientName, phone, and appliedDate are required
+    if (!clientName || !clientName.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Client name is required"
+      });
+    }
+
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Phone number is required"
+      });
+    }
+
+    if (!appliedDate) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Applied date is required"
+      });
+    }
+
+    // Validate phone number format
+    const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+    if (!phoneRegex.test(phone.trim())) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid phone number format"
+      });
+    }
+
+    // Validate email format if provided
+    if (email && email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid email format"
+        });
+      }
+    }
+
+    // Validate service type
+    const validServiceTypes = ['recruitment', 'placement', 'training', 'consultation', 'other'];
+    if (!validServiceTypes.includes(serviceType)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid service type"
+      });
+    }
+
+    // Validate status
+    const validStatuses = ['active', 'in_process', 'completed', 'cancelled'];
+    if (status && !validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid status"
+      });
+    }
+
+    // Calculate total bill if not provided
+    const calculatedTotal = (parseFloat(vendorBill) || 0) + 
+                           (parseFloat(othersBill) || 0) + 
+                           (parseFloat(serviceCharge) || 0);
+    const finalTotalBill = totalBill || calculatedTotal;
+
+    // Create manpower service document
+    const now = new Date();
+    const serviceDoc = {
+      clientId: clientId || null,
+      clientName: clientName.trim(),
+      serviceType: serviceType,
+      phone: phone.trim(),
+      email: email ? email.trim() : '',
+      address: address ? address.trim() : '',
+      appliedDate: new Date(appliedDate),
+      expectedDeliveryDate: expectedDeliveryDate ? new Date(expectedDeliveryDate) : null,
+      vendorId: vendorId || null,
+      vendorName: vendorName ? vendorName.trim() : '',
+      vendorBill: parseFloat(vendorBill) || 0,
+      othersBill: parseFloat(othersBill) || 0,
+      serviceCharge: parseFloat(serviceCharge) || 0,
+      totalBill: parseFloat(finalTotalBill),
+      status: status,
+      notes: notes ? notes.trim() : '',
+      isActive: true,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    // Insert manpower service
+    const result = await manpowerServices.insertOne(serviceDoc);
+
+    // Return created service
+    const createdService = await manpowerServices.findOne({ _id: result.insertedId });
+
+    res.status(201).json({
+      success: true,
+      message: "Manpower service created successfully",
+      data: createdService
+    });
+
+  } catch (error) {
+    console.error('Create manpower service error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while creating manpower service",
+      details: error.message
+    });
+  }
+});
+
+// GET: Get all Manpower Services with pagination and search
+app.get("/api/manpower-services", async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 50, 
+      q, 
+      status,
+      serviceType,
+      clientId,
+      vendorId,
+      appliedDateFrom,
+      appliedDateTo
+    } = req.query;
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 200);
+
+    // Build filter
+    const filter = { isActive: { $ne: false } };
+
+    // Filter by status if provided
+    if (status) {
+      filter.status = status;
+    }
+
+    // Filter by service type if provided
+    if (serviceType) {
+      filter.serviceType = serviceType;
+    }
+
+    // Filter by client ID if provided
+    if (clientId) {
+      filter.clientId = clientId;
+    }
+
+    // Filter by vendor ID if provided
+    if (vendorId) {
+      filter.vendorId = vendorId;
+    }
+
+    // Applied date range filter
+    if (appliedDateFrom || appliedDateTo) {
+      filter.appliedDate = {};
+      if (appliedDateFrom) {
+        const start = new Date(appliedDateFrom);
+        start.setHours(0, 0, 0, 0);
+        filter.appliedDate.$gte = start;
+      }
+      if (appliedDateTo) {
+        const end = new Date(appliedDateTo);
+        end.setHours(23, 59, 59, 999);
+        filter.appliedDate.$lte = end;
+      }
+    }
+
+    // Search filter
+    if (q && String(q).trim()) {
+      const searchText = String(q).trim();
+      filter.$or = [
+        { clientName: { $regex: searchText, $options: 'i' } },
+        { phone: { $regex: searchText, $options: 'i' } },
+        { email: { $regex: searchText, $options: 'i' } },
+        { address: { $regex: searchText, $options: 'i' } },
+        { vendorName: { $regex: searchText, $options: 'i' } }
+      ];
+    }
+
+    // Get total count and data
+    const [total, data] = await Promise.all([
+      manpowerServices.countDocuments(filter),
+      manpowerServices
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .toArray()
+    ]);
+
+    res.json({
+      success: true,
+      data: data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get manpower services error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while fetching manpower services",
+      details: error.message
+    });
+  }
+});
+
+// GET: Get single Manpower Service by ID
+app.get("/api/manpower-services/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid manpower service ID"
+      });
+    }
+
+    const service = await manpowerServices.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Manpower service not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      data: service
+    });
+
+  } catch (error) {
+    console.error('Get manpower service error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while fetching manpower service",
+      details: error.message
+    });
+  }
+});
+
+// PUT: Update Manpower Service
+app.put("/api/manpower-services/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid manpower service ID"
+      });
+    }
+
+    // Find service
+    const service = await manpowerServices.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Manpower service not found"
+      });
+    }
+
+    // Validate phone number if being updated
+    if (updateData.phone) {
+      const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+      if (!phoneRegex.test(updateData.phone.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid phone number format"
+        });
+      }
+    }
+
+    // Validate email format if being updated
+    if (updateData.email && updateData.email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(updateData.email.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid email format"
+        });
+      }
+    }
+
+    // Validate service type if being updated
+    if (updateData.serviceType) {
+      const validServiceTypes = ['recruitment', 'placement', 'training', 'consultation', 'other'];
+      if (!validServiceTypes.includes(updateData.serviceType)) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid service type"
+        });
+      }
+    }
+
+    // Validate status if being updated
+    if (updateData.status) {
+      const validStatuses = ['active', 'in_process', 'completed', 'cancelled'];
+      if (!validStatuses.includes(updateData.status)) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid status"
+        });
+      }
+    }
+
+    // Prepare update object
+    const update = { $set: { updatedAt: new Date() } };
+
+    // Update allowed fields
+    if (updateData.clientId !== undefined) {
+      update.$set.clientId = updateData.clientId || null;
+    }
+    if (updateData.clientName !== undefined) {
+      update.$set.clientName = String(updateData.clientName).trim();
+    }
+    if (updateData.serviceType !== undefined) {
+      update.$set.serviceType = String(updateData.serviceType);
+    }
+    if (updateData.phone !== undefined) {
+      update.$set.phone = String(updateData.phone).trim();
+    }
+    if (updateData.email !== undefined) {
+      update.$set.email = updateData.email ? String(updateData.email).trim() : '';
+    }
+    if (updateData.address !== undefined) {
+      update.$set.address = updateData.address ? String(updateData.address).trim() : '';
+    }
+    if (updateData.appliedDate !== undefined) {
+      update.$set.appliedDate = new Date(updateData.appliedDate);
+    }
+    if (updateData.expectedDeliveryDate !== undefined) {
+      update.$set.expectedDeliveryDate = updateData.expectedDeliveryDate ? new Date(updateData.expectedDeliveryDate) : null;
+    }
+    if (updateData.vendorId !== undefined) {
+      update.$set.vendorId = updateData.vendorId || null;
+    }
+    if (updateData.vendorName !== undefined) {
+      update.$set.vendorName = updateData.vendorName ? String(updateData.vendorName).trim() : '';
+    }
+    if (updateData.vendorBill !== undefined) {
+      update.$set.vendorBill = parseFloat(updateData.vendorBill) || 0;
+    }
+    if (updateData.othersBill !== undefined) {
+      update.$set.othersBill = parseFloat(updateData.othersBill) || 0;
+    }
+    if (updateData.serviceCharge !== undefined) {
+      update.$set.serviceCharge = parseFloat(updateData.serviceCharge) || 0;
+    }
+    if (updateData.status !== undefined) {
+      update.$set.status = String(updateData.status);
+    }
+    if (updateData.notes !== undefined) {
+      update.$set.notes = updateData.notes ? String(updateData.notes).trim() : '';
+    }
+
+    // Recalculate total bill if any bill field is updated
+    if (updateData.vendorBill !== undefined || 
+        updateData.othersBill !== undefined || 
+        updateData.serviceCharge !== undefined ||
+        updateData.totalBill !== undefined) {
+      
+      const vendorBill = updateData.vendorBill !== undefined 
+        ? parseFloat(updateData.vendorBill) || 0 
+        : service.vendorBill || 0;
+      const othersBill = updateData.othersBill !== undefined 
+        ? parseFloat(updateData.othersBill) || 0 
+        : service.othersBill || 0;
+      const serviceCharge = updateData.serviceCharge !== undefined 
+        ? parseFloat(updateData.serviceCharge) || 0 
+        : service.serviceCharge || 0;
+      
+      const calculatedTotal = vendorBill + othersBill + serviceCharge;
+      update.$set.totalBill = updateData.totalBill !== undefined 
+        ? parseFloat(updateData.totalBill) 
+        : calculatedTotal;
+    }
+
+    // Update service
+    const result = await manpowerServices.updateOne(
+      { _id: new ObjectId(id) },
+      update
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Manpower service not found"
+      });
+    }
+
+    // Get updated service
+    const updatedService = await manpowerServices.findOne({ _id: new ObjectId(id) });
+
+    res.json({
+      success: true,
+      message: "Manpower service updated successfully",
+      data: updatedService
+    });
+
+  } catch (error) {
+    console.error('Update manpower service error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while updating manpower service",
+      details: error.message
+    });
+  }
+});
+
+// DELETE: Delete Manpower Service (Soft delete)
+app.delete("/api/manpower-services/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid manpower service ID"
+      });
+    }
+
+    // Check if service exists
+    const service = await manpowerServices.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Manpower service not found"
+      });
+    }
+
+    // Soft delete
+    await manpowerServices.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: "Manpower service deleted successfully"
+    });
+
+  } catch (error) {
+    console.error('Delete manpower service error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while deleting manpower service",
+      details: error.message
+    });
+  }
+});
 
 
 // Add new service type
