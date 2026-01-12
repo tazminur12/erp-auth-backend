@@ -1931,16 +1931,24 @@ app.delete("/customer-types/:id", async (req, res) => {
       });
     }
 
-    // Check if any customers are using this type
-    const customersUsingType = await customers.countDocuments({
-      customerType: customerTypeToDelete.value,
-      isActive: true
-    });
+    // Check if any customers are using this type (check both collections)
+    const [airCustomersUsingType, otherCustomersUsingType] = await Promise.all([
+      airCustomers.countDocuments({
+        customerType: customerTypeToDelete.value,
+        isActive: { $ne: false }
+      }),
+      otherCustomers.countDocuments({
+        customerType: customerTypeToDelete.value,
+        isActive: { $ne: false }
+      })
+    ]);
 
-    if (customersUsingType > 0) {
+    const totalCustomersUsingType = airCustomersUsingType + otherCustomersUsingType;
+
+    if (totalCustomersUsingType > 0) {
       return res.status(400).json({
         error: true,
-        message: `Cannot delete customer type. ${customersUsingType} customers are using this type.`
+        message: `Cannot delete customer type. ${totalCustomersUsingType} customers are using this type.`
       });
     }
 
