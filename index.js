@@ -1749,7 +1749,7 @@ app.post("/jwt", async (req, res) => {
 // ==================== USER ROUTES ====================
 app.post("/users", async (req, res) => {
   try {
-    const { email, displayName, branchId, firebaseUid, role = "user" } = req.body;
+    const { email, displayName, branchId, firebaseUid, role = "user", phone } = req.body;
 
     if (!email || !displayName || !branchId || !firebaseUid) {
       return res.status(400).send({
@@ -1758,10 +1758,30 @@ app.post("/users", async (req, res) => {
       });
     }
 
-    // Check if user already exists
+    // Validate phone number format if provided
+    if (phone) {
+      const phoneRegex = /^(?:\+?880|0)?1[3-9]\d{8}$/;
+      if (!phoneRegex.test(phone.replace(/\s+/g, ''))) {
+        return res.status(400).send({
+          error: true,
+          message: "Invalid phone number format. Use Bangladesh mobile number (e.g., 01712345678)"
+        });
+      }
+    }
+
+    // Check if user already exists by email
     const exists = await users.findOne({ email: email.toLowerCase() });
     if (exists) {
-      return res.status(400).send({ error: true, message: "User already exists" });
+      return res.status(400).send({ error: true, message: "User already exists with this email" });
+    }
+
+    // Check if phone number already exists (if provided)
+    if (phone) {
+      const normalizedPhone = phone.replace(/\s+/g, '').replace(/^\+?880/, '0').replace(/^88/, '0');
+      const phoneExists = await users.findOne({ phone: normalizedPhone });
+      if (phoneExists) {
+        return res.status(400).send({ error: true, message: "User already exists with this phone number" });
+      }
     }
 
     // Get branch information
@@ -1773,11 +1793,15 @@ app.post("/users", async (req, res) => {
     // Generate unique ID for the user
     const uniqueId = await generateUniqueId(db, branch.branchCode);
 
+    // Normalize phone number for storage
+    const normalizedPhone = phone ? phone.replace(/\s+/g, '').replace(/^\+?880/, '0').replace(/^88/, '0') : null;
+
     // Create new user
     const newUser = {
       uniqueId,
       displayName,
       email: email.toLowerCase(),
+      phone: normalizedPhone,
       branchId,
       branchName: branch.branchName,
       branchLocation: branch.branchLocation,
@@ -1798,6 +1822,7 @@ app.post("/users", async (req, res) => {
         uniqueId: newUser.uniqueId,
         displayName: newUser.displayName,
         email: newUser.email,
+        phone: newUser.phone,
         role: newUser.role,
         branchId: newUser.branchId,
         branchName: newUser.branchName
@@ -2010,12 +2035,34 @@ app.patch("/users/profile/:email", async (req, res) => {
     // Add update timestamp
     filteredUpdateData.updatedAt = new Date();
 
-    // Validate phone number format if provided
-    if (filteredUpdateData.phone && !/^01[3-9]\d{8}$/.test(filteredUpdateData.phone)) {
-      return res.status(400).json({
-        error: true,
-        message: "Invalid phone number format. Please use 01XXXXXXXXX format"
+    // Validate and normalize phone number if provided
+    if (filteredUpdateData.phone) {
+      const phoneRegex = /^(?:\+?880|0)?1[3-9]\d{8}$/;
+      if (!phoneRegex.test(filteredUpdateData.phone.replace(/\s+/g, ''))) {
+        return res.status(400).json({
+          error: true,
+          message: "Invalid phone number format. Use Bangladesh mobile number (e.g., 01712345678)"
+        });
+      }
+
+      // Normalize phone number
+      const normalizedPhone = filteredUpdateData.phone.replace(/\s+/g, '').replace(/^\+?880/, '0').replace(/^88/, '0');
+      
+      // Check if phone number already exists for another user
+      const phoneExists = await users.findOne({
+        phone: normalizedPhone,
+        email: { $ne: email }, // Exclude current user
+        isActive: true
       });
+
+      if (phoneExists) {
+        return res.status(400).json({
+          error: true,
+          message: "This phone number is already registered to another user"
+        });
+      }
+
+      filteredUpdateData.phone = normalizedPhone;
     }
 
     // Update user profile
