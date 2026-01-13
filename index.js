@@ -1372,6 +1372,13 @@ async function sendSMS(phone, message) {
     const apiKey = process.env.SMS_API_KEY;
     const senderId = process.env.SMS_SENDER_ID;
 
+    // Debug log to check what sender ID is being used
+    console.log('📱 SMS Configuration:', {
+      senderIdConfigured: !!senderId,
+      senderIdValue: senderId,
+      apiKeyConfigured: !!apiKey
+    });
+
     if (!apiKey || !senderId) {
       throw new Error('SMS credentials not configured');
     }
@@ -1389,6 +1396,12 @@ async function sendSMS(phone, message) {
     payload.append('senderid', senderId);
     payload.append('to', normalizedPhone);
     payload.append('msg', message);
+
+    console.log('📤 Sending SMS:', {
+      to: normalizedPhone,
+      from: senderId,
+      messageLength: message.length
+    });
 
     const response = await fetch('https://api.sms.net.bd/sendsms', {
       method: 'POST',
@@ -1460,7 +1473,7 @@ app.post("/api/auth/send-otp", async (req, res) => {
     });
 
     // Send OTP via SMS
-    const smsMessage = `Your login OTP is ${otp}. Valid for 5 minutes. Do not share this code.`;
+    const smsMessage = `[Salma Air] Your login OTP is ${otp}. Valid for 5 minutes. Do not share this code.`;
     
     try {
       await sendSMS(normalizedPhone, smsMessage);
