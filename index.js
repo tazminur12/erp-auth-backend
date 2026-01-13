@@ -1356,6 +1356,343 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+// ==================== OTP LOGIN SYSTEM ====================
+
+// In-memory OTP store (phone → { otp, expiresAt })
+const otpStore = new Map();
+
+// Utility: Generate 6-digit OTP
+function generateOTP() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+// Utility: Send SMS via sms.net.bd
+async function sendSMS(phone, message) {
+  try {
+    const apiKey = process.env.SMS_API_KEY;
+    const senderId = process.env.SMS_SENDER_ID;
+
+    if (!apiKey || !senderId) {
+      throw new Error('SMS credentials not configured');
+    }
+
+    // Normalize phone number (ensure it starts with country code)
+    let normalizedPhone = phone.replace(/\D/g, ''); // Remove non-digits
+    if (normalizedPhone.startsWith('0')) {
+      normalizedPhone = '88' + normalizedPhone; // Add Bangladesh country code
+    } else if (!normalizedPhone.startsWith('88')) {
+      normalizedPhone = '88' + normalizedPhone;
+    }
+
+    const payload = new URLSearchParams();
+    payload.append('api_key', apiKey);
+    payload.append('senderid', senderId);
+    payload.append('to', normalizedPhone);
+    payload.append('msg', message);
+
+    const response = await fetch('https://api.sms.net.bd/sendsms', {
+      method: 'POST',
+      body: payload,
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded'
+      }
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('SMS API error:', errorText);
+      throw new Error(`SMS API responded with ${response.status}`);
+    }
+
+    const result = await response.text();
+    console.log('SMS sent successfully:', { phone: normalizedPhone, result });
+    return { success: true, result };
+
+  } catch (error) {
+    console.error('SMS sending failed:', error);
+    throw error;
+  }
+}
+
+// POST: Send OTP to phone number
+app.post("/api/auth/send-otp", async (req, res) => {
+  try {
+    const { phone } = req.body;
+
+    // Validation
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Phone number is required"
+      });
+    }
+
+    // Validate phone number format
+    const phoneRegex = /^(\+?88)?0?1[3-9]\d{8}$/;
+    const cleanPhone = phone.replace(/\s|-/g, '');
+    
+    if (!phoneRegex.test(cleanPhone)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid phone number format. Use Bangladesh mobile number."
+      });
+    }
+
+    // Normalize phone number for storage
+    let normalizedPhone = cleanPhone.replace(/\D/g, '');
+    if (normalizedPhone.startsWith('0')) {
+      normalizedPhone = '88' + normalizedPhone;
+    } else if (!normalizedPhone.startsWith('88')) {
+      normalizedPhone = '88' + normalizedPhone;
+    }
+
+    // Generate OTP
+    const otp = generateOTP();
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes from now
+
+    // Store OTP with expiry
+    otpStore.set(normalizedPhone, {
+      otp,
+      expiresAt,
+      attempts: 0
+    });
+
+    // Send OTP via SMS
+    const smsMessage = `Your login OTP is ${otp}. Valid for 5 minutes. Do not share this code.`;
+    
+    try {
+      await sendSMS(normalizedPhone, smsMessage);
+    } catch (smsError) {
+      console.error('SMS sending failed:', smsError);
+      // Clean up OTP store on SMS failure
+      otpStore.delete(normalizedPhone);
+      
+      return res.status(500).json({
+        success: false,
+        error: true,
+        message: "Failed to send OTP. Please try again.",
+        details: smsError.message
+      });
+    }
+
+    console.log(`OTP sent to ${normalizedPhone}: ${otp} (expires at ${expiresAt.toISOString()})`);
+
+    res.json({
+      success: true,
+      message: "OTP sent successfully to your phone number",
+      phone: normalizedPhone,
+      expiresIn: 300 // seconds
+    });
+
+  } catch (error) {
+    console.error('Send OTP error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while sending OTP",
+      details: error.message
+    });
+  }
+});
+
+// POST: Verify OTP and login/register user
+app.post("/api/auth/verify-otp", async (req, res) => {
+  try {
+    const { phone, otp } = req.body;
+
+    // Validation
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Phone number is required"
+      });
+    }
+
+    if (!otp || !otp.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "OTP is required"
+      });
+    }
+
+    // Normalize phone number
+    let normalizedPhone = phone.replace(/\D/g, '');
+    if (normalizedPhone.startsWith('0')) {
+      normalizedPhone = '88' + normalizedPhone;
+    } else if (!normalizedPhone.startsWith('88')) {
+      normalizedPhone = '88' + normalizedPhone;
+    }
+
+    // Check if OTP exists
+    const otpData = otpStore.get(normalizedPhone);
+    
+    if (!otpData) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "OTP not found. Please request a new OTP."
+      });
+    }
+
+    // Check if OTP is expired
+    if (new Date() > otpData.expiresAt) {
+      // Clean up expired OTP
+      otpStore.delete(normalizedPhone);
+      
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "OTP has expired. Please request a new OTP."
+      });
+    }
+
+    // Check if OTP matches
+    if (otpData.otp !== otp.trim()) {
+      // Increment failed attempts
+      otpData.attempts = (otpData.attempts || 0) + 1;
+      
+      // Block after 3 failed attempts
+      if (otpData.attempts >= 3) {
+        otpStore.delete(normalizedPhone);
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Too many failed attempts. Please request a new OTP."
+        });
+      }
+      
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid OTP. Please try again.",
+        attemptsLeft: 3 - otpData.attempts
+      });
+    }
+
+    // OTP is valid - proceed with login/registration
+    
+    // Check if user exists with this phone number
+    let user = await users.findOne({
+      phone: normalizedPhone,
+      isActive: true
+    });
+
+    // If user doesn't exist, create new user
+    if (!user) {
+      // Get default branch or first active branch
+      let branch = await branches.findOne({ branchId: 'main', isActive: true });
+      if (!branch) {
+        branch = await branches.findOne({ isActive: true });
+      }
+      
+      if (!branch) {
+        // Create default branch if none exists
+        branch = {
+          branchId: 'main',
+          branchName: 'Main Branch',
+          branchCode: 'MN',
+          branchLocation: 'Head Office'
+        };
+        await branches.insertOne({
+          ...branch,
+          isActive: true,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        });
+      }
+
+      // Generate unique ID for the user
+      const uniqueId = await generateUniqueId(db, branch.branchCode);
+
+      // Create new user
+      const newUser = {
+        uniqueId,
+        phone: normalizedPhone,
+        displayName: `User ${normalizedPhone.slice(-4)}`, // Default name
+        email: null, // No email for phone-based login
+        branchId: branch.branchId,
+        branchName: branch.branchName,
+        branchLocation: branch.branchLocation,
+        firebaseUid: null, // Not using Firebase for OTP login
+        role: 'user',
+        loginMethod: 'otp', // Mark as OTP login
+        isActive: true,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      };
+
+      const result = await users.insertOne(newUser);
+      user = { ...newUser, _id: result.insertedId };
+
+      console.log(`✅ New OTP user created: ${uniqueId} (${normalizedPhone})`);
+    }
+
+    // Delete OTP after successful verification
+    otpStore.delete(normalizedPhone);
+
+    // Generate JWT token using existing logic
+    const token = jwt.sign(
+      {
+        sub: user._id.toString(),
+        uniqueId: user.uniqueId,
+        phone: user.phone,
+        email: user.email,
+        role: user.role,
+        branchId: user.branchId,
+        loginMethod: 'otp'
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES || '7d' }
+    );
+
+    res.json({
+      success: true,
+      message: user._id ? "Login successful" : "User created and logged in successfully",
+      token,
+      user: {
+        uniqueId: user.uniqueId,
+        phone: user.phone,
+        displayName: user.displayName,
+        email: user.email,
+        role: user.role,
+        branchId: user.branchId,
+        branchName: user.branchName,
+        loginMethod: 'otp'
+      }
+    });
+
+  } catch (error) {
+    console.error('Verify OTP error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while verifying OTP",
+      details: error.message
+    });
+  }
+});
+
+// Optional: Clear expired OTPs periodically (cleanup job)
+setInterval(() => {
+  const now = new Date();
+  let cleanedCount = 0;
+  
+  for (const [phone, data] of otpStore.entries()) {
+    if (now > data.expiresAt) {
+      otpStore.delete(phone);
+      cleanedCount++;
+    }
+  }
+  
+  if (cleanedCount > 0) {
+    console.log(`🧹 Cleaned up ${cleanedCount} expired OTPs`);
+  }
+}, 60000); // Run every 1 minute
+
 // ==================== BRANCH ROUTES ====================
 app.get("/api/branches/active", async (req, res) => {
   try {
@@ -9700,12 +10037,19 @@ app.post("/api/transactions", async (req, res) => {
       if (party) {
         party._isAirCustomer = true;
       }
-      // If not found in airCustomers, try regular customers collection (if it exists)
-      if (!party && typeof customers !== 'undefined' && customers) {
+      // If not found in airCustomers, try otherCustomers collection (Additional Services customers)
+      if (!party) {
         try {
-          party = await customers.findOne(searchCondition);
+          const otherCustomerCondition = isValidObjectId
+            ? { $or: [{ customerId: searchPartyId }, { id: searchPartyId }, { _id: new ObjectId(searchPartyId) }], isActive: { $ne: false } }
+            : { $or: [{ customerId: searchPartyId }, { id: searchPartyId }, { _id: searchPartyId }], isActive: { $ne: false } };
+          party = await otherCustomers.findOne(otherCustomerCondition);
+          if (party) {
+            party._isOtherCustomer = true;
+          }
         } catch (e) {
-          // customers collection doesn't exist or error, continue
+          // otherCustomers collection error, continue
+          console.warn('Error searching otherCustomers:', e.message);
         }
       }
     } else if (finalPartyType === 'agent') {
@@ -10051,9 +10395,10 @@ app.post("/api/transactions", async (req, res) => {
         const isUmrahCategory = categoryText.includes('umrah');
         const dueDelta = transactionType === 'debit' ? numericAmount : (transactionType === 'credit' ? -numericAmount : 0);
         const isAirCustomer = party._isAirCustomer === true;
+        const isOtherCustomer = party._isOtherCustomer === true;
 
         // Determine which collection to update
-        const customerCollection = isAirCustomer ? airCustomers : customers;
+        const customerCollection = isAirCustomer ? airCustomers : (isOtherCustomer ? otherCustomers : airCustomers);
 
         const customerUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: dueDelta } };
         if (isHajjCategory) {
@@ -10851,7 +11196,7 @@ app.delete("/api/transactions/:id", async (req, res) => {
           }
         }
 
-        // 2.3 Customer (check if airCustomer or regular customer)
+        // 2.3 Customer (check if airCustomer, otherCustomer, or regular customer)
         if (partyType === 'customer') {
           const customerCond = isValidObjectId
             ? { $or: [{ customerId: partyId }, { _id: new ObjectId(partyId) }], isActive: { $ne: false } }
@@ -10862,19 +11207,19 @@ app.delete("/api/transactions/:id", async (req, res) => {
           let isAirCustomer = !!customer;
           let customerCollection = airCustomers;
           
-          // If not found in airCustomers, try to find in regular customers (if collection exists)
-          // Note: customers collection might not be initialized, so we'll handle gracefully
+          // If not found in airCustomers, try otherCustomers (Additional Services customers)
           if (!customer) {
             try {
-              // Check if customers collection exists by trying to use it
-              if (typeof customers !== 'undefined' && customers) {
-                customer = await customers.findOne(customerCond, { session });
-                if (customer) {
-                  customerCollection = customers;
-                }
+              const otherCustomerCond = isValidObjectId
+                ? { $or: [{ customerId: partyId }, { id: partyId }, { _id: new ObjectId(partyId) }], isActive: { $ne: false } }
+                : { $or: [{ customerId: partyId }, { id: partyId }, { _id: partyId }], isActive: { $ne: false } };
+              customer = await otherCustomers.findOne(otherCustomerCond, { session });
+              if (customer) {
+                customerCollection = otherCustomers;
               }
             } catch (e) {
-              // customers collection doesn't exist, continue with airCustomers only
+              // otherCustomers collection error, continue
+              console.warn('Error searching otherCustomers in DELETE:', e.message);
             }
           }
           
