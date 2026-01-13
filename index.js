@@ -974,7 +974,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, visaProcessingServices, ticketChecks, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses, vendorBankAccounts;
+let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, visaProcessingServices, ticketChecks, oldTicketReissues, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses, vendorBankAccounts;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -994,6 +994,7 @@ async function initializeDatabase() {
     manpowerServices = db.collection("manpowerServices");
     visaProcessingServices = db.collection("visaProcessingServices");
     ticketChecks = db.collection("ticketChecks");
+    oldTicketReissues = db.collection("oldTicketReissues");
     services = db.collection("services");
     vendors = db.collection("vendors");
     orders = db.collection("orders");
@@ -5184,6 +5185,732 @@ app.delete("/api/ticket-checks/:id", async (req, res) => {
       success: false,
       error: true,
       message: "Internal server error while deleting ticket check",
+      details: error.message
+    });
+  }
+});
+
+
+// ==================== OLD TICKET REISSUE ROUTES ====================
+
+// POST: Create new Old Ticket Reissue
+app.post("/api/old-ticket-reissues", async (req, res) => {
+  try {
+    const {
+      customerId,
+      formDate,
+      firstName,
+      lastName,
+      travellingCountry,
+      passportNo,
+      contactNo,
+      isWhatsAppSame = true,
+      whatsAppNo,
+      airlineName,
+      origin,
+      destination,
+      airlinesPnr,
+      oldDate,
+      newDate,
+      reissueVendorId,
+      reissueVendorName,
+      vendorAmount,
+      totalContractAmount,
+      issuingAgentName,
+      issuingAgentContact,
+      agentEmail,
+      reservationOfficerId,
+      reservationOfficerName,
+      notes
+    } = req.body;
+
+    // Validation - Required fields
+    if (!formDate) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Form date is required"
+      });
+    }
+
+    if (!firstName || !firstName.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Passenger first name is required"
+      });
+    }
+
+    if (!lastName || !lastName.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Passenger last name is required"
+      });
+    }
+
+    if (!travellingCountry || !travellingCountry.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Travelling country is required"
+      });
+    }
+
+    if (!passportNo || !passportNo.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Passport number is required"
+      });
+    }
+
+    if (!contactNo || !contactNo.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Contact number is required"
+      });
+    }
+
+    if (!isWhatsAppSame && (!whatsAppNo || !whatsAppNo.trim())) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "WhatsApp number is required"
+      });
+    }
+
+    if (!airlineName || !airlineName.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Airlines name is required"
+      });
+    }
+
+    if (!origin || !origin.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Origin is required"
+      });
+    }
+
+    if (!destination || !destination.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Destination is required"
+      });
+    }
+
+    if (!airlinesPnr || !airlinesPnr.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Airlines PNR is required"
+      });
+    }
+
+    if (!oldDate) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Old date is required"
+      });
+    }
+
+    if (!newDate) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "New date is required"
+      });
+    }
+
+    if (!reissueVendorId || !reissueVendorId.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Reissue vendor is required"
+      });
+    }
+
+    if (vendorAmount === undefined || vendorAmount === null || vendorAmount === '') {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Vendor amount is required"
+      });
+    }
+
+    if (totalContractAmount === undefined || totalContractAmount === null || totalContractAmount === '') {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Total contract amount is required"
+      });
+    }
+
+    if (!issuingAgentName || !issuingAgentName.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Issuing agent name is required"
+      });
+    }
+
+    if (!issuingAgentContact || !issuingAgentContact.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Issuing agent contact is required"
+      });
+    }
+
+    if (!reservationOfficerId || !reservationOfficerId.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Reservation officer is required"
+      });
+    }
+
+    // Validate phone number format
+    const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+    if (!phoneRegex.test(contactNo.trim())) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid contact number format"
+      });
+    }
+
+    // Validate agent contact format
+    if (!phoneRegex.test(issuingAgentContact.trim())) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid issuing agent contact format"
+      });
+    }
+
+    // Validate WhatsApp number if different
+    if (!isWhatsAppSame && whatsAppNo && whatsAppNo.trim()) {
+      if (!phoneRegex.test(whatsAppNo.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid WhatsApp number format"
+        });
+      }
+    }
+
+    // Validate email format if provided
+    if (agentEmail && agentEmail.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(agentEmail.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid email format"
+        });
+      }
+    }
+
+    // Calculate profit
+    const vendorAmt = parseFloat(vendorAmount) || 0;
+    const totalAmt = parseFloat(totalContractAmount) || 0;
+    const profit = totalAmt - vendorAmt;
+
+    // Create old ticket reissue document
+    const now = new Date();
+    const reissueDoc = {
+      customerId: customerId || null,
+      formDate: new Date(formDate),
+      firstName: firstName.trim(),
+      lastName: lastName.trim(),
+      passengerFullName: `${firstName.trim()} ${lastName.trim()}`,
+      travellingCountry: travellingCountry.trim(),
+      passportNo: passportNo.trim(),
+      contactNo: contactNo.trim(),
+      isWhatsAppSame: Boolean(isWhatsAppSame),
+      whatsAppNo: isWhatsAppSame ? contactNo.trim() : (whatsAppNo ? whatsAppNo.trim() : ''),
+      airlineName: airlineName.trim(),
+      origin: origin.trim(),
+      destination: destination.trim(),
+      route: `${origin.trim()} → ${destination.trim()}`,
+      airlinesPnr: airlinesPnr.trim(),
+      oldDate: new Date(oldDate),
+      newDate: new Date(newDate),
+      reissueVendorId: reissueVendorId.trim(),
+      reissueVendorName: reissueVendorName ? reissueVendorName.trim() : '',
+      vendorAmount: vendorAmt,
+      totalContractAmount: totalAmt,
+      profit: profit,
+      issuingAgentName: issuingAgentName.trim(),
+      issuingAgentContact: issuingAgentContact.trim(),
+      agentEmail: agentEmail ? agentEmail.trim() : '',
+      reservationOfficerId: reservationOfficerId.trim(),
+      reservationOfficerName: reservationOfficerName ? reservationOfficerName.trim() : '',
+      notes: notes ? notes.trim() : '',
+      isActive: true,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    // Insert old ticket reissue
+    const result = await oldTicketReissues.insertOne(reissueDoc);
+
+    // Return created reissue
+    const createdReissue = await oldTicketReissues.findOne({ _id: result.insertedId });
+
+    res.status(201).json({
+      success: true,
+      message: "Old ticket reissue created successfully",
+      data: createdReissue
+    });
+
+  } catch (error) {
+    console.error('Create old ticket reissue error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while creating old ticket reissue",
+      details: error.message
+    });
+  }
+});
+
+// GET: Get all Old Ticket Reissues with pagination and search
+app.get("/api/old-ticket-reissues", async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 50, 
+      q, 
+      customerId,
+      reservationOfficerId,
+      reissueVendorId,
+      airlineName,
+      travellingCountry,
+      dateFrom,
+      dateTo
+    } = req.query;
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 200);
+
+    // Build filter
+    const filter = { isActive: { $ne: false } };
+
+    // Filter by customer ID if provided
+    if (customerId) {
+      filter.customerId = customerId;
+    }
+
+    // Filter by reservation officer if provided
+    if (reservationOfficerId) {
+      filter.reservationOfficerId = reservationOfficerId;
+    }
+
+    // Filter by vendor if provided
+    if (reissueVendorId) {
+      filter.reissueVendorId = reissueVendorId;
+    }
+
+    // Filter by airline if provided
+    if (airlineName) {
+      filter.airlineName = { $regex: airlineName, $options: 'i' };
+    }
+
+    // Filter by country if provided
+    if (travellingCountry) {
+      filter.travellingCountry = { $regex: travellingCountry, $options: 'i' };
+    }
+
+    // Date range filter (using formDate)
+    if (dateFrom || dateTo) {
+      filter.formDate = {};
+      if (dateFrom) {
+        const start = new Date(dateFrom);
+        start.setHours(0, 0, 0, 0);
+        filter.formDate.$gte = start;
+      }
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        filter.formDate.$lte = end;
+      }
+    }
+
+    // Search filter
+    if (q && String(q).trim()) {
+      const searchText = String(q).trim();
+      filter.$or = [
+        { firstName: { $regex: searchText, $options: 'i' } },
+        { lastName: { $regex: searchText, $options: 'i' } },
+        { passengerFullName: { $regex: searchText, $options: 'i' } },
+        { passportNo: { $regex: searchText, $options: 'i' } },
+        { contactNo: { $regex: searchText, $options: 'i' } },
+        { whatsAppNo: { $regex: searchText, $options: 'i' } },
+        { airlinesPnr: { $regex: searchText, $options: 'i' } },
+        { airlineName: { $regex: searchText, $options: 'i' } },
+        { origin: { $regex: searchText, $options: 'i' } },
+        { destination: { $regex: searchText, $options: 'i' } },
+        { route: { $regex: searchText, $options: 'i' } },
+        { travellingCountry: { $regex: searchText, $options: 'i' } },
+        { reissueVendorName: { $regex: searchText, $options: 'i' } },
+        { issuingAgentName: { $regex: searchText, $options: 'i' } },
+        { issuingAgentContact: { $regex: searchText, $options: 'i' } },
+        { agentEmail: { $regex: searchText, $options: 'i' } },
+        { reservationOfficerName: { $regex: searchText, $options: 'i' } }
+      ];
+    }
+
+    // Get total count and data
+    const [total, data] = await Promise.all([
+      oldTicketReissues.countDocuments(filter),
+      oldTicketReissues
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .toArray()
+    ]);
+
+    res.json({
+      success: true,
+      data: data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get old ticket reissues error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while fetching old ticket reissues",
+      details: error.message
+    });
+  }
+});
+
+// GET: Get single Old Ticket Reissue by ID
+app.get("/api/old-ticket-reissues/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid old ticket reissue ID"
+      });
+    }
+
+    const reissue = await oldTicketReissues.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!reissue) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Old ticket reissue not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      data: reissue
+    });
+
+  } catch (error) {
+    console.error('Get old ticket reissue error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while fetching old ticket reissue",
+      details: error.message
+    });
+  }
+});
+
+// PUT: Update Old Ticket Reissue
+app.put("/api/old-ticket-reissues/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid old ticket reissue ID"
+      });
+    }
+
+    // Find reissue
+    const reissue = await oldTicketReissues.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!reissue) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Old ticket reissue not found"
+      });
+    }
+
+    // Validate contact number if being updated
+    if (updateData.contactNo) {
+      const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+      if (!phoneRegex.test(updateData.contactNo.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid contact number format"
+        });
+      }
+    }
+
+    // Validate agent contact if being updated
+    if (updateData.issuingAgentContact) {
+      const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+      if (!phoneRegex.test(updateData.issuingAgentContact.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid issuing agent contact format"
+        });
+      }
+    }
+
+    // Validate WhatsApp number if being updated
+    if (updateData.whatsAppNo && updateData.whatsAppNo.trim()) {
+      const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+      if (!phoneRegex.test(updateData.whatsAppNo.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid WhatsApp number format"
+        });
+      }
+    }
+
+    // Validate email format if being updated
+    if (updateData.agentEmail && updateData.agentEmail.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(updateData.agentEmail.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid email format"
+        });
+      }
+    }
+
+    // Prepare update object
+    const update = { $set: { updatedAt: new Date() } };
+
+    // Update allowed fields
+    if (updateData.customerId !== undefined) {
+      update.$set.customerId = updateData.customerId || null;
+    }
+    if (updateData.formDate !== undefined) {
+      update.$set.formDate = new Date(updateData.formDate);
+    }
+    if (updateData.firstName !== undefined) {
+      update.$set.firstName = String(updateData.firstName).trim();
+    }
+    if (updateData.lastName !== undefined) {
+      update.$set.lastName = String(updateData.lastName).trim();
+    }
+    // Update full name if first or last name changed
+    if (updateData.firstName !== undefined || updateData.lastName !== undefined) {
+      const newFirstName = updateData.firstName !== undefined ? String(updateData.firstName).trim() : reissue.firstName;
+      const newLastName = updateData.lastName !== undefined ? String(updateData.lastName).trim() : reissue.lastName;
+      update.$set.passengerFullName = `${newFirstName} ${newLastName}`;
+    }
+    if (updateData.travellingCountry !== undefined) {
+      update.$set.travellingCountry = String(updateData.travellingCountry).trim();
+    }
+    if (updateData.passportNo !== undefined) {
+      update.$set.passportNo = String(updateData.passportNo).trim();
+    }
+    if (updateData.contactNo !== undefined) {
+      update.$set.contactNo = String(updateData.contactNo).trim();
+    }
+    if (updateData.isWhatsAppSame !== undefined) {
+      update.$set.isWhatsAppSame = Boolean(updateData.isWhatsAppSame);
+      // If WhatsApp is same, copy contact number
+      if (updateData.isWhatsAppSame) {
+        update.$set.whatsAppNo = updateData.contactNo ? String(updateData.contactNo).trim() : reissue.contactNo;
+      }
+    }
+    if (updateData.whatsAppNo !== undefined && !updateData.isWhatsAppSame) {
+      update.$set.whatsAppNo = updateData.whatsAppNo ? String(updateData.whatsAppNo).trim() : '';
+    }
+    if (updateData.airlineName !== undefined) {
+      update.$set.airlineName = String(updateData.airlineName).trim();
+    }
+    if (updateData.origin !== undefined) {
+      update.$set.origin = String(updateData.origin).trim();
+    }
+    if (updateData.destination !== undefined) {
+      update.$set.destination = String(updateData.destination).trim();
+    }
+    // Update route if origin or destination changed
+    if (updateData.origin !== undefined || updateData.destination !== undefined) {
+      const newOrigin = updateData.origin !== undefined ? String(updateData.origin).trim() : reissue.origin;
+      const newDestination = updateData.destination !== undefined ? String(updateData.destination).trim() : reissue.destination;
+      update.$set.route = `${newOrigin} → ${newDestination}`;
+    }
+    if (updateData.airlinesPnr !== undefined) {
+      update.$set.airlinesPnr = String(updateData.airlinesPnr).trim();
+    }
+    if (updateData.oldDate !== undefined) {
+      update.$set.oldDate = new Date(updateData.oldDate);
+    }
+    if (updateData.newDate !== undefined) {
+      update.$set.newDate = new Date(updateData.newDate);
+    }
+    if (updateData.reissueVendorId !== undefined) {
+      update.$set.reissueVendorId = String(updateData.reissueVendorId).trim();
+    }
+    if (updateData.reissueVendorName !== undefined) {
+      update.$set.reissueVendorName = updateData.reissueVendorName ? String(updateData.reissueVendorName).trim() : '';
+    }
+    if (updateData.vendorAmount !== undefined) {
+      update.$set.vendorAmount = parseFloat(updateData.vendorAmount) || 0;
+    }
+    if (updateData.totalContractAmount !== undefined) {
+      update.$set.totalContractAmount = parseFloat(updateData.totalContractAmount) || 0;
+    }
+    
+    // Recalculate profit if amounts changed
+    if (updateData.vendorAmount !== undefined || updateData.totalContractAmount !== undefined) {
+      const vendorAmt = updateData.vendorAmount !== undefined 
+        ? parseFloat(updateData.vendorAmount) || 0 
+        : reissue.vendorAmount || 0;
+      const totalAmt = updateData.totalContractAmount !== undefined 
+        ? parseFloat(updateData.totalContractAmount) || 0 
+        : reissue.totalContractAmount || 0;
+      update.$set.profit = totalAmt - vendorAmt;
+    }
+    
+    if (updateData.issuingAgentName !== undefined) {
+      update.$set.issuingAgentName = String(updateData.issuingAgentName).trim();
+    }
+    if (updateData.issuingAgentContact !== undefined) {
+      update.$set.issuingAgentContact = String(updateData.issuingAgentContact).trim();
+    }
+    if (updateData.agentEmail !== undefined) {
+      update.$set.agentEmail = updateData.agentEmail ? String(updateData.agentEmail).trim() : '';
+    }
+    if (updateData.reservationOfficerId !== undefined) {
+      update.$set.reservationOfficerId = String(updateData.reservationOfficerId).trim();
+    }
+    if (updateData.reservationOfficerName !== undefined) {
+      update.$set.reservationOfficerName = updateData.reservationOfficerName ? String(updateData.reservationOfficerName).trim() : '';
+    }
+    if (updateData.notes !== undefined) {
+      update.$set.notes = updateData.notes ? String(updateData.notes).trim() : '';
+    }
+
+    // Update reissue
+    const result = await oldTicketReissues.updateOne(
+      { _id: new ObjectId(id) },
+      update
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Old ticket reissue not found"
+      });
+    }
+
+    // Get updated reissue
+    const updatedReissue = await oldTicketReissues.findOne({ _id: new ObjectId(id) });
+
+    res.json({
+      success: true,
+      message: "Old ticket reissue updated successfully",
+      data: updatedReissue
+    });
+
+  } catch (error) {
+    console.error('Update old ticket reissue error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while updating old ticket reissue",
+      details: error.message
+    });
+  }
+});
+
+// DELETE: Delete Old Ticket Reissue (Soft delete)
+app.delete("/api/old-ticket-reissues/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid old ticket reissue ID"
+      });
+    }
+
+    // Check if reissue exists
+    const reissue = await oldTicketReissues.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!reissue) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Old ticket reissue not found"
+      });
+    }
+
+    // Soft delete
+    await oldTicketReissues.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: "Old ticket reissue deleted successfully"
+    });
+
+  } catch (error) {
+    console.error('Delete old ticket reissue error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while deleting old ticket reissue",
       details: error.message
     });
   }
