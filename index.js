@@ -15,7 +15,7 @@ const port = process.env.PORT || 3000;
 app.use(cors({
   origin: [
     'http://localhost:5173', // Vite dev server
-    'https://erp-dashboard-umber.vercel.app/' // Netlify production
+    'https://erp-dashboard-umber.vercel.app' // Netlify production
   ],
   credentials: true
 }));
