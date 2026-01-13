@@ -974,7 +974,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, visaProcessingServices, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses, vendorBankAccounts;
+let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, visaProcessingServices, ticketChecks, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses, vendorBankAccounts;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -993,6 +993,7 @@ async function initializeDatabase() {
     passportServices = db.collection("passportServices");
     manpowerServices = db.collection("manpowerServices");
     visaProcessingServices = db.collection("visaProcessingServices");
+    ticketChecks = db.collection("ticketChecks");
     services = db.collection("services");
     vendors = db.collection("vendors");
     orders = db.collection("orders");
@@ -4631,6 +4632,558 @@ app.delete("/api/visa-processing-services/:id", async (req, res) => {
       success: false,
       error: true,
       message: "Internal server error while deleting visa processing service",
+      details: error.message
+    });
+  }
+});
+
+
+// ==================== TICKET CHECK ROUTES ====================
+
+// POST: Create new Ticket Check
+app.post("/api/ticket-checks", async (req, res) => {
+  try {
+    const {
+      customerId,
+      travelDate,
+      passengerName,
+      travellingCountry,
+      passportNo,
+      contactNo,
+      isWhatsAppSame = true,
+      whatsAppNo,
+      airlineName,
+      route,
+      bookingRef,
+      issuingAgentName,
+      email,
+      reservationOfficerId,
+      reservationOfficerName,
+      notes
+    } = req.body;
+
+    // Validation - Required fields
+    if (!travelDate) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Travel date is required"
+      });
+    }
+
+    if (!passengerName || !passengerName.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Passenger name is required"
+      });
+    }
+
+    if (!travellingCountry || !travellingCountry.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Travelling country is required"
+      });
+    }
+
+    if (!passportNo || !passportNo.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Passport number is required"
+      });
+    }
+
+    if (!contactNo || !contactNo.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Contact number is required"
+      });
+    }
+
+    if (!isWhatsAppSame && (!whatsAppNo || !whatsAppNo.trim())) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "WhatsApp number is required"
+      });
+    }
+
+    if (!airlineName || !airlineName.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Airlines name is required"
+      });
+    }
+
+    if (!route || !route.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Route is required"
+      });
+    }
+
+    if (!bookingRef || !bookingRef.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Booking reference is required"
+      });
+    }
+
+    if (!issuingAgentName || !issuingAgentName.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Issuing agent name is required"
+      });
+    }
+
+    if (!reservationOfficerId || !reservationOfficerId.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Reservation officer is required"
+      });
+    }
+
+    // Validate phone number format
+    const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+    if (!phoneRegex.test(contactNo.trim())) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid contact number format"
+      });
+    }
+
+    // Validate WhatsApp number if different
+    if (!isWhatsAppSame && whatsAppNo && whatsAppNo.trim()) {
+      if (!phoneRegex.test(whatsAppNo.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid WhatsApp number format"
+        });
+      }
+    }
+
+    // Validate email format if provided
+    if (email && email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid email format"
+        });
+      }
+    }
+
+    // Create ticket check document
+    const now = new Date();
+    const ticketCheckDoc = {
+      customerId: customerId || null,
+      travelDate: new Date(travelDate),
+      passengerName: passengerName.trim(),
+      travellingCountry: travellingCountry.trim(),
+      passportNo: passportNo.trim(),
+      contactNo: contactNo.trim(),
+      isWhatsAppSame: Boolean(isWhatsAppSame),
+      whatsAppNo: isWhatsAppSame ? contactNo.trim() : (whatsAppNo ? whatsAppNo.trim() : ''),
+      airlineName: airlineName.trim(),
+      route: route.trim(),
+      bookingRef: bookingRef.trim(),
+      issuingAgentName: issuingAgentName.trim(),
+      email: email ? email.trim() : '',
+      reservationOfficerId: reservationOfficerId.trim(),
+      reservationOfficerName: reservationOfficerName ? reservationOfficerName.trim() : '',
+      notes: notes ? notes.trim() : '',
+      isActive: true,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    // Insert ticket check
+    const result = await ticketChecks.insertOne(ticketCheckDoc);
+
+    // Return created ticket check
+    const createdTicketCheck = await ticketChecks.findOne({ _id: result.insertedId });
+
+    res.status(201).json({
+      success: true,
+      message: "Ticket check created successfully",
+      data: createdTicketCheck
+    });
+
+  } catch (error) {
+    console.error('Create ticket check error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while creating ticket check",
+      details: error.message
+    });
+  }
+});
+
+// GET: Get all Ticket Checks with pagination and search
+app.get("/api/ticket-checks", async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 50, 
+      q, 
+      customerId,
+      reservationOfficerId,
+      airlineName,
+      travellingCountry,
+      dateFrom,
+      dateTo
+    } = req.query;
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 200);
+
+    // Build filter
+    const filter = { isActive: { $ne: false } };
+
+    // Filter by customer ID if provided
+    if (customerId) {
+      filter.customerId = customerId;
+    }
+
+    // Filter by reservation officer if provided
+    if (reservationOfficerId) {
+      filter.reservationOfficerId = reservationOfficerId;
+    }
+
+    // Filter by airline if provided
+    if (airlineName) {
+      filter.airlineName = { $regex: airlineName, $options: 'i' };
+    }
+
+    // Filter by country if provided
+    if (travellingCountry) {
+      filter.travellingCountry = { $regex: travellingCountry, $options: 'i' };
+    }
+
+    // Date range filter
+    if (dateFrom || dateTo) {
+      filter.travelDate = {};
+      if (dateFrom) {
+        const start = new Date(dateFrom);
+        start.setHours(0, 0, 0, 0);
+        filter.travelDate.$gte = start;
+      }
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        filter.travelDate.$lte = end;
+      }
+    }
+
+    // Search filter
+    if (q && String(q).trim()) {
+      const searchText = String(q).trim();
+      filter.$or = [
+        { passengerName: { $regex: searchText, $options: 'i' } },
+        { passportNo: { $regex: searchText, $options: 'i' } },
+        { contactNo: { $regex: searchText, $options: 'i' } },
+        { whatsAppNo: { $regex: searchText, $options: 'i' } },
+        { email: { $regex: searchText, $options: 'i' } },
+        { bookingRef: { $regex: searchText, $options: 'i' } },
+        { airlineName: { $regex: searchText, $options: 'i' } },
+        { route: { $regex: searchText, $options: 'i' } },
+        { travellingCountry: { $regex: searchText, $options: 'i' } },
+        { issuingAgentName: { $regex: searchText, $options: 'i' } },
+        { reservationOfficerName: { $regex: searchText, $options: 'i' } }
+      ];
+    }
+
+    // Get total count and data
+    const [total, data] = await Promise.all([
+      ticketChecks.countDocuments(filter),
+      ticketChecks
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .toArray()
+    ]);
+
+    res.json({
+      success: true,
+      data: data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get ticket checks error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while fetching ticket checks",
+      details: error.message
+    });
+  }
+});
+
+// GET: Get single Ticket Check by ID
+app.get("/api/ticket-checks/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid ticket check ID"
+      });
+    }
+
+    const ticketCheck = await ticketChecks.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!ticketCheck) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Ticket check not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      data: ticketCheck
+    });
+
+  } catch (error) {
+    console.error('Get ticket check error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while fetching ticket check",
+      details: error.message
+    });
+  }
+});
+
+// PUT: Update Ticket Check
+app.put("/api/ticket-checks/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid ticket check ID"
+      });
+    }
+
+    // Find ticket check
+    const ticketCheck = await ticketChecks.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!ticketCheck) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Ticket check not found"
+      });
+    }
+
+    // Validate contact number if being updated
+    if (updateData.contactNo) {
+      const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+      if (!phoneRegex.test(updateData.contactNo.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid contact number format"
+        });
+      }
+    }
+
+    // Validate WhatsApp number if being updated
+    if (updateData.whatsAppNo && updateData.whatsAppNo.trim()) {
+      const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+      if (!phoneRegex.test(updateData.whatsAppNo.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid WhatsApp number format"
+        });
+      }
+    }
+
+    // Validate email format if being updated
+    if (updateData.email && updateData.email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(updateData.email.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid email format"
+        });
+      }
+    }
+
+    // Prepare update object
+    const update = { $set: { updatedAt: new Date() } };
+
+    // Update allowed fields
+    if (updateData.customerId !== undefined) {
+      update.$set.customerId = updateData.customerId || null;
+    }
+    if (updateData.travelDate !== undefined) {
+      update.$set.travelDate = new Date(updateData.travelDate);
+    }
+    if (updateData.passengerName !== undefined) {
+      update.$set.passengerName = String(updateData.passengerName).trim();
+    }
+    if (updateData.travellingCountry !== undefined) {
+      update.$set.travellingCountry = String(updateData.travellingCountry).trim();
+    }
+    if (updateData.passportNo !== undefined) {
+      update.$set.passportNo = String(updateData.passportNo).trim();
+    }
+    if (updateData.contactNo !== undefined) {
+      update.$set.contactNo = String(updateData.contactNo).trim();
+    }
+    if (updateData.isWhatsAppSame !== undefined) {
+      update.$set.isWhatsAppSame = Boolean(updateData.isWhatsAppSame);
+      // If WhatsApp is same, copy contact number
+      if (updateData.isWhatsAppSame) {
+        update.$set.whatsAppNo = updateData.contactNo ? String(updateData.contactNo).trim() : ticketCheck.contactNo;
+      }
+    }
+    if (updateData.whatsAppNo !== undefined && !updateData.isWhatsAppSame) {
+      update.$set.whatsAppNo = updateData.whatsAppNo ? String(updateData.whatsAppNo).trim() : '';
+    }
+    if (updateData.airlineName !== undefined) {
+      update.$set.airlineName = String(updateData.airlineName).trim();
+    }
+    if (updateData.route !== undefined) {
+      update.$set.route = String(updateData.route).trim();
+    }
+    if (updateData.bookingRef !== undefined) {
+      update.$set.bookingRef = String(updateData.bookingRef).trim();
+    }
+    if (updateData.issuingAgentName !== undefined) {
+      update.$set.issuingAgentName = String(updateData.issuingAgentName).trim();
+    }
+    if (updateData.email !== undefined) {
+      update.$set.email = updateData.email ? String(updateData.email).trim() : '';
+    }
+    if (updateData.reservationOfficerId !== undefined) {
+      update.$set.reservationOfficerId = String(updateData.reservationOfficerId).trim();
+    }
+    if (updateData.reservationOfficerName !== undefined) {
+      update.$set.reservationOfficerName = updateData.reservationOfficerName ? String(updateData.reservationOfficerName).trim() : '';
+    }
+    if (updateData.notes !== undefined) {
+      update.$set.notes = updateData.notes ? String(updateData.notes).trim() : '';
+    }
+
+    // Update ticket check
+    const result = await ticketChecks.updateOne(
+      { _id: new ObjectId(id) },
+      update
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Ticket check not found"
+      });
+    }
+
+    // Get updated ticket check
+    const updatedTicketCheck = await ticketChecks.findOne({ _id: new ObjectId(id) });
+
+    res.json({
+      success: true,
+      message: "Ticket check updated successfully",
+      data: updatedTicketCheck
+    });
+
+  } catch (error) {
+    console.error('Update ticket check error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while updating ticket check",
+      details: error.message
+    });
+  }
+});
+
+// DELETE: Delete Ticket Check (Soft delete)
+app.delete("/api/ticket-checks/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid ticket check ID"
+      });
+    }
+
+    // Check if ticket check exists
+    const ticketCheck = await ticketChecks.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!ticketCheck) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Ticket check not found"
+      });
+    }
+
+    // Soft delete
+    await ticketChecks.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: "Ticket check deleted successfully"
+    });
+
+  } catch (error) {
+    console.error('Delete ticket check error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while deleting ticket check",
       details: error.message
     });
   }
