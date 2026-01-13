@@ -5928,6 +5928,7 @@ app.post("/api/other-services", async (req, res) => {
       clientName,
       serviceType,
       serviceDate,
+      date,
       description,
       phone,
       email,
@@ -5963,7 +5964,9 @@ app.post("/api/other-services", async (req, res) => {
       });
     }
 
-    if (!serviceDate) {
+    // Accept both 'serviceDate' and 'date' field names
+    const finalServiceDate = serviceDate || date;
+    if (!finalServiceDate) {
       return res.status(400).json({
         success: false,
         error: true,
@@ -6025,7 +6028,7 @@ app.post("/api/other-services", async (req, res) => {
       clientId: clientId || null,
       clientName: clientName.trim(),
       serviceType: serviceType.trim(),
-      serviceDate: new Date(serviceDate),
+      serviceDate: new Date(finalServiceDate),
       description: description ? description.trim() : '',
       phone: phone.trim(),
       email: email ? email.trim() : '',
