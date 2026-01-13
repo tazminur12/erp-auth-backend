@@ -6306,8 +6306,10 @@ app.put("/api/other-services/:id", async (req, res) => {
     if (updateData.serviceType !== undefined) {
       update.$set.serviceType = String(updateData.serviceType).trim();
     }
-    if (updateData.serviceDate !== undefined) {
-      update.$set.serviceDate = new Date(updateData.serviceDate);
+    // Accept both 'serviceDate' and 'date' field names
+    if (updateData.serviceDate !== undefined || updateData.date !== undefined) {
+      const dateValue = updateData.serviceDate || updateData.date;
+      update.$set.serviceDate = new Date(dateValue);
     }
     if (updateData.description !== undefined) {
       update.$set.description = updateData.description ? String(updateData.description).trim() : '';
