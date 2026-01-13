@@ -2661,9 +2661,19 @@ app.post("/api/other/customers", async (req, res) => {
     // Generate full name from firstName and lastName if name not provided
     const fullName = name || `${firstName.trim()} ${lastName.trim()}`.trim();
 
+    // Generate unique customer ID
+    const counterDoc = await counters.findOneAndUpdate(
+      { _id: 'otherServiceCustomerId' },
+      { $inc: { sequence: 1 } },
+      { upsert: true, returnDocument: 'after' }
+    );
+    const customerId = `OSC-${String(counterDoc.sequence).padStart(4, '0')}`;
+
     // Create customer document
     const now = new Date();
     const customerDoc = {
+      customerId: customerId,
+      id: customerId, // Alias for compatibility
       firstName: firstName.trim(),
       lastName: lastName.trim(),
       name: fullName,
@@ -2727,6 +2737,8 @@ app.get("/api/other/customers", async (req, res) => {
     if (q && String(q).trim()) {
       const searchText = String(q).trim();
       filter.$or = [
+        { customerId: { $regex: searchText, $options: 'i' } },
+        { id: { $regex: searchText, $options: 'i' } },
         { firstName: { $regex: searchText, $options: 'i' } },
         { lastName: { $regex: searchText, $options: 'i' } },
         { name: { $regex: searchText, $options: 'i' } },
@@ -2775,18 +2787,26 @@ app.get("/api/other/customers/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        error: true,
-        message: "Invalid customer ID"
+    let customer;
+
+    // Try to find by MongoDB ObjectId first
+    if (ObjectId.isValid(id)) {
+      customer = await otherCustomers.findOne({
+        _id: new ObjectId(id),
+        isActive: { $ne: false }
       });
     }
 
-    const customer = await otherCustomers.findOne({
-      _id: new ObjectId(id),
-      isActive: { $ne: false }
-    });
+    // If not found, try to find by customerId
+    if (!customer) {
+      customer = await otherCustomers.findOne({
+        $or: [
+          { customerId: id },
+          { id: id }
+        ],
+        isActive: { $ne: false }
+      });
+    }
 
     if (!customer) {
       return res.status(404).json({
@@ -2818,19 +2838,24 @@ app.put("/api/other/customers/:id", async (req, res) => {
     const { id } = req.params;
     const updateData = req.body;
 
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        error: true,
-        message: "Invalid customer ID"
+    // Find customer by MongoDB _id or customerId
+    let customer;
+    if (ObjectId.isValid(id)) {
+      customer = await otherCustomers.findOne({
+        _id: new ObjectId(id),
+        isActive: { $ne: false }
       });
     }
-
-    // Find customer
-    const customer = await otherCustomers.findOne({
-      _id: new ObjectId(id),
-      isActive: { $ne: false }
-    });
+    
+    if (!customer) {
+      customer = await otherCustomers.findOne({
+        $or: [
+          { customerId: id },
+          { id: id }
+        ],
+        isActive: { $ne: false }
+      });
+    }
 
     if (!customer) {
       return res.status(404).json({
@@ -2854,7 +2879,7 @@ app.put("/api/other/customers/:id", async (req, res) => {
       // Check if phone number already exists for another customer
       const existingCustomer = await otherCustomers.findOne({
         phone: updateData.phone.trim(),
-        _id: { $ne: new ObjectId(id) },
+        _id: { $ne: customer._id },
         isActive: { $ne: false }
       });
 
@@ -2925,7 +2950,7 @@ app.put("/api/other/customers/:id", async (req, res) => {
 
     // Update customer
     const result = await otherCustomers.updateOne(
-      { _id: new ObjectId(id) },
+      { _id: customer._id },
       update
     );
 
@@ -2938,7 +2963,7 @@ app.put("/api/other/customers/:id", async (req, res) => {
     }
 
     // Get updated customer
-    const updatedCustomer = await otherCustomers.findOne({ _id: new ObjectId(id) });
+    const updatedCustomer = await otherCustomers.findOne({ _id: customer._id });
 
     res.json({
       success: true,
@@ -2962,19 +2987,24 @@ app.delete("/api/other/customers/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (!ObjectId.isValid(id)) {
-      return res.status(400).json({
-        success: false,
-        error: true,
-        message: "Invalid customer ID"
+    // Find customer by MongoDB _id or customerId
+    let customer;
+    if (ObjectId.isValid(id)) {
+      customer = await otherCustomers.findOne({
+        _id: new ObjectId(id),
+        isActive: { $ne: false }
       });
     }
-
-    // Check if customer exists
-    const customer = await otherCustomers.findOne({
-      _id: new ObjectId(id),
-      isActive: { $ne: false }
-    });
+    
+    if (!customer) {
+      customer = await otherCustomers.findOne({
+        $or: [
+          { customerId: id },
+          { id: id }
+        ],
+        isActive: { $ne: false }
+      });
+    }
 
     if (!customer) {
       return res.status(404).json({
@@ -2986,7 +3016,7 @@ app.delete("/api/other/customers/:id", async (req, res) => {
 
     // Soft delete
     await otherCustomers.updateOne(
-      { _id: new ObjectId(id) },
+      { _id: customer._id },
       {
         $set: {
           isActive: false,
