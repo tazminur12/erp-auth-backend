@@ -974,7 +974,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, visaProcessingServices, ticketChecks, oldTicketReissues, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses, vendorBankAccounts;
+let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, visaProcessingServices, ticketChecks, oldTicketReissues, otherServices, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses, vendorBankAccounts;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -995,6 +995,7 @@ async function initializeDatabase() {
     visaProcessingServices = db.collection("visaProcessingServices");
     ticketChecks = db.collection("ticketChecks");
     oldTicketReissues = db.collection("oldTicketReissues");
+    otherServices = db.collection("otherServices");
     services = db.collection("services");
     vendors = db.collection("vendors");
     orders = db.collection("orders");
@@ -5911,6 +5912,558 @@ app.delete("/api/old-ticket-reissues/:id", async (req, res) => {
       success: false,
       error: true,
       message: "Internal server error while deleting old ticket reissue",
+      details: error.message
+    });
+  }
+});
+
+
+// ==================== OTHER SERVICES ROUTES ====================
+
+// POST: Create new Other Service
+app.post("/api/other-services", async (req, res) => {
+  try {
+    const {
+      clientId,
+      clientName,
+      serviceType,
+      serviceDate,
+      description,
+      phone,
+      email,
+      address,
+      status = 'pending',
+      vendorId,
+      vendorName,
+      serviceFee,
+      vendorCost,
+      otherCost,
+      totalAmount,
+      assignedToId,
+      assignedToName,
+      deliveryDate,
+      referenceNumber,
+      notes
+    } = req.body;
+
+    // Validation - Required fields
+    if (!clientName || !clientName.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Client name is required"
+      });
+    }
+
+    if (!serviceType || !serviceType.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Service type is required"
+      });
+    }
+
+    if (!serviceDate) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Service date is required"
+      });
+    }
+
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Phone number is required"
+      });
+    }
+
+    // Validate phone number format
+    const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+    if (!phoneRegex.test(phone.trim())) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid phone number format"
+      });
+    }
+
+    // Validate email format if provided
+    if (email && email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid email format"
+        });
+      }
+    }
+
+    // Validate status
+    const validStatuses = ['pending', 'in_process', 'processing', 'completed', 'cancelled', 'on_hold'];
+    if (status && !validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid status"
+      });
+    }
+
+    // Calculate total amount and profit
+    const serviceAmount = parseFloat(serviceFee) || 0;
+    const vendorAmount = parseFloat(vendorCost) || 0;
+    const otherAmount = parseFloat(otherCost) || 0;
+    const calculatedTotal = serviceAmount + vendorAmount + otherAmount;
+    const finalTotal = totalAmount !== undefined ? parseFloat(totalAmount) : calculatedTotal;
+    const profit = serviceAmount - vendorAmount - otherAmount;
+
+    // Create other service document
+    const now = new Date();
+    const serviceDoc = {
+      clientId: clientId || null,
+      clientName: clientName.trim(),
+      serviceType: serviceType.trim(),
+      serviceDate: new Date(serviceDate),
+      description: description ? description.trim() : '',
+      phone: phone.trim(),
+      email: email ? email.trim() : '',
+      address: address ? address.trim() : '',
+      status: status,
+      vendorId: vendorId || null,
+      vendorName: vendorName ? vendorName.trim() : '',
+      serviceFee: serviceAmount,
+      vendorCost: vendorAmount,
+      otherCost: otherAmount,
+      totalAmount: finalTotal,
+      profit: profit,
+      assignedToId: assignedToId || null,
+      assignedToName: assignedToName ? assignedToName.trim() : '',
+      deliveryDate: deliveryDate ? new Date(deliveryDate) : null,
+      referenceNumber: referenceNumber ? referenceNumber.trim() : '',
+      notes: notes ? notes.trim() : '',
+      isActive: true,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    // Insert other service
+    const result = await otherServices.insertOne(serviceDoc);
+
+    // Return created service
+    const createdService = await otherServices.findOne({ _id: result.insertedId });
+
+    res.status(201).json({
+      success: true,
+      message: "Other service created successfully",
+      data: createdService
+    });
+
+  } catch (error) {
+    console.error('Create other service error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while creating other service",
+      details: error.message
+    });
+  }
+});
+
+// GET: Get all Other Services with pagination and search
+app.get("/api/other-services", async (req, res) => {
+  try {
+    const { 
+      page = 1, 
+      limit = 50, 
+      q, 
+      status,
+      serviceType,
+      clientId,
+      vendorId,
+      assignedToId,
+      dateFrom,
+      dateTo
+    } = req.query;
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 200);
+
+    // Build filter
+    const filter = { isActive: { $ne: false } };
+
+    // Filter by status if provided
+    if (status) {
+      filter.status = status;
+    }
+
+    // Filter by service type if provided
+    if (serviceType) {
+      filter.serviceType = { $regex: serviceType, $options: 'i' };
+    }
+
+    // Filter by client ID if provided
+    if (clientId) {
+      filter.clientId = clientId;
+    }
+
+    // Filter by vendor ID if provided
+    if (vendorId) {
+      filter.vendorId = vendorId;
+    }
+
+    // Filter by assigned person if provided
+    if (assignedToId) {
+      filter.assignedToId = assignedToId;
+    }
+
+    // Date range filter
+    if (dateFrom || dateTo) {
+      filter.serviceDate = {};
+      if (dateFrom) {
+        const start = new Date(dateFrom);
+        start.setHours(0, 0, 0, 0);
+        filter.serviceDate.$gte = start;
+      }
+      if (dateTo) {
+        const end = new Date(dateTo);
+        end.setHours(23, 59, 59, 999);
+        filter.serviceDate.$lte = end;
+      }
+    }
+
+    // Search filter
+    if (q && String(q).trim()) {
+      const searchText = String(q).trim();
+      filter.$or = [
+        { clientName: { $regex: searchText, $options: 'i' } },
+        { serviceType: { $regex: searchText, $options: 'i' } },
+        { description: { $regex: searchText, $options: 'i' } },
+        { phone: { $regex: searchText, $options: 'i' } },
+        { email: { $regex: searchText, $options: 'i' } },
+        { referenceNumber: { $regex: searchText, $options: 'i' } },
+        { vendorName: { $regex: searchText, $options: 'i' } },
+        { assignedToName: { $regex: searchText, $options: 'i' } },
+        { address: { $regex: searchText, $options: 'i' } }
+      ];
+    }
+
+    // Get total count and data
+    const [total, data] = await Promise.all([
+      otherServices.countDocuments(filter),
+      otherServices
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .toArray()
+    ]);
+
+    res.json({
+      success: true,
+      services: data,
+      data: data,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('Get other services error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while fetching other services",
+      details: error.message
+    });
+  }
+});
+
+// GET: Get single Other Service by ID
+app.get("/api/other-services/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid other service ID"
+      });
+    }
+
+    const service = await otherServices.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Other service not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      service: service,
+      data: service
+    });
+
+  } catch (error) {
+    console.error('Get other service error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while fetching other service",
+      details: error.message
+    });
+  }
+});
+
+// PUT: Update Other Service
+app.put("/api/other-services/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid other service ID"
+      });
+    }
+
+    // Find service
+    const service = await otherServices.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Other service not found"
+      });
+    }
+
+    // Validate phone number if being updated
+    if (updateData.phone) {
+      const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+      if (!phoneRegex.test(updateData.phone.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid phone number format"
+        });
+      }
+    }
+
+    // Validate email format if being updated
+    if (updateData.email && updateData.email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(updateData.email.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid email format"
+        });
+      }
+    }
+
+    // Validate status if being updated
+    if (updateData.status) {
+      const validStatuses = ['pending', 'in_process', 'processing', 'completed', 'cancelled', 'on_hold'];
+      if (!validStatuses.includes(updateData.status)) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid status"
+        });
+      }
+    }
+
+    // Prepare update object
+    const update = { $set: { updatedAt: new Date() } };
+
+    // Update allowed fields
+    if (updateData.clientId !== undefined) {
+      update.$set.clientId = updateData.clientId || null;
+    }
+    if (updateData.clientName !== undefined) {
+      update.$set.clientName = String(updateData.clientName).trim();
+    }
+    if (updateData.serviceType !== undefined) {
+      update.$set.serviceType = String(updateData.serviceType).trim();
+    }
+    if (updateData.serviceDate !== undefined) {
+      update.$set.serviceDate = new Date(updateData.serviceDate);
+    }
+    if (updateData.description !== undefined) {
+      update.$set.description = updateData.description ? String(updateData.description).trim() : '';
+    }
+    if (updateData.phone !== undefined) {
+      update.$set.phone = String(updateData.phone).trim();
+    }
+    if (updateData.email !== undefined) {
+      update.$set.email = updateData.email ? String(updateData.email).trim() : '';
+    }
+    if (updateData.address !== undefined) {
+      update.$set.address = updateData.address ? String(updateData.address).trim() : '';
+    }
+    if (updateData.status !== undefined) {
+      update.$set.status = String(updateData.status);
+    }
+    if (updateData.vendorId !== undefined) {
+      update.$set.vendorId = updateData.vendorId || null;
+    }
+    if (updateData.vendorName !== undefined) {
+      update.$set.vendorName = updateData.vendorName ? String(updateData.vendorName).trim() : '';
+    }
+    if (updateData.serviceFee !== undefined) {
+      update.$set.serviceFee = parseFloat(updateData.serviceFee) || 0;
+    }
+    if (updateData.vendorCost !== undefined) {
+      update.$set.vendorCost = parseFloat(updateData.vendorCost) || 0;
+    }
+    if (updateData.otherCost !== undefined) {
+      update.$set.otherCost = parseFloat(updateData.otherCost) || 0;
+    }
+    if (updateData.totalAmount !== undefined) {
+      update.$set.totalAmount = parseFloat(updateData.totalAmount) || 0;
+    }
+    if (updateData.assignedToId !== undefined) {
+      update.$set.assignedToId = updateData.assignedToId || null;
+    }
+    if (updateData.assignedToName !== undefined) {
+      update.$set.assignedToName = updateData.assignedToName ? String(updateData.assignedToName).trim() : '';
+    }
+    if (updateData.deliveryDate !== undefined) {
+      update.$set.deliveryDate = updateData.deliveryDate ? new Date(updateData.deliveryDate) : null;
+    }
+    if (updateData.referenceNumber !== undefined) {
+      update.$set.referenceNumber = updateData.referenceNumber ? String(updateData.referenceNumber).trim() : '';
+    }
+    if (updateData.notes !== undefined) {
+      update.$set.notes = updateData.notes ? String(updateData.notes).trim() : '';
+    }
+
+    // Recalculate profit and total if any cost field is updated
+    if (updateData.serviceFee !== undefined || 
+        updateData.vendorCost !== undefined || 
+        updateData.otherCost !== undefined ||
+        updateData.totalAmount !== undefined) {
+      
+      const serviceFee = updateData.serviceFee !== undefined 
+        ? parseFloat(updateData.serviceFee) || 0 
+        : service.serviceFee || 0;
+      const vendorCost = updateData.vendorCost !== undefined 
+        ? parseFloat(updateData.vendorCost) || 0 
+        : service.vendorCost || 0;
+      const otherCost = updateData.otherCost !== undefined 
+        ? parseFloat(updateData.otherCost) || 0 
+        : service.otherCost || 0;
+      
+      const calculatedTotal = serviceFee + vendorCost + otherCost;
+      update.$set.totalAmount = updateData.totalAmount !== undefined 
+        ? parseFloat(updateData.totalAmount) 
+        : calculatedTotal;
+      
+      // Calculate profit
+      update.$set.profit = serviceFee - vendorCost - otherCost;
+    }
+
+    // Update service
+    const result = await otherServices.updateOne(
+      { _id: new ObjectId(id) },
+      update
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Other service not found"
+      });
+    }
+
+    // Get updated service
+    const updatedService = await otherServices.findOne({ _id: new ObjectId(id) });
+
+    res.json({
+      success: true,
+      message: "Other service updated successfully",
+      service: updatedService,
+      data: updatedService
+    });
+
+  } catch (error) {
+    console.error('Update other service error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while updating other service",
+      details: error.message
+    });
+  }
+});
+
+// DELETE: Delete Other Service (Soft delete)
+app.delete("/api/other-services/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Invalid other service ID"
+      });
+    }
+
+    // Check if service exists
+    const service = await otherServices.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        error: true,
+        message: "Other service not found"
+      });
+    }
+
+    // Soft delete
+    await otherServices.updateOne(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    res.json({
+      success: true,
+      message: "Other service deleted successfully"
+    });
+
+  } catch (error) {
+    console.error('Delete other service error:', error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while deleting other service",
       details: error.message
     });
   }
