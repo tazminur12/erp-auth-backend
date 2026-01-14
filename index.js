@@ -10326,8 +10326,8 @@ app.post("/api/transactions", async (req, res) => {
       }
     } else if (finalPartyType === 'agent') {
       const agentCondition = isValidObjectId
-        ? { $or: [{ agentId: searchPartyId }, { _id: new ObjectId(searchPartyId) }], isActive: true }
-        : { $or: [{ agentId: searchPartyId }, { _id: searchPartyId }], isActive: true };
+        ? { $or: [{ agentId: searchPartyId }, { _id: new ObjectId(searchPartyId) }], isActive: { $ne: false } }
+        : { $or: [{ agentId: searchPartyId }, { _id: searchPartyId }], isActive: { $ne: false } };
       party = await agents.findOne(agentCondition);
     } else if (finalPartyType === 'vendor') {
       const vendorCondition = isValidObjectId
@@ -10615,25 +10615,38 @@ app.post("/api/transactions", async (req, res) => {
       };
 
       // 8.1 If party is an agent, update agent due amounts atomically
-      if (finalPartyType === 'agent' && party && party._id) {
-        const categoryText = String(finalServiceCategory || '').toLowerCase();
-        const isHajjCategory = categoryText.includes('haj');
-        const isUmrahCategory = categoryText.includes('umrah');
-        const dueDelta = transactionType === 'debit' ? numericAmount : (transactionType === 'credit' ? -numericAmount : 0);
+      if (finalPartyType === 'agent') {
+        // If party was not found initially, try to find it again
+        if (!party || !party._id) {
+          const agentCondition = ObjectId.isValid(finalPartyId)
+            ? { $or: [{ agentId: finalPartyId }, { _id: new ObjectId(finalPartyId) }], isActive: { $ne: false } }
+            : { $or: [{ agentId: finalPartyId }, { _id: finalPartyId }], isActive: { $ne: false } };
+          party = await agents.findOne(agentCondition, { session });
+        }
+        
+        if (party && party._id) {
+          const categoryText = String(finalServiceCategory || '').toLowerCase();
+          const isHajjCategory = categoryText.includes('haj');
+          const isUmrahCategory = categoryText.includes('umrah');
+          const dueDelta = transactionType === 'debit' ? numericAmount : (transactionType === 'credit' ? -numericAmount : 0);
 
-        const agentUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: dueDelta } };
-        if (isHajjCategory) {
-          agentUpdate.$inc.hajDue = (agentUpdate.$inc.hajDue || 0) + dueDelta;
+          const agentUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: dueDelta } };
+          if (isHajjCategory) {
+            agentUpdate.$inc.hajDue = (agentUpdate.$inc.hajDue || 0) + dueDelta;
+          }
+          if (isUmrahCategory) {
+            agentUpdate.$inc.umrahDue = (agentUpdate.$inc.umrahDue || 0) + dueDelta;
+          }
+          // Credit korle agent er totalDeposit barbe
+          if (transactionType === 'credit') {
+            agentUpdate.$inc.totalDeposit = (agentUpdate.$inc.totalDeposit || 0) + numericAmount;
+          }
+          await agents.updateOne({ _id: party._id }, agentUpdate, { session });
+          updatedAgent = await agents.findOne({ _id: party._id }, { session });
+          console.log(`Agent balance updated: ${party.agentId || party._id}, dueDelta: ${dueDelta}, totalDeposit: ${transactionType === 'credit' ? numericAmount : 0}`);
+        } else {
+          console.warn(`Agent not found for partyId: ${finalPartyId}, finalPartyType: ${finalPartyType}`);
         }
-        if (isUmrahCategory) {
-          agentUpdate.$inc.umrahDue = (agentUpdate.$inc.umrahDue || 0) + dueDelta;
-        }
-        // Credit korle agent er totalDeposit barbe
-        if (transactionType === 'credit') {
-          agentUpdate.$inc.totalDeposit = (agentUpdate.$inc.totalDeposit || 0) + numericAmount;
-        }
-        await agents.updateOne({ _id: party._id }, agentUpdate, { session });
-        updatedAgent = await agents.findOne({ _id: party._id }, { session });
       }
 
       // 8.2 If party is a vendor, update vendor due amounts atomically (Hajj/Umrah wise)
