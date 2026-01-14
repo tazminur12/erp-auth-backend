@@ -5078,6 +5078,7 @@ app.post("/api/ticket-checks", async (req, res) => {
     const {
       customerId,
       travelDate,
+      formDate, // Accept formDate as alternative to travelDate
       passengerName,
       travellingCountry,
       passportNo,
@@ -5086,16 +5087,26 @@ app.post("/api/ticket-checks", async (req, res) => {
       whatsAppNo,
       airlineName,
       route,
+      origin, // New field
+      destination, // New field
       bookingRef,
+      airlinesPnr, // Accept airlinesPnr as alternative to bookingRef
       issuingAgentName,
+      issuingAgentContact, // New field
       email,
+      agentEmail, // Accept agentEmail as alternative to email
       reservationOfficerId,
       reservationOfficerName,
+      serviceCharge, // New field
+      profit, // New field
       notes
     } = req.body;
 
+    // Use formDate if provided, otherwise use travelDate
+    const dateToUse = formDate || travelDate;
+
     // Validation - Required fields
-    if (!travelDate) {
+    if (!dateToUse) {
       return res.status(400).json({
         success: false,
         error: true,
@@ -5151,19 +5162,22 @@ app.post("/api/ticket-checks", async (req, res) => {
       });
     }
 
-    if (!route || !route.trim()) {
+    // Accept either origin+destination OR route
+    if ((!origin || !origin.trim()) && (!destination || !destination.trim()) && (!route || !route.trim())) {
       return res.status(400).json({
         success: false,
         error: true,
-        message: "Route is required"
+        message: "Origin and destination (or route) is required"
       });
     }
 
-    if (!bookingRef || !bookingRef.trim()) {
+    // Accept either airlinesPnr OR bookingRef
+    const pnrToUse = airlinesPnr || bookingRef;
+    if (!pnrToUse || !pnrToUse.trim()) {
       return res.status(400).json({
         success: false,
         error: true,
-        message: "Booking reference is required"
+        message: "Airlines PNR (or booking reference) is required"
       });
     }
 
@@ -5172,6 +5186,14 @@ app.post("/api/ticket-checks", async (req, res) => {
         success: false,
         error: true,
         message: "Issuing agent name is required"
+      });
+    }
+
+    if (!issuingAgentContact || !issuingAgentContact.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: true,
+        message: "Issuing agent contact number is required"
       });
     }
 
@@ -5204,10 +5226,22 @@ app.post("/api/ticket-checks", async (req, res) => {
       }
     }
 
-    // Validate email format if provided
-    if (email && email.trim()) {
+    // Validate issuing agent contact number format
+    if (issuingAgentContact && issuingAgentContact.trim()) {
+      if (!phoneRegex.test(issuingAgentContact.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: true,
+          message: "Invalid issuing agent contact number format"
+        });
+      }
+    }
+
+    // Validate email format if provided (accept both email and agentEmail)
+    const emailToUse = agentEmail || email;
+    if (emailToUse && emailToUse.trim()) {
       const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(email.trim())) {
+      if (!emailRegex.test(emailToUse.trim())) {
         return res.status(400).json({
           success: false,
           error: true,
@@ -5220,7 +5254,8 @@ app.post("/api/ticket-checks", async (req, res) => {
     const now = new Date();
     const ticketCheckDoc = {
       customerId: customerId || null,
-      travelDate: new Date(travelDate),
+      travelDate: new Date(dateToUse),
+      formDate: dateToUse, // Store formDate as well
       passengerName: passengerName.trim(),
       travellingCountry: travellingCountry.trim(),
       passportNo: passportNo.trim(),
@@ -5228,12 +5263,19 @@ app.post("/api/ticket-checks", async (req, res) => {
       isWhatsAppSame: Boolean(isWhatsAppSame),
       whatsAppNo: isWhatsAppSame ? contactNo.trim() : (whatsAppNo ? whatsAppNo.trim() : ''),
       airlineName: airlineName.trim(),
-      route: route.trim(),
-      bookingRef: bookingRef.trim(),
+      route: route ? route.trim() : (origin && destination ? `${origin.trim()}-${destination.trim()}` : ''),
+      origin: origin ? origin.trim() : '',
+      destination: destination ? destination.trim() : '',
+      bookingRef: pnrToUse.trim(),
+      airlinesPnr: pnrToUse.trim(), // Store airlinesPnr
       issuingAgentName: issuingAgentName.trim(),
-      email: email ? email.trim() : '',
+      issuingAgentContact: issuingAgentContact ? issuingAgentContact.trim() : '',
+      email: emailToUse ? emailToUse.trim() : '',
+      agentEmail: emailToUse ? emailToUse.trim() : '', // Store agentEmail
       reservationOfficerId: reservationOfficerId.trim(),
       reservationOfficerName: reservationOfficerName ? reservationOfficerName.trim() : '',
+      serviceCharge: parseFloat(serviceCharge) || 0,
+      profit: parseFloat(profit) || 0,
       notes: notes ? notes.trim() : '',
       isActive: true,
       createdAt: now,
@@ -5328,11 +5370,16 @@ app.get("/api/ticket-checks", async (req, res) => {
         { contactNo: { $regex: searchText, $options: 'i' } },
         { whatsAppNo: { $regex: searchText, $options: 'i' } },
         { email: { $regex: searchText, $options: 'i' } },
+        { agentEmail: { $regex: searchText, $options: 'i' } },
         { bookingRef: { $regex: searchText, $options: 'i' } },
+        { airlinesPnr: { $regex: searchText, $options: 'i' } },
         { airlineName: { $regex: searchText, $options: 'i' } },
         { route: { $regex: searchText, $options: 'i' } },
+        { origin: { $regex: searchText, $options: 'i' } },
+        { destination: { $regex: searchText, $options: 'i' } },
         { travellingCountry: { $regex: searchText, $options: 'i' } },
         { issuingAgentName: { $regex: searchText, $options: 'i' } },
+        { issuingAgentContact: { $regex: searchText, $options: 'i' } },
         { reservationOfficerName: { $regex: searchText, $options: 'i' } }
       ];
     }
@@ -5486,6 +5533,12 @@ app.put("/api/ticket-checks/:id", async (req, res) => {
     if (updateData.travelDate !== undefined) {
       update.$set.travelDate = new Date(updateData.travelDate);
     }
+    if (updateData.formDate !== undefined) {
+      update.$set.formDate = updateData.formDate;
+      if (!updateData.travelDate) {
+        update.$set.travelDate = new Date(updateData.formDate);
+      }
+    }
     if (updateData.passengerName !== undefined) {
       update.$set.passengerName = String(updateData.passengerName).trim();
     }
@@ -5514,14 +5567,45 @@ app.put("/api/ticket-checks/:id", async (req, res) => {
     if (updateData.route !== undefined) {
       update.$set.route = String(updateData.route).trim();
     }
+    if (updateData.origin !== undefined) {
+      update.$set.origin = String(updateData.origin).trim();
+      // Auto-update route if both origin and destination exist
+      if (updateData.destination !== undefined) {
+        update.$set.route = `${String(updateData.origin).trim()}-${String(updateData.destination).trim()}`;
+      } else if (ticketCheck.destination) {
+        update.$set.route = `${String(updateData.origin).trim()}-${ticketCheck.destination}`;
+      }
+    }
+    if (updateData.destination !== undefined) {
+      update.$set.destination = String(updateData.destination).trim();
+      // Auto-update route if both origin and destination exist
+      if (updateData.origin !== undefined) {
+        update.$set.route = `${String(updateData.origin).trim()}-${String(updateData.destination).trim()}`;
+      } else if (ticketCheck.origin) {
+        update.$set.route = `${ticketCheck.origin}-${String(updateData.destination).trim()}`;
+      }
+    }
     if (updateData.bookingRef !== undefined) {
       update.$set.bookingRef = String(updateData.bookingRef).trim();
+      update.$set.airlinesPnr = String(updateData.bookingRef).trim();
+    }
+    if (updateData.airlinesPnr !== undefined) {
+      update.$set.airlinesPnr = String(updateData.airlinesPnr).trim();
+      update.$set.bookingRef = String(updateData.airlinesPnr).trim();
     }
     if (updateData.issuingAgentName !== undefined) {
       update.$set.issuingAgentName = String(updateData.issuingAgentName).trim();
     }
+    if (updateData.issuingAgentContact !== undefined) {
+      update.$set.issuingAgentContact = updateData.issuingAgentContact ? String(updateData.issuingAgentContact).trim() : '';
+    }
     if (updateData.email !== undefined) {
       update.$set.email = updateData.email ? String(updateData.email).trim() : '';
+      update.$set.agentEmail = updateData.email ? String(updateData.email).trim() : '';
+    }
+    if (updateData.agentEmail !== undefined) {
+      update.$set.agentEmail = updateData.agentEmail ? String(updateData.agentEmail).trim() : '';
+      update.$set.email = updateData.agentEmail ? String(updateData.agentEmail).trim() : '';
     }
     if (updateData.reservationOfficerId !== undefined) {
       update.$set.reservationOfficerId = String(updateData.reservationOfficerId).trim();
@@ -5531,6 +5615,18 @@ app.put("/api/ticket-checks/:id", async (req, res) => {
     }
     if (updateData.notes !== undefined) {
       update.$set.notes = updateData.notes ? String(updateData.notes).trim() : '';
+    }
+    if (updateData.serviceCharge !== undefined) {
+      update.$set.serviceCharge = parseFloat(updateData.serviceCharge) || 0;
+    }
+    if (updateData.profit !== undefined) {
+      update.$set.profit = parseFloat(updateData.profit) || 0;
+    }
+    if (updateData.formDate !== undefined) {
+      update.$set.formDate = updateData.formDate;
+      if (!updateData.travelDate) {
+        update.$set.travelDate = new Date(updateData.formDate);
+      }
     }
 
     // Update ticket check
