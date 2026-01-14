@@ -1112,7 +1112,8 @@ async function initializeDatabase() {
         // Air Customers indexes
         airCustomers.createIndex({ customerId: 1 }, { unique: true, name: "airCustomers_customerId_unique" }),
         // Air Tickets indexes
-        tickets.createIndex({ bookingId: 1 }, { unique: true, name: "airTickets_bookingId_unique" }),
+        tickets.createIndex({ ticketId: 1 }, { unique: true, name: "airTickets_ticketId_unique" }),
+        tickets.createIndex({ bookingId: 1 }, { name: "airTickets_bookingId" }),
         airCustomers.createIndex({ mobile: 1 }, { name: "airCustomers_mobile" }),
         airCustomers.createIndex({ email: 1 }, { sparse: true, name: "airCustomers_email" }),
         airCustomers.createIndex({ passportNumber: 1 }, { sparse: true, name: "airCustomers_passportNumber" }),
@@ -13945,8 +13946,14 @@ app.get("/orders/analytics", async (req, res) => {
 const generateAirTicketId = async (db) => {
   const counterCollection = db.collection("counters");
   
-  // Create counter key for air tickets
-  const counterKey = `air_ticket`;
+  // Get current date in DDMMYY format
+  const today = new Date();
+  const dateStr = String(today.getDate()).padStart(2, '0') +
+    String(today.getMonth() + 1).padStart(2, '0') +
+    today.getFullYear().toString().slice(-2);
+  
+  // Create counter key for air tickets with date (resets daily)
+  const counterKey = `air_ticket_${dateStr}`;
   
   // Find or create counter
   let counter = await counterCollection.findOne({ counterKey });
@@ -13966,10 +13973,10 @@ const generateAirTicketId = async (db) => {
     { $set: { sequence: newSequence } }
   );
   
-  // Format: TKT + 00001 (e.g., TKT00001)
-  const serial = String(newSequence).padStart(5, '0');
+  // Format: TKT + DDMMYY + 0001 (e.g., TKT1301250001)
+  const serial = String(newSequence).padStart(4, '0');
   
-  return `TKT${serial}`;
+  return `TKT${dateStr}${serial}`;
 };
 
 // Helper: Generate unique Air Ticketing Agent ID
@@ -14770,14 +14777,21 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
   try {
     const ticketData = req.body;
 
-    // Generate unique booking ID if not provided
-    const bookingId = ticketData.bookingId || await generateAirTicketId(db);
+    // Generate unique ticket ID automatically
+    const ticketId = await generateAirTicketId(db);
 
     // Validate required fields
     if (!ticketData.customerId) {
       return res.status(400).json({
         success: false,
         message: 'Customer ID is required'
+      });
+    }
+
+    if (!ticketData.bookingId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking ID is required (must be provided manually)'
       });
     }
 
@@ -14865,6 +14879,9 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
 
     // Prepare ticket document
     const ticketDoc = {
+      // Unique ticket ID (auto-generated)
+      ticketId: ticketId,
+      
       // Customer information
       customerId: ticketData.customerId,
       customerName: ticketData.customerName || customer.name,
@@ -14874,7 +14891,7 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
       tripType: ticketData.tripType || 'oneway',
       flightType: ticketData.flightType || 'domestic',
       date: new Date(ticketData.date),
-      bookingId,
+      bookingId: ticketData.bookingId, // Manual booking ID
       gdsPnr: ticketData.gdsPnr || '',
       airlinePnr: ticketData.airlinePnr || '',
       airline: ticketData.airline,
@@ -14943,13 +14960,13 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
 
     // Start transaction for atomic operations
     let session = null;
-    let ticketId = null;
+    let insertedTicketObjectId = null;
     try {
       session = client.startSession();
       await session.withTransaction(async () => {
         // Insert ticket
         const result = await tickets.insertOne(ticketDoc, { session });
-        ticketId = result.insertedId;
+        insertedTicketObjectId = result.insertedId;
 
         // Update customer's financial information in airCustomers collection
         const customerDeal = parseFloat(ticketData.customerDeal) || 0;
@@ -14977,7 +14994,7 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
       });
 
       // Return created ticket
-      const createdTicket = await tickets.findOne({ _id: ticketId });
+      const createdTicket = await tickets.findOne({ _id: insertedTicketObjectId });
 
       res.status(201).json({
         success: true,
@@ -15402,6 +15419,7 @@ app.get("/api/air-ticketing/tickets/:id", async (req, res) => {
 
     const query = {
       $or: [
+        { ticketId: id },
         { bookingId: id },
         { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
       ],
@@ -15440,6 +15458,7 @@ app.put("/api/air-ticketing/tickets/:id", async (req, res) => {
 
     const query = {
       $or: [
+        { ticketId: id },
         { bookingId: id },
         { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
       ],
@@ -15611,6 +15630,7 @@ app.delete("/api/air-ticketing/tickets/:id", async (req, res) => {
 
     const query = {
       $or: [
+        { ticketId: id },
         { bookingId: id },
         { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
       ],
