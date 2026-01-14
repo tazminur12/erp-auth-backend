@@ -13725,94 +13725,42 @@ app.get("/loans/dashboard/summary", async (req, res) => {
 // ✅ GET: Vendor Analytics (Enhanced)
 app.get("/vendors/analytics", async (req, res) => {
   try {
-    const { period = '30' } = req.query; // Default to last 30 days
-    const days = parseInt(period);
-    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-
-    // Vendor registration trends
-    const registrationTrends = await vendors.aggregate([
-      {
-        $match: {
-          isActive: true,
-          createdAt: { $gte: startDate }
-        }
-      },
-      {
-        $group: {
-          _id: {
-            year: { $year: "$createdAt" },
-            month: { $month: "$createdAt" },
-            day: { $dayOfMonth: "$createdAt" }
-          },
-          count: { $sum: 1 }
-        }
-      },
-      { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } }
-    ]).toArray();
-
-    // Vendor demographics
-    const demographics = await vendors.aggregate([
-      { $match: { isActive: true } },
-      {
-        $group: {
-          _id: null,
-          withNID: { $sum: { $cond: [{ $ne: ["$nid", ""] }, 1, 0] } },
-          withPassport: { $sum: { $cond: [{ $ne: ["$passport", ""] }, 1, 0] } },
-          withBoth: {
-            $sum: {
-              $cond: [
-                {
-                  $and: [
-                    { $ne: ["$nid", ""] },
-                    { $ne: ["$passport", ""] }
-                  ]
-                },
-                1,
-                0
-              ]
-            }
-          },
-          withoutDocs: {
-            $sum: {
-              $cond: [
-                {
-                  $and: [
-                    { $or: [{ $eq: ["$nid", ""] }, { $eq: ["$nid", null] }] },
-                    { $or: [{ $eq: ["$passport", ""] }, { $eq: ["$passport", null] }] }
-                  ]
-                },
-                1,
-                0
-              ]
-            }
-          }
-        }
-      }
-    ]).toArray();
-
-    // Top performing vendors (by order count)
-    const topVendors = await orders.aggregate([
-      { $match: { isActive: true } },
-      {
-        $group: {
-          _id: "$vendorId",
-          vendorName: { $first: "$vendorName" },
-          orderCount: { $sum: 1 },
-          totalAmount: { $sum: "$amount" },
-          avgOrderValue: { $avg: "$amount" }
-        }
-      },
-      { $sort: { orderCount: -1 } },
+    // Total vendors
+    const totalVendors = await vendors.countDocuments({ isActive: { $ne: false } });
+    
+    // Active vendors
+    const activeVendors = await vendors.countDocuments({ isActive: true });
+    
+    // Inactive vendors
+    const inactiveVendors = await vendors.countDocuments({ isActive: false });
+    
+    // New this month
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const newThisMonth = await vendors.countDocuments({
+      isActive: { $ne: false },
+      createdAt: { $gte: monthStart }
+    });
+    
+    // Top locations
+    const topLocations = await vendors.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      { $group: { _id: "$tradeLocation", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
       { $limit: 10 }
     ]).toArray();
 
     res.json({
       success: true,
-      analytics: {
-        registrationTrends,
-        demographics: demographics[0] || {},
-        topVendors
-      }
+      totalVendors,
+      activeVendors,
+      inactiveVendors,
+      newThisMonth,
+      topLocations: topLocations.map(loc => ({
+        location: loc._id || 'Unknown',
+        count: loc.count
+      }))
     });
   } catch (error) {
     console.error("Vendor analytics error:", error);
@@ -13826,112 +13774,143 @@ app.get("/vendors/analytics", async (req, res) => {
 // ✅ GET: Order Analytics (Enhanced)
 app.get("/orders/analytics", async (req, res) => {
   try {
-    const { branchId, period = '30' } = req.query;
-    const days = parseInt(period);
-    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-
-    let filter = { isActive: true, createdAt: { $gte: startDate } };
+    const { branchId } = req.query;
+    let filter = { isActive: true };
     if (branchId) filter.branchId = branchId;
 
-    // Order trends over time
-    const orderTrends = await orders.aggregate([
-      { $match: filter },
-      {
-        $group: {
-          _id: {
-            year: { $year: "$createdAt" },
-            month: { $month: "$createdAt" },
-            day: { $dayOfMonth: "$createdAt" }
-          },
-          count: { $sum: 1 },
-          totalAmount: { $sum: "$amount" }
-        }
-      },
-      { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } }
-    ]).toArray();
+    // Date ranges
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
+    
+    const weekAgo = new Date();
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    weekAgo.setHours(0, 0, 0, 0);
+    
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    
+    const lastMonthStart = new Date(monthStart);
+    lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
+    
+    const lastMonthEnd = new Date(monthStart);
+    lastMonthEnd.setDate(0);
+    lastMonthEnd.setHours(23, 59, 59, 999);
 
-    // Order status distribution
-    const statusDistribution = await orders.aggregate([
+    // Order status counts
+    const statusCounts = await orders.aggregate([
       { $match: filter },
       {
         $group: {
           _id: "$status",
-          count: { $sum: 1 },
-          totalAmount: { $sum: "$amount" }
+          count: { $sum: 1 }
         }
       }
     ]).toArray();
 
-    // Order type performance
-    const typePerformance = await orders.aggregate([
-      { $match: filter },
-      {
-        $group: {
-          _id: "$orderType",
-          count: { $sum: 1 },
-          totalAmount: { $sum: "$amount" },
-          avgAmount: { $avg: "$amount" },
-          minAmount: { $min: "$amount" },
-          maxAmount: { $max: "$amount" }
-        }
-      },
-      { $sort: { totalAmount: -1 } }
-    ]).toArray();
+    const statusMap = {};
+    statusCounts.forEach(item => {
+      statusMap[item._id] = item.count;
+    });
 
-    // Revenue trends
-    const revenueTrends = await orders.aggregate([
-      { $match: { ...filter, status: { $in: ['confirmed', 'completed'] } } },
-      {
-        $group: {
-          _id: {
-            year: { $year: "$createdAt" },
-            month: { $month: "$createdAt" },
-            day: { $dayOfMonth: "$createdAt" }
-          },
-          revenue: { $sum: "$amount" }
-        }
-      },
-      { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } }
-    ]).toArray();
+    const completedOrders = statusMap['completed'] || statusMap['confirmed'] || 0;
+    const pendingOrders = statusMap['pending'] || 0;
+    const cancelledOrders = statusMap['cancelled'] || 0;
+    const processingOrders = statusMap['processing'] || statusMap['in_progress'] || 0;
 
-    // Average order processing time (for completed orders)
-    const processingTime = await orders.aggregate([
-      {
-        $match: {
-          isActive: true,
-          status: 'completed',
-          updatedAt: { $exists: true }
-        }
-      },
-      {
-        $addFields: {
-          processingDays: {
-            $divide: [
-              { $subtract: ["$updatedAt", "$createdAt"] },
-              1000 * 60 * 60 * 24
-            ]
-          }
-        }
-      },
+    // Revenue calculations
+    const revenueData = await orders.aggregate([
+      { $match: { ...filter, status: { $in: ['completed', 'confirmed'] } } },
       {
         $group: {
           _id: null,
-          avgProcessingDays: { $avg: "$processingDays" },
-          minProcessingDays: { $min: "$processingDays" },
-          maxProcessingDays: { $max: "$processingDays" }
+          totalRevenue: { $sum: { $ifNull: ["$amount", 0] } },
+          monthlyRevenue: {
+            $sum: {
+              $cond: [
+                { $gte: ["$createdAt", monthStart] },
+                { $ifNull: ["$amount", 0] },
+                0
+              ]
+            }
+          },
+          orderCount: { $sum: 1 },
+          monthlyOrderCount: {
+            $sum: {
+              $cond: [
+                { $gte: ["$createdAt", monthStart] },
+                1,
+                0
+              ]
+            }
+          }
         }
       }
     ]).toArray();
 
+    const revenue = revenueData[0] || {};
+    const totalRevenue = revenue.totalRevenue || 0;
+    const monthlyRevenue = revenue.monthlyRevenue || 0;
+    const averageOrderValue = revenue.orderCount > 0 ? totalRevenue / revenue.orderCount : 0;
+
+    // Today's orders
+    const todayOrdersData = await orders.countDocuments({
+      ...filter,
+      createdAt: { $gte: today, $lte: todayEnd }
+    });
+
+    // Last week's orders (for comparison)
+    const lastWeekOrders = await orders.countDocuments({
+      ...filter,
+      createdAt: { $gte: weekAgo, $lt: today }
+    });
+    const todayOrdersChange = lastWeekOrders > 0 ? ((todayOrdersData - lastWeekOrders) / lastWeekOrders) * 100 : 0;
+
+    // This week's orders
+    const weeklyOrders = await orders.countDocuments({
+      ...filter,
+      createdAt: { $gte: weekAgo }
+    });
+
+    // Last week's orders (for comparison)
+    const lastWeekStart = new Date(weekAgo);
+    lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+    const lastWeekTotal = await orders.countDocuments({
+      ...filter,
+      createdAt: { $gte: lastWeekStart, $lt: weekAgo }
+    });
+    const weeklyOrdersChange = lastWeekTotal > 0 ? ((weeklyOrders - lastWeekTotal) / lastWeekTotal) * 100 : 0;
+
+    // This month's orders
+    const monthlyOrders = await orders.countDocuments({
+      ...filter,
+      createdAt: { $gte: monthStart }
+    });
+
+    // Last month's orders (for comparison)
+    const lastMonthOrders = await orders.countDocuments({
+      ...filter,
+      createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd }
+    });
+    const monthlyOrdersChange = lastMonthOrders > 0 ? ((monthlyOrders - lastMonthOrders) / lastMonthOrders) * 100 : 0;
+
     res.json({
       success: true,
-      analytics: {
-        orderTrends,
-        statusDistribution,
-        typePerformance,
-        revenueTrends,
-        processingTime: processingTime[0] || {}
-      }
+      completedOrders,
+      pendingOrders,
+      cancelledOrders,
+      processingOrders,
+      totalRevenue,
+      monthlyRevenue,
+      averageOrderValue,
+      todayOrders: todayOrdersData,
+      todayOrdersChange,
+      weeklyOrders,
+      weeklyOrdersChange,
+      monthlyOrders,
+      monthlyOrdersChange
     });
   } catch (error) {
     console.error("Order analytics error:", error);
