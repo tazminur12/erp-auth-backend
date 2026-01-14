@@ -8663,36 +8663,47 @@ app.delete("/vendors/:vendorId/bank-accounts/:accountId", async (req, res) => {
 // ✅ GET: Vendor statistics overview
 app.get("/vendors/stats/overview", async (req, res) => {
   try {
-    // Totals
-    const totalVendors = await vendors.countDocuments({ isActive: true });
+    // Base filter for active vendors
+    const activeFilter = { isActive: { $ne: false } };
 
-    // Today
+    // Total vendors
+    const totalVendors = await vendors.countDocuments(activeFilter);
+
+    // Today's date range
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     const todayEnd = new Date();
     todayEnd.setHours(23, 59, 59, 999);
 
     const todayCount = await vendors.countDocuments({
-      isActive: true,
-      createdAt: { $gte: todayStart, $lte: todayEnd },
+      ...activeFilter,
+      createdAt: { $gte: todayStart, $lte: todayEnd }
     });
 
     // This month
     const monthStart = new Date();
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
+
     const thisMonthCount = await vendors.countDocuments({
-      isActive: true,
-      createdAt: { $gte: monthStart },
+      ...activeFilter,
+      createdAt: { $gte: monthStart }
     });
 
     // With NID / Passport
-    const withNID = await vendors.countDocuments({ isActive: true, nid: { $exists: true, $ne: "" } });
-    const withPassport = await vendors.countDocuments({ isActive: true, passport: { $exists: true, $ne: "" } });
+    const withNID = await vendors.countDocuments({
+      ...activeFilter,
+      nid: { $exists: true, $ne: "", $ne: null }
+    });
+
+    const withPassport = await vendors.countDocuments({
+      ...activeFilter,
+      passport: { $exists: true, $ne: "", $ne: null }
+    });
 
     // By tradeLocation
     const byLocation = await vendors.aggregate([
-      { $match: { isActive: true } },
+      { $match: activeFilter },
       { $group: { _id: "$tradeLocation", count: { $sum: 1 } } },
       { $sort: { count: -1 } }
     ]).toArray();
@@ -8711,8 +8722,9 @@ app.get("/vendors/stats/overview", async (req, res) => {
   } catch (error) {
     console.error("Error fetching vendor statistics:", error);
     res.status(500).json({
+      success: false,
       error: true,
-      message: "Internal server error while fetching vendor statistics",
+      message: "Internal server error while fetching vendor statistics"
     });
   }
 });
@@ -8890,6 +8902,84 @@ app.get('/vendors/:id/financials', async (req, res) => {
 });
 
 // ==================== VENDOR BILLS ROUTES ====================
+
+// ✅ GET: Vendor Bills Summary Dashboard
+app.get("/vendors/bills/summary", async (req, res) => {
+  try {
+    const { vendorId, startDate, endDate } = req.query;
+
+    // Build base filter
+    const filter = { isActive: { $ne: false } };
+
+    // Optional filters
+    if (vendorId) {
+      filter.vendorId = vendorId;
+    }
+
+    if (startDate || endDate) {
+      filter.billDate = {};
+      if (startDate) {
+        filter.billDate.$gte = new Date(startDate);
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        filter.billDate.$lte = end;
+      }
+    }
+
+    // Aggregate vendor bills statistics
+    const summary = await vendorBills.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: null,
+          totalBills: { $sum: 1 },
+          totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
+          totalPaid: {
+            $sum: {
+              $ifNull: [
+                "$paidAmount",
+                {
+                  $cond: [
+                    { $in: [{ $ifNull: ["$paymentStatus", ""] }, ["paid", "completed", "settled"]] },
+                    { $ifNull: ["$totalAmount", 0] },
+                    { $ifNull: ["$amount", 0] }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]).toArray();
+
+    const result = summary[0] || {
+      totalBills: 0,
+      totalAmount: 0,
+      totalPaid: 0
+    };
+
+    // Calculate total due
+    const totalDue = (result.totalAmount || 0) - (result.totalPaid || 0);
+
+    res.json({
+      success: true,
+      totalBills: result.totalBills || 0,
+      totalAmount: Number((result.totalAmount || 0).toFixed(2)),
+      totalPaid: Number((result.totalPaid || 0).toFixed(2)),
+      totalDue: Number(Math.max(0, totalDue).toFixed(2))
+    });
+
+  } catch (error) {
+    console.error("Error fetching vendor bills summary:", error);
+    res.status(500).json({
+      success: false,
+      error: true,
+      message: "Internal server error while fetching vendor bills summary"
+    });
+  }
+});
 
 // ✅ POST: Create new vendor bill
 app.post("/vendors/bills", async (req, res) => {
