@@ -8266,16 +8266,32 @@ app.delete("/vendors/:id", async (req, res) => {
       return res.status(400).json({ error: true, message: "Invalid vendor ID" });
     }
 
+    // Find vendor first to get vendorId
+    const vendor = await vendors.findOne({ _id: new ObjectId(id) });
+
+    if (!vendor) {
+      return res.status(404).json({ error: true, message: "Vendor not found" });
+    }
+
+    // Soft delete all bills for this vendor
+    if (vendor.vendorId) {
+      await vendorBills.updateMany(
+        { vendorId: vendor.vendorId, isActive: { $ne: false } },
+        { $set: { isActive: false, updatedAt: new Date() } }
+      );
+    }
+
+    // Soft delete the vendor
     const result = await vendors.updateOne(
       { _id: new ObjectId(id) },
-      { $set: { isActive: false } }
+      { $set: { isActive: false, updatedAt: new Date() } }
     );
 
     if (result.modifiedCount === 0) {
       return res.status(404).json({ error: true, message: "Vendor not found" });
     }
 
-    res.json({ success: true, message: "Vendor deleted successfully" });
+    res.json({ success: true, message: "Vendor and associated bills deleted successfully" });
   } catch (error) {
     console.error("Error deleting vendor:", error);
     res.status(500).json({
@@ -14873,13 +14889,6 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
       });
     }
 
-    if (!ticketData.bookingId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Booking ID is required (must be provided manually)'
-      });
-    }
-
     if (!ticketData.airline) {
       return res.status(400).json({
         success: false,
@@ -14976,7 +14985,7 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
       tripType: ticketData.tripType || 'oneway',
       flightType: ticketData.flightType || 'domestic',
       date: new Date(ticketData.date),
-      bookingId: ticketData.bookingId, // Manual booking ID
+      bookingId: ticketData.bookingId || '', // Optional manual booking ID
       gdsPnr: ticketData.gdsPnr || '',
       airlinePnr: ticketData.airlinePnr || '',
       airline: ticketData.airline,
@@ -15571,7 +15580,7 @@ app.put("/api/air-ticketing/tickets/:id", async (req, res) => {
     if (updateData.tripType !== undefined) updateDoc.tripType = updateData.tripType;
     if (updateData.flightType !== undefined) updateDoc.flightType = updateData.flightType;
     if (updateData.date !== undefined) updateDoc.date = new Date(updateData.date);
-    if (updateData.bookingId !== undefined) updateDoc.bookingId = updateData.bookingId;
+    if (updateData.bookingId !== undefined) updateDoc.bookingId = updateData.bookingId || ''; // Optional booking ID
     if (updateData.gdsPnr !== undefined) updateDoc.gdsPnr = updateData.gdsPnr;
     if (updateData.airlinePnr !== undefined) updateDoc.airlinePnr = updateData.airlinePnr;
     if (updateData.airline !== undefined) updateDoc.airline = updateData.airline;
