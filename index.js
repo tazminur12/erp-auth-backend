@@ -5969,6 +5969,7 @@ app.post("/api/old-ticket-reissues", async (req, res) => {
       destination: destination.trim(),
       route: `${origin.trim()} → ${destination.trim()}`,
       airlinesPnr: airlinesPnr.trim(),
+      bookingRef: airlinesPnr.trim(), // Store bookingRef for compatibility
       oldDate: new Date(oldDate),
       newDate: new Date(newDate),
       reissueVendorId: reissueVendorId.trim(),
@@ -6083,6 +6084,7 @@ app.get("/api/old-ticket-reissues", async (req, res) => {
         { contactNo: { $regex: searchText, $options: 'i' } },
         { whatsAppNo: { $regex: searchText, $options: 'i' } },
         { airlinesPnr: { $regex: searchText, $options: 'i' } },
+        { bookingRef: { $regex: searchText, $options: 'i' } },
         { airlineName: { $regex: searchText, $options: 'i' } },
         { origin: { $regex: searchText, $options: 'i' } },
         { destination: { $regex: searchText, $options: 'i' } },
@@ -6305,6 +6307,11 @@ app.put("/api/old-ticket-reissues/:id", async (req, res) => {
     }
     if (updateData.airlinesPnr !== undefined) {
       update.$set.airlinesPnr = String(updateData.airlinesPnr).trim();
+      update.$set.bookingRef = String(updateData.airlinesPnr).trim(); // Sync bookingRef
+    }
+    if (updateData.bookingRef !== undefined) {
+      update.$set.bookingRef = String(updateData.bookingRef).trim();
+      update.$set.airlinesPnr = String(updateData.bookingRef).trim(); // Sync airlinesPnr
     }
     if (updateData.oldDate !== undefined) {
       update.$set.oldDate = new Date(updateData.oldDate);
