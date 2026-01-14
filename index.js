@@ -1111,6 +1111,8 @@ async function initializeDatabase() {
         farmIncomes.createIndex({ source: 1, date: -1 }, { name: "farmIncomes_source_date" }),
         // Air Customers indexes
         airCustomers.createIndex({ customerId: 1 }, { unique: true, name: "airCustomers_customerId_unique" }),
+        // Air Tickets indexes
+        tickets.createIndex({ bookingId: 1 }, { unique: true, name: "airTickets_bookingId_unique" }),
         airCustomers.createIndex({ mobile: 1 }, { name: "airCustomers_mobile" }),
         airCustomers.createIndex({ email: 1 }, { sparse: true, name: "airCustomers_email" }),
         airCustomers.createIndex({ passportNumber: 1 }, { sparse: true, name: "airCustomers_passportNumber" }),
@@ -13939,6 +13941,37 @@ app.get("/orders/analytics", async (req, res) => {
   }
 });
 
+// Helper: Generate unique Air Ticket ID
+const generateAirTicketId = async (db) => {
+  const counterCollection = db.collection("counters");
+  
+  // Create counter key for air tickets
+  const counterKey = `air_ticket`;
+  
+  // Find or create counter
+  let counter = await counterCollection.findOne({ counterKey });
+  
+  if (!counter) {
+    // Create new counter starting from 0
+    await counterCollection.insertOne({ counterKey, sequence: 0 });
+    counter = { sequence: 0 };
+  }
+  
+  // Increment sequence
+  const newSequence = counter.sequence + 1;
+  
+  // Update counter
+  await counterCollection.updateOne(
+    { counterKey },
+    { $set: { sequence: newSequence } }
+  );
+  
+  // Format: TKT + 00001 (e.g., TKT00001)
+  const serial = String(newSequence).padStart(5, '0');
+  
+  return `TKT${serial}`;
+};
+
 // Helper: Generate unique Air Ticketing Agent ID
 const generateAirAgentId = async (db) => {
   const counterCollection = db.collection("counters");
@@ -14737,18 +14770,14 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
   try {
     const ticketData = req.body;
 
+    // Generate unique booking ID if not provided
+    const bookingId = ticketData.bookingId || await generateAirTicketId(db);
+
     // Validate required fields
     if (!ticketData.customerId) {
       return res.status(400).json({
         success: false,
         message: 'Customer ID is required'
-      });
-    }
-
-    if (!ticketData.bookingId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Booking ID is required'
       });
     }
 
@@ -14845,7 +14874,7 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
       tripType: ticketData.tripType || 'oneway',
       flightType: ticketData.flightType || 'domestic',
       date: new Date(ticketData.date),
-      bookingId: ticketData.bookingId,
+      bookingId,
       gdsPnr: ticketData.gdsPnr || '',
       airlinePnr: ticketData.airlinePnr || '',
       airline: ticketData.airline,
