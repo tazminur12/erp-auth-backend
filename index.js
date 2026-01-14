@@ -13955,6 +13955,22 @@ const generateAirTicketId = async (db) => {
   // Create counter key for air tickets with date (resets daily)
   const counterKey = `air_ticket_${dateStr}`;
   
+  // Check if any tickets exist for this date
+  const ticketPrefix = `TKT${dateStr}`;
+  const existingTicketsCount = await tickets.countDocuments({
+    ticketId: { $regex: `^${ticketPrefix}` },
+    isActive: { $ne: false }
+  });
+  
+  // If no tickets exist for this date, reset counter to 0
+  if (existingTicketsCount === 0) {
+    await counterCollection.updateOne(
+      { counterKey },
+      { $set: { sequence: 0 } },
+      { upsert: true }
+    );
+  }
+  
   // Find or create counter
   let counter = await counterCollection.findOne({ counterKey });
   
