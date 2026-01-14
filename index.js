@@ -8300,7 +8300,7 @@ app.delete("/vendors/:id", async (req, res) => {
     });
   }
 });
-
+ 
 // ==================== VENDOR BANK ACCOUNTS ROUTES ====================
 
 // ✅ POST: Create vendor bank account
@@ -13213,7 +13213,8 @@ app.post("/loans/giving", async (req, res) => {
 
       // Dates
       commencementDate: body.commencementDate || new Date().toISOString().split('T')[0], // Default to today
-      completionDate: body.completionDate || ''
+      completionDate: body.completionDate || '',
+      commitmentDate: body.commitmentDate || ''
     };
 
     await loans.insertOne(loanDoc);
@@ -13290,7 +13291,8 @@ app.post("/loans/receiving", async (req, res) => {
 
       // Dates
       commencementDate: body.commencementDate || new Date().toISOString().split('T')[0], // Default to today
-      completionDate: body.completionDate || ''
+      completionDate: body.completionDate || '',
+      commitmentDate: body.commitmentDate || ''
     };
 
     await loans.insertOne(loanDoc);
@@ -13437,7 +13439,7 @@ app.put("/loans/:loanId", async (req, res) => {
       // Receiving/business fields
       'businessName','businessType','businessAddress','businessRegistration','businessExperience',
       // Dates
-      'commencementDate', 'completionDate',
+      'commencementDate', 'completionDate', 'commitmentDate',
       // Meta edits
       'status','branchId','createdBy'
     ];
