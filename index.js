@@ -18531,6 +18531,11 @@ app.get("/api/haj-umrah/agents/:id", async (req, res) => {
     const actualTotalDue = Math.max(Number(financialSummary.overall.billed || 0) - actualTotalDeposit, 0);
     const actualHajDue = Math.max(Number(financialSummary.hajj.billed || 0) - actualHajPaid, 0);
     const actualUmrahDue = Math.max(Number(financialSummary.umrah.billed || 0) - actualUmrahPaid, 0);
+    
+    // Calculate Advance correctly: Advance = Paid - Bill (if Paid > Bill)
+    const actualTotalAdvance = Math.max(actualTotalDeposit - Number(financialSummary.overall.billed || 0), 0);
+    const actualHajAdvance = Math.max(actualHajPaid - Number(financialSummary.hajj.billed || 0), 0);
+    const actualUmrahAdvance = Math.max(actualUmrahPaid - Number(financialSummary.umrah.billed || 0), 0);
 
     // Merge financial summary with actual calculated values
     const mergedFinancialSummary = {
@@ -18539,16 +18544,19 @@ app.get("/api/haj-umrah/agents/:id", async (req, res) => {
         ...financialSummary.overall,
         paid: actualTotalDeposit, // Use actual agent totalDeposit from transactions
         due: actualTotalDue, // Calculate: Bill - Paid
+        advance: actualTotalAdvance, // Calculate: Paid - Bill (if Paid > Bill)
       },
       hajj: {
         ...financialSummary.hajj,
         paid: actualHajPaid, // Packages paid + Transactions paid
         due: actualHajDue, // Calculate: Bill - Paid
+        advance: actualHajAdvance, // Calculate: Paid - Bill (if Paid > Bill)
       },
       umrah: {
         ...financialSummary.umrah,
         paid: actualUmrahPaid, // Packages paid + Transactions paid
         due: actualUmrahDue, // Calculate: Bill - Paid
+        advance: actualUmrahAdvance, // Calculate: Paid - Bill (if Paid > Bill)
       },
     };
 
@@ -18568,7 +18576,7 @@ app.get("/api/haj-umrah/agents/:id", async (req, res) => {
       totalReceived: actualTotalDeposit, // Use actual agent totalDeposit
       totalCollection: actualTotalDeposit, // Use actual agent totalDeposit
       totalDue: actualTotalDue, // Calculate: Bill - Paid
-      totalAdvance: mergedFinancialSummary.overall.advance,
+      totalAdvance: actualTotalAdvance, // Calculate: Paid - Bill (if Paid > Bill)
       totalProfit: mergedFinancialSummary.overall.profit,
       totalCostingPrice: mergedFinancialSummary.overall.costingPrice,
 
@@ -18587,7 +18595,7 @@ app.get("/api/haj-umrah/agents/:id", async (req, res) => {
       hajDeposit: actualHajPaid, // Packages paid + Transactions paid
       totalHajjPaid: actualHajPaid, // Packages paid + Transactions paid
       hajDue: actualHajDue, // Calculate: Bill - Paid
-      hajAdvance: mergedFinancialSummary.hajj.advance,
+      hajAdvance: actualHajAdvance, // Calculate: Paid - Bill (if Paid > Bill)
       hajProfit: mergedFinancialSummary.hajj.profit,
       hajCostingPrice: mergedFinancialSummary.hajj.costingPrice,
 
@@ -18601,7 +18609,7 @@ app.get("/api/haj-umrah/agents/:id", async (req, res) => {
       umrahDeposit: actualUmrahPaid, // Packages paid + Transactions paid
       totalUmrahPaid: actualUmrahPaid, // Packages paid + Transactions paid
       umrahDue: actualUmrahDue, // Calculate: Bill - Paid
-      umrahAdvance: mergedFinancialSummary.umrah.advance,
+      umrahAdvance: actualUmrahAdvance, // Calculate: Paid - Bill (if Paid > Bill)
       umrahProfit: mergedFinancialSummary.umrah.profit,
       umrahCostingPrice: mergedFinancialSummary.umrah.costingPrice,
 
