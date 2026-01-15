@@ -18472,28 +18472,83 @@ app.get("/api/haj-umrah/agents/:id", async (req, res) => {
       console.log("✅ Agent migrated successfully");
     }
 
-    // Use agent's actual fields for due amounts and deposits (updated by transactions)
-    // Override financial summary with actual agent profile values
-    const actualTotalDue = Number(agent.totalDue || 0);
-    const actualHajDue = Number(agent.hajDue || 0);
-    const actualUmrahDue = Number(agent.umrahDue || 0);
-    const actualTotalDeposit = Number(agent.totalDeposit || 0);
+    // Calculate actual paid amounts from transactions (credit transactions = payments to agent)
+    const agentIdStr = String(id);
+    const agentObjectId = new ObjectId(id);
+    
+    // Get all credit transactions for this agent (credit = payment received by agent)
+    const agentTransactions = await transactions.aggregate([
+      {
+        $match: {
+          isActive: { $ne: false },
+          partyType: 'agent',
+          transactionType: 'credit', // Credit = agent receives payment
+          $or: [
+            { partyId: agentIdStr },
+            { partyId: agentObjectId },
+            { agentId: agentIdStr },
+            { agentId: agentObjectId }
+          ]
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalPaid: { $sum: { $ifNull: ['$amount', 0] } },
+          hajPaid: {
+            $sum: {
+              $cond: [
+                { $regexMatch: { input: { $toLower: { $ifNull: ['$serviceCategory', ''] } }, regex: 'haj' } },
+                { $ifNull: ['$amount', 0] },
+                0
+              ]
+            }
+          },
+          umrahPaid: {
+            $sum: {
+              $cond: [
+                { $regexMatch: { input: { $toLower: { $ifNull: ['$serviceCategory', ''] } }, regex: 'umrah' } },
+                { $ifNull: ['$amount', 0] },
+                0
+              ]
+            }
+          }
+        }
+      }
+    ]).toArray();
 
-    // Merge financial summary with actual agent values
+    const transactionPaid = agentTransactions[0] || { totalPaid: 0, hajPaid: 0, umrahPaid: 0 };
+    
+    // Use actual agent totalDeposit (updated by transactions) for overall paid
+    const actualTotalDeposit = Number(agent.totalDeposit || 0);
+    
+    // For category-wise paid: combine packages paid + transactions paid
+    // But prioritize actual agent totalDeposit for overall
+    const actualHajPaid = Number(transactionPaid.hajPaid || 0) + Number(financialSummary.hajj.paid || 0);
+    const actualUmrahPaid = Number(transactionPaid.umrahPaid || 0) + Number(financialSummary.umrah.paid || 0);
+    
+    // Calculate Dues correctly: Dues = Bill - Paid
+    const actualTotalDue = Math.max(Number(financialSummary.overall.billed || 0) - actualTotalDeposit, 0);
+    const actualHajDue = Math.max(Number(financialSummary.hajj.billed || 0) - actualHajPaid, 0);
+    const actualUmrahDue = Math.max(Number(financialSummary.umrah.billed || 0) - actualUmrahPaid, 0);
+
+    // Merge financial summary with actual calculated values
     const mergedFinancialSummary = {
       ...financialSummary,
       overall: {
         ...financialSummary.overall,
-        due: actualTotalDue, // Use actual agent totalDue from transactions
         paid: actualTotalDeposit, // Use actual agent totalDeposit from transactions
+        due: actualTotalDue, // Calculate: Bill - Paid
       },
       hajj: {
         ...financialSummary.hajj,
-        due: actualHajDue, // Use actual agent hajDue from transactions
+        paid: actualHajPaid, // Packages paid + Transactions paid
+        due: actualHajDue, // Calculate: Bill - Paid
       },
       umrah: {
         ...financialSummary.umrah,
-        due: actualUmrahDue, // Use actual agent umrahDue from transactions
+        paid: actualUmrahPaid, // Packages paid + Transactions paid
+        due: actualUmrahDue, // Calculate: Bill - Paid
       },
     };
 
@@ -18512,12 +18567,12 @@ app.get("/api/haj-umrah/agents/:id", async (req, res) => {
       totalDeposit: actualTotalDeposit, // Use actual agent totalDeposit
       totalReceived: actualTotalDeposit, // Use actual agent totalDeposit
       totalCollection: actualTotalDeposit, // Use actual agent totalDeposit
-      totalDue: actualTotalDue, // Use actual agent totalDue (updated by transactions)
+      totalDue: actualTotalDue, // Calculate: Bill - Paid
       totalAdvance: mergedFinancialSummary.overall.advance,
       totalProfit: mergedFinancialSummary.overall.profit,
       totalCostingPrice: mergedFinancialSummary.overall.costingPrice,
 
-      // Hajj summary - Use actual agent values for due
+      // Hajj summary - Use calculated paid and due (Bill - Paid)
       hajCustomers: mergedFinancialSummary.hajj.customers,
       hajjCustomers: mergedFinancialSummary.hajj.customers,
       totalHajjCustomers: mergedFinancialSummary.hajj.customers,
@@ -18526,26 +18581,26 @@ app.get("/api/haj-umrah/agents/:id", async (req, res) => {
       hajjBill: mergedFinancialSummary.hajj.billed,
       totalHajjBill: mergedFinancialSummary.hajj.billed,
       hajTotalBill: mergedFinancialSummary.hajj.billed,
-      hajPaid: mergedFinancialSummary.hajj.paid,
-      hajjPaid: mergedFinancialSummary.hajj.paid,
-      hajjDeposit: mergedFinancialSummary.hajj.paid,
-      hajDeposit: mergedFinancialSummary.hajj.paid,
-      totalHajjPaid: mergedFinancialSummary.hajj.paid,
-      hajDue: actualHajDue, // Use actual agent hajDue (updated by transactions)
+      hajPaid: actualHajPaid, // Packages paid + Transactions paid
+      hajjPaid: actualHajPaid, // Packages paid + Transactions paid
+      hajjDeposit: actualHajPaid, // Packages paid + Transactions paid
+      hajDeposit: actualHajPaid, // Packages paid + Transactions paid
+      totalHajjPaid: actualHajPaid, // Packages paid + Transactions paid
+      hajDue: actualHajDue, // Calculate: Bill - Paid
       hajAdvance: mergedFinancialSummary.hajj.advance,
       hajProfit: mergedFinancialSummary.hajj.profit,
       hajCostingPrice: mergedFinancialSummary.hajj.costingPrice,
 
-      // Umrah summary - Use actual agent values for due
+      // Umrah summary - Use calculated paid and due (Bill - Paid)
       umrahCustomers: mergedFinancialSummary.umrah.customers,
       totalUmrahCustomers: mergedFinancialSummary.umrah.customers,
       totalUmrahHaji: mergedFinancialSummary.umrah.customers,
       umrahBill: mergedFinancialSummary.umrah.billed,
       totalUmrahBill: mergedFinancialSummary.umrah.billed,
-      umrahPaid: mergedFinancialSummary.umrah.paid,
-      umrahDeposit: mergedFinancialSummary.umrah.paid,
-      totalUmrahPaid: mergedFinancialSummary.umrah.paid,
-      umrahDue: actualUmrahDue, // Use actual agent umrahDue (updated by transactions)
+      umrahPaid: actualUmrahPaid, // Packages paid + Transactions paid
+      umrahDeposit: actualUmrahPaid, // Packages paid + Transactions paid
+      totalUmrahPaid: actualUmrahPaid, // Packages paid + Transactions paid
+      umrahDue: actualUmrahDue, // Calculate: Bill - Paid
       umrahAdvance: mergedFinancialSummary.umrah.advance,
       umrahProfit: mergedFinancialSummary.umrah.profit,
       umrahCostingPrice: mergedFinancialSummary.umrah.costingPrice,
