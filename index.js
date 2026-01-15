@@ -13649,6 +13649,537 @@ app.delete("/loans/:loanId", async (req, res) => {
   }
 });
 
+// ============================================
+// GIVING LOANS - Separate CRUD Operations
+// ============================================
+
+// ✅ GET: List Giving Loans
+app.get("/loans/giving", async (req, res) => {
+  try {
+    const { status, branchId, page = 1, limit = 20, search } = req.query || {};
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+    
+    const filter = { 
+      isActive: { $ne: false },
+      loanDirection: 'giving'
+    };
+    
+    if (status && typeof status === 'string') {
+      filter.status = status;
+    }
+    if (branchId) {
+      filter.branchId = branchId;
+    }
+    if (search) {
+      const searchRegex = { $regex: String(search), $options: 'i' };
+      filter.$or = [
+        { loanId: searchRegex },
+        { fullName: searchRegex },
+        { firstName: searchRegex },
+        { lastName: searchRegex },
+        { contactPhone: searchRegex },
+        { nidNumber: searchRegex }
+      ];
+    }
+
+    const [results, total] = await Promise.all([
+      loans.find(filter)
+        .sort({ createdAt: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .toArray(),
+      loans.countDocuments(filter)
+    ]);
+
+    return res.json({ 
+      success: true, 
+      loans: results,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('List giving loans error:', error);
+    return res.status(500).json({ error: true, message: 'Failed to fetch giving loans' });
+  }
+});
+
+// ✅ GET: Single Giving Loan by loanId
+app.get("/loans/giving/:loanId", async (req, res) => {
+  try {
+    const { loanId } = req.params;
+    const condition = ObjectId.isValid(loanId)
+      ? { $or: [{ loanId: String(loanId) }, { _id: new ObjectId(loanId) }], isActive: { $ne: false }, loanDirection: 'giving' }
+      : { loanId: String(loanId), isActive: { $ne: false }, loanDirection: 'giving' };
+    
+    const loan = await loans.findOne(condition);
+    if (!loan) {
+      return res.status(404).json({ error: true, message: 'Giving loan not found' });
+    }
+
+    // Compute up-to-date amounts
+    let totalAmount = Number(loan.totalAmount || 0) || 0;
+    let paidAmount = Number(loan.paidAmount || 0) || 0;
+    let totalDue = Number(loan.totalDue || 0) || 0;
+
+    // If amounts are missing, derive from transactions
+    if (totalAmount === 0 && paidAmount === 0 && totalDue === 0) {
+      try {
+        const partyIdOptions = [String(loan.loanId)].filter(Boolean);
+        if (loan._id) partyIdOptions.push(String(loan._id));
+        const agg = await transactions.aggregate([
+          {
+            $match: {
+              isActive: { $ne: false },
+              status: 'completed',
+              partyType: 'loan',
+              partyId: { $in: partyIdOptions }
+            }
+          },
+          {
+            $group: {
+              _id: null,
+              sumDebit: {
+                $sum: {
+                  $cond: [{ $eq: ["$transactionType", 'debit'] }, "$amount", 0]
+                }
+              },
+              sumCredit: {
+                $sum: {
+                  $cond: [{ $eq: ["$transactionType", 'credit'] }, "$amount", 0]
+                }
+              }
+            }
+          }
+        ]).toArray();
+        const rec = agg && agg[0];
+        if (rec) {
+          // For giving loans: debit = principal out (totalAmount), credit = repayment (paidAmount)
+          totalAmount = Number(rec.sumDebit || 0);
+          paidAmount = Number(rec.sumCredit || 0);
+        }
+      } catch (_) {}
+    }
+
+    // Clamp and compute due
+    if (!Number.isFinite(totalAmount) || totalAmount < 0) totalAmount = 0;
+    if (!Number.isFinite(paidAmount) || paidAmount < 0) paidAmount = 0;
+    if (paidAmount > totalAmount) paidAmount = totalAmount;
+    totalDue = Math.max(0, totalAmount - paidAmount);
+
+    return res.json({
+      success: true,
+      loan: {
+        ...loan,
+        totalAmount,
+        paidAmount,
+        totalDue
+      }
+    });
+  } catch (error) {
+    console.error('Get giving loan error:', error);
+    return res.status(500).json({ error: true, message: 'Failed to fetch giving loan' });
+  }
+});
+
+// ✅ PUT: Update Giving Loan by loanId
+app.put("/loans/giving/:loanId", async (req, res) => {
+  try {
+    const { loanId } = req.params;
+    const body = req.body || {};
+
+    const condition = ObjectId.isValid(loanId)
+      ? { $or: [{ loanId: String(loanId) }, { _id: new ObjectId(loanId) }], isActive: { $ne: false }, loanDirection: 'giving' }
+      : { loanId: String(loanId), isActive: { $ne: false }, loanDirection: 'giving' };
+
+    const existing = await loans.findOne(condition);
+    if (!existing) {
+      return res.status(404).json({ error: true, message: "Giving loan not found" });
+    }
+
+    const allowedString = (v) => (v === undefined || v === null) ? undefined : String(v).trim();
+
+    const update = { $set: { updatedAt: new Date() } };
+
+    // Personal
+    const firstName = allowedString(body.firstName);
+    const lastName = allowedString(body.lastName);
+    if (firstName !== undefined) update.$set.firstName = firstName;
+    if (lastName !== undefined) update.$set.lastName = lastName;
+    if (firstName !== undefined || lastName !== undefined) {
+      const fn = firstName !== undefined ? firstName : existing.firstName || '';
+      const ln = lastName !== undefined ? lastName : existing.lastName || '';
+      update.$set.fullName = `${fn || ''} ${ln || ''}`.trim();
+    }
+    
+    const fields = [
+      'fatherName','motherName','dateOfBirth','gender','maritalStatus','nidNumber',
+      'nidFrontImage','nidBackImage','profilePhoto',
+      'presentAddress','permanentAddress','district','upazila','postCode',
+      'contactPerson','contactPhone','contactEmail','emergencyContact','emergencyPhone',
+      'notes',
+      'commencementDate', 'completionDate', 'commitmentDate',
+      'status','branchId','createdBy'
+    ];
+    for (const key of fields) {
+      const val = allowedString(body[key]);
+      if (val !== undefined) update.$set[key] = val;
+    }
+
+    if (typeof body.isActive === 'boolean') {
+      update.$set.isActive = body.isActive;
+    }
+
+    const result = await loans.findOneAndUpdate(
+      { _id: existing._id },
+      update,
+      { returnDocument: 'after' }
+    );
+    const updated = result && (result.value || result);
+
+    // Compute live totals
+    let totalAmount = Number(updated.totalAmount || 0) || 0;
+    let paidAmount = Number(updated.paidAmount || 0) || 0;
+    let totalDue = Number(updated.totalDue || 0) || 0;
+
+    if (totalAmount === 0 && paidAmount === 0 && totalDue === 0) {
+      try {
+        const partyIdOptions = [String(updated.loanId)].filter(Boolean);
+        if (updated._id) partyIdOptions.push(String(updated._id));
+        const agg = await transactions.aggregate([
+          { $match: { isActive: { $ne: false }, status: 'completed', partyType: 'loan', partyId: { $in: partyIdOptions } } },
+          { $group: {
+              _id: null,
+              sumDebit: { $sum: { $cond: [{ $eq: ["$transactionType", 'debit'] }, "$amount", 0] } },
+              sumCredit:{ $sum: { $cond: [{ $eq: ["$transactionType", 'credit'] }, "$amount", 0] } }
+          } }
+        ]).toArray();
+        const rec = agg && agg[0];
+        if (rec) {
+          totalAmount = Number(rec.sumDebit || 0);
+          paidAmount = Number(rec.sumCredit || 0);
+        }
+      } catch (_) {}
+    }
+
+    if (!Number.isFinite(totalAmount) || totalAmount < 0) totalAmount = 0;
+    if (!Number.isFinite(paidAmount) || paidAmount < 0) paidAmount = 0;
+    if (paidAmount > totalAmount) paidAmount = totalAmount;
+    totalDue = Math.max(0, totalAmount - paidAmount);
+
+    return res.json({ success: true, message: "Giving loan updated successfully", loan: { ...updated, totalAmount, paidAmount, totalDue } });
+  } catch (error) {
+    console.error('Update giving loan error:', error);
+    return res.status(500).json({ error: true, message: 'Failed to update giving loan' });
+  }
+});
+
+// ✅ DELETE: Delete Giving Loan by loanId (soft delete)
+app.delete("/loans/giving/:loanId", async (req, res) => {
+  try {
+    const { loanId } = req.params;
+
+    const condition = ObjectId.isValid(loanId)
+      ? { $or: [{ loanId: String(loanId) }, { _id: new ObjectId(loanId) }], isActive: { $ne: false }, loanDirection: 'giving' }
+      : { loanId: String(loanId), isActive: { $ne: false }, loanDirection: 'giving' };
+
+    const existing = await loans.findOne(condition);
+    if (!existing) {
+      return res.status(404).json({ error: true, message: "Giving loan not found" });
+    }
+
+    const result = await loans.updateOne(
+      { _id: existing._id },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: true, message: "Giving loan not found" });
+    }
+
+    return res.json({ success: true, message: "Giving loan deleted successfully" });
+  } catch (error) {
+    console.error('Delete giving loan error:', error);
+    return res.status(500).json({ error: true, message: 'Failed to delete giving loan' });
+  }
+});
+
+// ============================================
+// RECEIVING LOANS - Separate CRUD Operations
+// ============================================
+
+// ✅ GET: List Receiving Loans
+app.get("/loans/receiving", async (req, res) => {
+  try {
+    const { status, branchId, page = 1, limit = 20, search } = req.query || {};
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+    
+    const filter = { 
+      isActive: { $ne: false },
+      loanDirection: 'receiving'
+    };
+    
+    if (status && typeof status === 'string') {
+      filter.status = status;
+    }
+    if (branchId) {
+      filter.branchId = branchId;
+    }
+    if (search) {
+      const searchRegex = { $regex: String(search), $options: 'i' };
+      filter.$or = [
+        { loanId: searchRegex },
+        { fullName: searchRegex },
+        { firstName: searchRegex },
+        { lastName: searchRegex },
+        { contactPhone: searchRegex },
+        { nidNumber: searchRegex },
+        { businessName: searchRegex }
+      ];
+    }
+
+    const [results, total] = await Promise.all([
+      loans.find(filter)
+        .sort({ createdAt: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .toArray(),
+      loans.countDocuments(filter)
+    ]);
+
+    return res.json({ 
+      success: true, 
+      loans: results,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    console.error('List receiving loans error:', error);
+    return res.status(500).json({ error: true, message: 'Failed to fetch receiving loans' });
+  }
+});
+
+// ✅ GET: Single Receiving Loan by loanId
+app.get("/loans/receiving/:loanId", async (req, res) => {
+  try {
+    const { loanId } = req.params;
+    const condition = ObjectId.isValid(loanId)
+      ? { $or: [{ loanId: String(loanId) }, { _id: new ObjectId(loanId) }], isActive: { $ne: false }, loanDirection: 'receiving' }
+      : { loanId: String(loanId), isActive: { $ne: false }, loanDirection: 'receiving' };
+    
+    const loan = await loans.findOne(condition);
+    if (!loan) {
+      return res.status(404).json({ error: true, message: 'Receiving loan not found' });
+    }
+
+    // Compute up-to-date amounts
+    let totalAmount = Number(loan.totalAmount || 0) || 0;
+    let paidAmount = Number(loan.paidAmount || 0) || 0;
+    let totalDue = Number(loan.totalDue || 0) || 0;
+
+    // If amounts are missing, derive from transactions
+    if (totalAmount === 0 && paidAmount === 0 && totalDue === 0) {
+      try {
+        const partyIdOptions = [String(loan.loanId)].filter(Boolean);
+        if (loan._id) partyIdOptions.push(String(loan._id));
+        const agg = await transactions.aggregate([
+          {
+            $match: {
+              isActive: { $ne: false },
+              status: 'completed',
+              partyType: 'loan',
+              partyId: { $in: partyIdOptions }
+            }
+          },
+          {
+            $group: {
+              _id: null,
+              sumDebit: {
+                $sum: {
+                  $cond: [{ $eq: ["$transactionType", 'debit'] }, "$amount", 0]
+                }
+              },
+              sumCredit: {
+                $sum: {
+                  $cond: [{ $eq: ["$transactionType", 'credit'] }, "$amount", 0]
+                }
+              }
+            }
+          }
+        ]).toArray();
+        const rec = agg && agg[0];
+        if (rec) {
+          // For receiving loans: credit = principal in (totalAmount), debit = repayment (paidAmount)
+          totalAmount = Number(rec.sumCredit || 0);
+          paidAmount = Number(rec.sumDebit || 0);
+        }
+      } catch (_) {}
+    }
+
+    // Clamp and compute due
+    if (!Number.isFinite(totalAmount) || totalAmount < 0) totalAmount = 0;
+    if (!Number.isFinite(paidAmount) || paidAmount < 0) paidAmount = 0;
+    if (paidAmount > totalAmount) paidAmount = totalAmount;
+    totalDue = Math.max(0, totalAmount - paidAmount);
+
+    return res.json({
+      success: true,
+      loan: {
+        ...loan,
+        totalAmount,
+        paidAmount,
+        totalDue
+      }
+    });
+  } catch (error) {
+    console.error('Get receiving loan error:', error);
+    return res.status(500).json({ error: true, message: 'Failed to fetch receiving loan' });
+  }
+});
+
+// ✅ PUT: Update Receiving Loan by loanId
+app.put("/loans/receiving/:loanId", async (req, res) => {
+  try {
+    const { loanId } = req.params;
+    const body = req.body || {};
+
+    const condition = ObjectId.isValid(loanId)
+      ? { $or: [{ loanId: String(loanId) }, { _id: new ObjectId(loanId) }], isActive: { $ne: false }, loanDirection: 'receiving' }
+      : { loanId: String(loanId), isActive: { $ne: false }, loanDirection: 'receiving' };
+
+    const existing = await loans.findOne(condition);
+    if (!existing) {
+      return res.status(404).json({ error: true, message: "Receiving loan not found" });
+    }
+
+    const allowedString = (v) => (v === undefined || v === null) ? undefined : String(v).trim();
+
+    const update = { $set: { updatedAt: new Date() } };
+
+    // Personal
+    const firstName = allowedString(body.firstName);
+    const lastName = allowedString(body.lastName);
+    if (firstName !== undefined) update.$set.firstName = firstName;
+    if (lastName !== undefined) update.$set.lastName = lastName;
+    if (firstName !== undefined || lastName !== undefined) {
+      const fn = firstName !== undefined ? firstName : existing.firstName || '';
+      const ln = lastName !== undefined ? lastName : existing.lastName || '';
+      update.$set.fullName = `${fn || ''} ${ln || ''}`.trim();
+    }
+    
+    const fields = [
+      'fatherName','motherName','dateOfBirth','gender','maritalStatus','nidNumber',
+      'nidFrontImage','nidBackImage','profilePhoto',
+      'presentAddress','permanentAddress','district','upazila','postCode',
+      'businessName','businessType','businessAddress','businessRegistration','businessExperience',
+      'contactPerson','contactPhone','contactEmail','emergencyContact','emergencyPhone',
+      'notes',
+      'commencementDate', 'completionDate', 'commitmentDate',
+      'status','branchId','createdBy'
+    ];
+    for (const key of fields) {
+      const val = allowedString(body[key]);
+      if (val !== undefined) update.$set[key] = val;
+    }
+
+    if (typeof body.isActive === 'boolean') {
+      update.$set.isActive = body.isActive;
+    }
+
+    const result = await loans.findOneAndUpdate(
+      { _id: existing._id },
+      update,
+      { returnDocument: 'after' }
+    );
+    const updated = result && (result.value || result);
+
+    // Compute live totals
+    let totalAmount = Number(updated.totalAmount || 0) || 0;
+    let paidAmount = Number(updated.paidAmount || 0) || 0;
+    let totalDue = Number(updated.totalDue || 0) || 0;
+
+    if (totalAmount === 0 && paidAmount === 0 && totalDue === 0) {
+      try {
+        const partyIdOptions = [String(updated.loanId)].filter(Boolean);
+        if (updated._id) partyIdOptions.push(String(updated._id));
+        const agg = await transactions.aggregate([
+          { $match: { isActive: { $ne: false }, status: 'completed', partyType: 'loan', partyId: { $in: partyIdOptions } } },
+          { $group: {
+              _id: null,
+              sumDebit: { $sum: { $cond: [{ $eq: ["$transactionType", 'debit'] }, "$amount", 0] } },
+              sumCredit:{ $sum: { $cond: [{ $eq: ["$transactionType", 'credit'] }, "$amount", 0] } }
+          } }
+        ]).toArray();
+        const rec = agg && agg[0];
+        if (rec) {
+          // For receiving loans: credit = principal in (totalAmount), debit = repayment (paidAmount)
+          totalAmount = Number(rec.sumCredit || 0);
+          paidAmount = Number(rec.sumDebit || 0);
+        }
+      } catch (_) {}
+    }
+
+    if (!Number.isFinite(totalAmount) || totalAmount < 0) totalAmount = 0;
+    if (!Number.isFinite(paidAmount) || paidAmount < 0) paidAmount = 0;
+    if (paidAmount > totalAmount) paidAmount = totalAmount;
+    totalDue = Math.max(0, totalAmount - paidAmount);
+
+    return res.json({ success: true, message: "Receiving loan updated successfully", loan: { ...updated, totalAmount, paidAmount, totalDue } });
+  } catch (error) {
+    console.error('Update receiving loan error:', error);
+    return res.status(500).json({ error: true, message: 'Failed to update receiving loan' });
+  }
+});
+
+// ✅ DELETE: Delete Receiving Loan by loanId (soft delete)
+app.delete("/loans/receiving/:loanId", async (req, res) => {
+  try {
+    const { loanId } = req.params;
+
+    const condition = ObjectId.isValid(loanId)
+      ? { $or: [{ loanId: String(loanId) }, { _id: new ObjectId(loanId) }], isActive: { $ne: false }, loanDirection: 'receiving' }
+      : { loanId: String(loanId), isActive: { $ne: false }, loanDirection: 'receiving' };
+
+    const existing = await loans.findOne(condition);
+    if (!existing) {
+      return res.status(404).json({ error: true, message: "Receiving loan not found" });
+    }
+
+    const result = await loans.updateOne(
+      { _id: existing._id },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: true, message: "Receiving loan not found" });
+    }
+
+    return res.json({ success: true, message: "Receiving loan deleted successfully" });
+  } catch (error) {
+    console.error('Delete receiving loan error:', error);
+    return res.status(500).json({ error: true, message: 'Failed to delete receiving loan' });
+  }
+});
+
 // ✅ GET: Loan dashboard summary (volume + profit/loss)
 app.get("/loans/dashboard/summary", async (req, res) => {
   try {
@@ -13706,7 +14237,7 @@ app.get("/loans/dashboard/summary", async (req, res) => {
       }
     }
 
-    // Base totals from loan profiles
+    // Base totals from loan profiles - Separate for Giving and Receiving
     const baseAgg = await loans.aggregate([
       { $match: loanFilter },
       {
@@ -13724,6 +14255,64 @@ app.get("/loans/dashboard/summary", async (req, res) => {
       }
     ]).toArray();
     const base = baseAgg[0] || {
+      totalLoans: 0,
+      totalAmount: 0,
+      paidAmount: 0,
+      totalDue: 0,
+      active: 0,
+      pending: 0,
+      closed: 0,
+      rejected: 0
+    };
+
+    // Separate totals for Giving Loans
+    const givingFilter = { ...loanFilter, loanDirection: 'giving' };
+    const givingAgg = await loans.aggregate([
+      { $match: givingFilter },
+      {
+        $group: {
+          _id: null,
+          totalLoans: { $sum: 1 },
+          totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
+          paidAmount: { $sum: { $ifNull: ["$paidAmount", 0] } },
+          totalDue: { $sum: { $ifNull: ["$totalDue", 0] } },
+          active: { $sum: { $cond: [{ $eq: ["$status", "Active"] }, 1, 0] } },
+          pending: { $sum: { $cond: [{ $eq: ["$status", "Pending"] }, 1, 0] } },
+          closed: { $sum: { $cond: [{ $eq: ["$status", "Closed"] }, 1, 0] } },
+          rejected: { $sum: { $cond: [{ $eq: ["$status", "Rejected"] }, 1, 0] } }
+        }
+      }
+    ]).toArray();
+    const givingBase = givingAgg[0] || {
+      totalLoans: 0,
+      totalAmount: 0,
+      paidAmount: 0,
+      totalDue: 0,
+      active: 0,
+      pending: 0,
+      closed: 0,
+      rejected: 0
+    };
+
+    // Separate totals for Receiving Loans
+    const receivingFilter = { ...loanFilter, loanDirection: 'receiving' };
+    const receivingAgg = await loans.aggregate([
+      { $match: receivingFilter },
+      {
+        $group: {
+          _id: null,
+          totalLoans: { $sum: 1 },
+          totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
+          paidAmount: { $sum: { $ifNull: ["$paidAmount", 0] } },
+          totalDue: { $sum: { $ifNull: ["$totalDue", 0] } },
+          active: { $sum: { $cond: [{ $eq: ["$status", "Active"] }, 1, 0] } },
+          pending: { $sum: { $cond: [{ $eq: ["$status", "Pending"] }, 1, 0] } },
+          closed: { $sum: { $cond: [{ $eq: ["$status", "Closed"] }, 1, 0] } },
+          rejected: { $sum: { $cond: [{ $eq: ["$status", "Rejected"] }, 1, 0] } }
+        }
+      }
+    ]).toArray();
+    const receivingBase = receivingAgg[0] || {
       totalLoans: 0,
       totalAmount: 0,
       paidAmount: 0,
@@ -13893,6 +14482,7 @@ app.get("/loans/dashboard/summary", async (req, res) => {
     }));
 
     const response = {
+      // Overall totals (combined)
       totals: {
         totalLoans: base.totalLoans,
         active: base.active,
@@ -13900,21 +14490,52 @@ app.get("/loans/dashboard/summary", async (req, res) => {
         closed: base.closed,
         rejected: base.rejected
       },
+      // Overall financial (combined)
       financial: {
         totalAmount: Number(base.totalAmount || 0),
         paidAmount: Number(base.paidAmount || 0),
         totalDue: Number(base.totalDue || 0),
-        // Profit/Loss based on Net Cash Flow
         netCashFlow: netCashFlow,
-        // Detailed cash flow
         cashIn: totalCashIn,
-        cashOut: totalCashOut,
-        // Breakdown
-        givingDisbursed,
-        givingRepaid,
-        receivingTaken,
-        receivingRepaid
+        cashOut: totalCashOut
       },
+      // Giving Loans - Separate Stats
+      giving: {
+        totals: {
+          totalLoans: givingBase.totalLoans,
+          active: givingBase.active,
+          pending: givingBase.pending,
+          closed: givingBase.closed,
+          rejected: givingBase.rejected
+        },
+        financial: {
+          totalAmount: Number(givingBase.totalAmount || 0),
+          paidAmount: Number(givingBase.paidAmount || 0),
+          totalDue: Number(givingBase.totalDue || 0),
+          disbursed: Number(givingDisbursed || 0), // We gave out (Debit)
+          repaid: Number(givingRepaid || 0), // We got back (Credit)
+          netCashFlow: Number(givingRepaid || 0) - Number(givingDisbursed || 0) // Repaid - Disbursed
+        }
+      },
+      // Receiving Loans - Separate Stats
+      receiving: {
+        totals: {
+          totalLoans: receivingBase.totalLoans,
+          active: receivingBase.active,
+          pending: receivingBase.pending,
+          closed: receivingBase.closed,
+          rejected: receivingBase.rejected
+        },
+        financial: {
+          totalAmount: Number(receivingBase.totalAmount || 0),
+          paidAmount: Number(receivingBase.paidAmount || 0),
+          totalDue: Number(receivingBase.totalDue || 0),
+          taken: Number(receivingTaken || 0), // We took loan (Credit)
+          repaid: Number(receivingRepaid || 0), // We paid back (Debit)
+          netCashFlow: Number(receivingTaken || 0) - Number(receivingRepaid || 0) // Taken - Repaid
+        }
+      },
+      // Direction breakdown (for backward compatibility)
       directionBreakdown: directionBreakdown.map((d) => ({
         loanDirection: d._id || 'unknown',
         count: d.count || 0,
@@ -13922,12 +14543,14 @@ app.get("/loans/dashboard/summary", async (req, res) => {
         paidAmount: Number(d.paidAmount || 0),
         totalDue: Number(d.totalDue || 0)
       })),
+      // Status breakdown
       statusBreakdown: statusBreakdown.map((s) => ({
         status: s._id || 'unknown',
         count: s.count || 0,
         totalAmount: Number(s.totalAmount || 0),
         totalDue: Number(s.totalDue || 0)
       })),
+      // Transactions summary
       transactions: {
         totalTransactions: txTotals.totalTransactions || 0,
         totalDebit: Number(txTotals.totalDebit || 0),
