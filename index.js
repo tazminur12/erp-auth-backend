@@ -13270,76 +13270,7 @@ app.delete("/api/calvings/:id", async (req, res) => {
 
 // Loan Routes      ////
 
-// ✅ POST: Create Loan (Giving) – stores in 'loans' collection and returns generated id
-app.post("/loans/giving", async (req, res) => {
-  try {
-    const body = req.body || {};
-    const firstName = (body.firstName || '').trim();
-    const lastName = (body.lastName || '').trim();
-    if (!firstName || !lastName) {
-      return res.status(400).json({ error: true, message: "firstName and lastName are required" });
-    }
 
-    const loanDirection = 'giving';
-    const loanId = await generateLoanId(db, loanDirection);
-    const fullName = `${firstName} ${lastName}`.trim();
-
-    const loanDoc = {
-      loanId,
-      loanDirection, // 'giving'
-      status: 'Active',
-
-      // Personal
-      firstName,
-      lastName,
-      fullName,
-      fatherName: body.fatherName || '',
-      motherName: body.motherName || '',
-      dateOfBirth: body.dateOfBirth || '',
-      gender: body.gender || '',
-      maritalStatus: body.maritalStatus || '',
-      nidNumber: body.nidNumber || '',
-      nidFrontImage: body.nidFrontImage || '',
-      nidBackImage: body.nidBackImage || '',
-      profilePhoto: body.profilePhoto || '',
-
-      // Address
-      presentAddress: body.presentAddress || '',
-      permanentAddress: body.permanentAddress || '',
-      district: body.district || '',
-      upazila: body.upazila || '',
-      postCode: body.postCode || '',
-
-      // Contacts
-      contactPerson: body.contactPerson || '',
-      contactPhone: body.contactPhone || '',
-      contactEmail: body.contactEmail || '',
-      emergencyContact: body.emergencyContact || '',
-      emergencyPhone: body.emergencyPhone || '',
-
-      // Notes
-      notes: body.notes || '',
-
-      // Meta
-      isActive: true,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      createdBy: body.createdBy || 'unknown_user',
-      branchId: body.branchId || 'main_branch',
-
-      // Dates
-      commencementDate: body.commencementDate || new Date().toISOString().split('T')[0], // Default to today
-      completionDate: body.completionDate || '',
-      commitmentDate: body.commitmentDate || ''
-    };
-
-    await loans.insertOne(loanDoc);
-    return res.status(201).json({ success: true, id: loanId, loan: loanDoc });
-  } catch (error) {
-    console.error('Create giving loan error:', error);
-    return res.status(500).json({ error: true, message: 'Failed to create giving loan' });
-  }
-});
 
 // ✅ POST: Create Loan (Receiving) – stores in 'loans' collection and returns generated id
 app.post("/loans/receiving", async (req, res) => {
@@ -13416,236 +13347,6 @@ app.post("/loans/receiving", async (req, res) => {
   } catch (error) {
     console.error('Create receiving loan error:', error);
     return res.status(500).json({ error: true, message: 'Failed to create receiving loan' });
-  }
-});
-
-// ✅ GET: List Loans (optional filters: loanDirection, status)
-app.get("/loans", async (req, res) => {
-  try {
-    const { loanDirection, status } = req.query || {};
-    const filter = { isActive: { $ne: false } };
-    if (loanDirection && typeof loanDirection === 'string') {
-      filter.loanDirection = loanDirection.toLowerCase();
-    }
-    if (status && typeof status === 'string') {
-      filter.status = status;
-    }
-
-    const results = await loans
-      .find(filter)
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    return res.json({ success: true, loans: results });
-  } catch (error) {
-    console.error('List loans error:', error);
-    return res.status(500).json({ error: true, message: 'Failed to fetch loans' });
-  }
-});
-
-// ✅ GET: Single Loan by loanId
-app.get("/loans/:loanId", async (req, res) => {
-  try {
-    const { loanId } = req.params;
-    const loan = await loans.findOne({ loanId, isActive: { $ne: false } });
-    if (!loan) {
-      return res.status(404).json({ error: true, message: 'Loan not found' });
-    }
-
-    // Compute up-to-date amounts
-    let totalAmount = Number(loan.totalAmount || 0) || 0;
-    let paidAmount = Number(loan.paidAmount || 0) || 0;
-    let totalDue = Number(loan.totalDue || 0) || 0;
-
-    // If amounts are missing, derive from transactions
-    if (totalAmount === 0 && paidAmount === 0 && totalDue === 0) {
-      try {
-        const partyIdOptions = [String(loan.loanId)].filter(Boolean);
-        if (loan._id) partyIdOptions.push(String(loan._id));
-        const agg = await transactions.aggregate([
-          {
-            $match: {
-              isActive: { $ne: false },
-              status: 'completed',
-              partyType: 'loan',
-              partyId: { $in: partyIdOptions }
-            }
-          },
-          {
-            $group: {
-              _id: null,
-              sumDebit: {
-                $sum: {
-                  $cond: [{ $eq: ["$transactionType", 'debit'] }, "$amount", 0]
-                }
-              },
-              sumCredit: {
-                $sum: {
-                  $cond: [{ $eq: ["$transactionType", 'credit'] }, "$amount", 0]
-                }
-              }
-            }
-          }
-        ]).toArray();
-        const rec = agg && agg[0];
-        if (rec) {
-          totalAmount = Number(rec.sumDebit || 0);
-          paidAmount = Number(rec.sumCredit || 0);
-        }
-      } catch (_) {}
-    }
-
-    // Clamp and compute due
-    if (!Number.isFinite(totalAmount) || totalAmount < 0) totalAmount = 0;
-    if (!Number.isFinite(paidAmount) || paidAmount < 0) paidAmount = 0;
-    if (paidAmount > totalAmount) paidAmount = totalAmount;
-    totalDue = Math.max(0, totalAmount - paidAmount);
-
-    return res.json({
-      success: true,
-      loan: {
-        ...loan,
-        totalAmount,
-        paidAmount,
-        totalDue
-      }
-    });
-  } catch (error) {
-    console.error('Get loan error:', error);
-    return res.status(500).json({ error: true, message: 'Failed to fetch loan' });
-  }
-});
-
-// ✅ PUT: Update Loan by loanId (or _id)
-app.put("/loans/:loanId", async (req, res) => {
-  try {
-    const { loanId } = req.params;
-    const body = req.body || {};
-
-    const condition = ObjectId.isValid(loanId)
-      ? { $or: [{ loanId: String(loanId) }, { _id: new ObjectId(loanId) }], isActive: { $ne: false } }
-      : { loanId: String(loanId), isActive: { $ne: false } };
-
-    const existing = await loans.findOne(condition);
-    if (!existing) {
-      return res.status(404).json({ error: true, message: "Loan not found" });
-    }
-
-    const allowedString = (v) => (v === undefined || v === null) ? undefined : String(v).trim();
-
-    const update = { $set: { updatedAt: new Date() } };
-
-    // Personal
-    const firstName = allowedString(body.firstName);
-    const lastName = allowedString(body.lastName);
-    if (firstName !== undefined) update.$set.firstName = firstName;
-    if (lastName !== undefined) update.$set.lastName = lastName;
-    // fullName derived if any name changed
-    if (firstName !== undefined || lastName !== undefined) {
-      const fn = firstName !== undefined ? firstName : existing.firstName || '';
-      const ln = lastName !== undefined ? lastName : existing.lastName || '';
-      update.$set.fullName = `${fn || ''} ${ln || ''}`.trim();
-    }
-    const fields = [
-      'fatherName','motherName','dateOfBirth','gender','maritalStatus','nidNumber',
-      'nidFrontImage','nidBackImage','profilePhoto',
-      'presentAddress','permanentAddress','district','upazila','postCode',
-      'contactPerson','contactPhone','contactEmail','emergencyContact','emergencyPhone',
-      'notes',
-      // Receiving/business fields
-      'businessName','businessType','businessAddress','businessRegistration','businessExperience',
-      // Dates
-      'commencementDate', 'completionDate', 'commitmentDate',
-      // Meta edits
-      'status','branchId','createdBy'
-    ];
-    for (const key of fields) {
-      const val = allowedString(body[key]);
-      if (val !== undefined) update.$set[key] = val;
-    }
-
-    // Optional: isActive boolean toggle
-    if (typeof body.isActive === 'boolean') {
-      update.$set.isActive = body.isActive;
-    }
-
-    const result = await loans.findOneAndUpdate(
-      { _id: existing._id },
-      update,
-      { returnDocument: 'after' }
-    );
-    const updated = result && (result.value || result);
-
-    // Compute live totals similar to GET
-    let totalAmount = Number(updated.totalAmount || 0) || 0;
-    let paidAmount = Number(updated.paidAmount || 0) || 0;
-    let totalDue = Number(updated.totalDue || 0) || 0;
-
-    if (totalAmount === 0 && paidAmount === 0 && totalDue === 0) {
-      try {
-        const partyIdOptions = [String(updated.loanId)].filter(Boolean);
-        if (updated._id) partyIdOptions.push(String(updated._id));
-        const agg = await transactions.aggregate([
-          { $match: { isActive: { $ne: false }, status: 'completed', partyType: 'loan', partyId: { $in: partyIdOptions } } },
-          { $group: {
-              _id: null,
-              sumDebit: { $sum: { $cond: [{ $eq: ["$transactionType", 'debit'] }, "$amount", 0] } },
-              sumCredit:{ $sum: { $cond: [{ $eq: ["$transactionType", 'credit'] }, "$amount", 0] } }
-          } }
-        ]).toArray();
-        const rec = agg && agg[0];
-        if (rec) {
-          totalAmount = Number(rec.sumDebit || 0);
-          paidAmount = Number(rec.sumCredit || 0);
-        }
-      } catch (_) {}
-    }
-
-    if (!Number.isFinite(totalAmount) || totalAmount < 0) totalAmount = 0;
-    if (!Number.isFinite(paidAmount) || paidAmount < 0) paidAmount = 0;
-    if (paidAmount > totalAmount) paidAmount = totalAmount;
-    totalDue = Math.max(0, totalAmount - paidAmount);
-
-    return res.json({ success: true, message: "Loan updated successfully", loan: { ...updated, totalAmount, paidAmount, totalDue } });
-  } catch (error) {
-    console.error('Update loan error:', error);
-    return res.status(500).json({ error: true, message: 'Failed to update loan' });
-  }
-});
-
-// ✅ DELETE: Delete Loan by loanId (soft delete)
-app.delete("/loans/:loanId", async (req, res) => {
-  try {
-    const { loanId } = req.params;
-
-    const condition = ObjectId.isValid(loanId)
-      ? { $or: [{ loanId: String(loanId) }, { _id: new ObjectId(loanId) }], isActive: { $ne: false } }
-      : { loanId: String(loanId), isActive: { $ne: false } };
-
-    const existing = await loans.findOne(condition);
-    if (!existing) {
-      return res.status(404).json({ error: true, message: "Loan not found" });
-    }
-
-    // Soft delete (set isActive to false)
-    const result = await loans.updateOne(
-      { _id: existing._id },
-      {
-        $set: {
-          isActive: false,
-          updatedAt: new Date()
-        }
-      }
-    );
-
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ error: true, message: "Loan not found" });
-    }
-
-    return res.json({ success: true, message: "Loan deleted successfully" });
-  } catch (error) {
-    console.error('Delete loan error:', error);
-    return res.status(500).json({ error: true, message: 'Failed to delete loan' });
   }
 });
 
@@ -13917,6 +13618,76 @@ app.delete("/loans/giving/:loanId", async (req, res) => {
 // RECEIVING LOANS - Separate CRUD Operations
 // ============================================
 
+// ✅ POST: Create Loan (Giving) – stores in 'loans' collection and returns generated id
+app.post("/loans/giving", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const firstName = (body.firstName || '').trim();
+    const lastName = (body.lastName || '').trim();
+    if (!firstName || !lastName) {
+      return res.status(400).json({ error: true, message: "firstName and lastName are required" });
+    }
+
+    const loanDirection = 'giving';
+    const loanId = await generateLoanId(db, loanDirection);
+    const fullName = `${firstName} ${lastName}`.trim();
+
+    const loanDoc = {
+      loanId,
+      loanDirection, // 'giving'
+      status: 'Active',
+
+      // Personal
+      firstName,
+      lastName,
+      fullName,
+      fatherName: body.fatherName || '',
+      motherName: body.motherName || '',
+      dateOfBirth: body.dateOfBirth || '',
+      gender: body.gender || '',
+      maritalStatus: body.maritalStatus || '',
+      nidNumber: body.nidNumber || '',
+      nidFrontImage: body.nidFrontImage || '',
+      nidBackImage: body.nidBackImage || '',
+      profilePhoto: body.profilePhoto || '',
+
+      // Address
+      presentAddress: body.presentAddress || '',
+      permanentAddress: body.permanentAddress || '',
+      district: body.district || '',
+      upazila: body.upazila || '',
+      postCode: body.postCode || '',
+
+      // Contacts
+      contactPerson: body.contactPerson || '',
+      contactPhone: body.contactPhone || '',
+      contactEmail: body.contactEmail || '',
+      emergencyContact: body.emergencyContact || '',
+      emergencyPhone: body.emergencyPhone || '',
+
+      // Notes
+      notes: body.notes || '',
+
+      // Meta
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      createdBy: body.createdBy || 'unknown_user',
+      branchId: body.branchId || 'main_branch',
+
+      // Dates
+      commencementDate: body.commencementDate || new Date().toISOString().split('T')[0], // Default to today
+      completionDate: body.completionDate || '',
+      commitmentDate: body.commitmentDate || ''
+    };
+
+    await loans.insertOne(loanDoc);
+    return res.status(201).json({ success: true, id: loanId, loan: loanDoc });
+  } catch (error) {
+    console.error('Create giving loan error:', error);
+    return res.status(500).json({ error: true, message: 'Failed to create giving loan' });
+  }
+});
 // ✅ GET: List Receiving Loans
 app.get("/loans/receiving", async (req, res) => {
   try {
