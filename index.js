@@ -18463,6 +18463,7 @@ app.get("/api/haj-umrah/agents/:id", async (req, res) => {
       if (agent.totalDue === undefined) updateDoc.totalDue = 0;
       if (agent.hajDue === undefined) updateDoc.hajDue = 0;
       if (agent.umrahDue === undefined) updateDoc.umrahDue = 0;
+      if (agent.totalDeposit === undefined) updateDoc.totalDeposit = 0;
       updateDoc.updatedAt = new Date();
 
       await agents.updateOne({ _id: new ObjectId(id) }, { $set: updateDoc });
@@ -18471,61 +18472,86 @@ app.get("/api/haj-umrah/agents/:id", async (req, res) => {
       console.log("✅ Agent migrated successfully");
     }
 
+    // Use agent's actual fields for due amounts and deposits (updated by transactions)
+    // Override financial summary with actual agent profile values
+    const actualTotalDue = Number(agent.totalDue || 0);
+    const actualHajDue = Number(agent.hajDue || 0);
+    const actualUmrahDue = Number(agent.umrahDue || 0);
+    const actualTotalDeposit = Number(agent.totalDeposit || 0);
+
+    // Merge financial summary with actual agent values
+    const mergedFinancialSummary = {
+      ...financialSummary,
+      overall: {
+        ...financialSummary.overall,
+        due: actualTotalDue, // Use actual agent totalDue from transactions
+        paid: actualTotalDeposit, // Use actual agent totalDeposit from transactions
+      },
+      hajj: {
+        ...financialSummary.hajj,
+        due: actualHajDue, // Use actual agent hajDue from transactions
+      },
+      umrah: {
+        ...financialSummary.umrah,
+        due: actualUmrahDue, // Use actual agent umrahDue from transactions
+      },
+    };
+
     // Add calculated financial summary to agent object
     // Frontend will use these values with pickNumberFromObject function
     const agentWithSummary = {
       ...agent,
-      // Overall summary
-      totalHaji: financialSummary.overall.customers,
-      totalCustomers: financialSummary.overall.customers,
-      totalBilled: financialSummary.overall.billed,
-      totalBill: financialSummary.overall.billed,
-      totalBillAmount: financialSummary.overall.billed,
-      totalRevenue: financialSummary.overall.billed,
-      totalPaid: financialSummary.overall.paid,
-      totalDeposit: financialSummary.overall.paid,
-      totalReceived: financialSummary.overall.paid,
-      totalCollection: financialSummary.overall.paid,
-      totalDue: financialSummary.overall.due,
-      totalAdvance: financialSummary.overall.advance,
-      totalProfit: financialSummary.overall.profit,
-      totalCostingPrice: financialSummary.overall.costingPrice,
+      // Overall summary - Use actual agent values for due and deposit
+      totalHaji: mergedFinancialSummary.overall.customers,
+      totalCustomers: mergedFinancialSummary.overall.customers,
+      totalBilled: mergedFinancialSummary.overall.billed,
+      totalBill: mergedFinancialSummary.overall.billed,
+      totalBillAmount: mergedFinancialSummary.overall.billed,
+      totalRevenue: mergedFinancialSummary.overall.billed,
+      totalPaid: actualTotalDeposit, // Use actual agent totalDeposit
+      totalDeposit: actualTotalDeposit, // Use actual agent totalDeposit
+      totalReceived: actualTotalDeposit, // Use actual agent totalDeposit
+      totalCollection: actualTotalDeposit, // Use actual agent totalDeposit
+      totalDue: actualTotalDue, // Use actual agent totalDue (updated by transactions)
+      totalAdvance: mergedFinancialSummary.overall.advance,
+      totalProfit: mergedFinancialSummary.overall.profit,
+      totalCostingPrice: mergedFinancialSummary.overall.costingPrice,
 
-      // Hajj summary
-      hajCustomers: financialSummary.hajj.customers,
-      hajjCustomers: financialSummary.hajj.customers,
-      totalHajjCustomers: financialSummary.hajj.customers,
-      totalHajCustomers: financialSummary.hajj.customers,
-      hajBill: financialSummary.hajj.billed,
-      hajjBill: financialSummary.hajj.billed,
-      totalHajjBill: financialSummary.hajj.billed,
-      hajTotalBill: financialSummary.hajj.billed,
-      hajPaid: financialSummary.hajj.paid,
-      hajjPaid: financialSummary.hajj.paid,
-      hajjDeposit: financialSummary.hajj.paid,
-      hajDeposit: financialSummary.hajj.paid,
-      totalHajjPaid: financialSummary.hajj.paid,
-      hajDue: financialSummary.hajj.due,
-      hajAdvance: financialSummary.hajj.advance,
-      hajProfit: financialSummary.hajj.profit,
-      hajCostingPrice: financialSummary.hajj.costingPrice,
+      // Hajj summary - Use actual agent values for due
+      hajCustomers: mergedFinancialSummary.hajj.customers,
+      hajjCustomers: mergedFinancialSummary.hajj.customers,
+      totalHajjCustomers: mergedFinancialSummary.hajj.customers,
+      totalHajCustomers: mergedFinancialSummary.hajj.customers,
+      hajBill: mergedFinancialSummary.hajj.billed,
+      hajjBill: mergedFinancialSummary.hajj.billed,
+      totalHajjBill: mergedFinancialSummary.hajj.billed,
+      hajTotalBill: mergedFinancialSummary.hajj.billed,
+      hajPaid: mergedFinancialSummary.hajj.paid,
+      hajjPaid: mergedFinancialSummary.hajj.paid,
+      hajjDeposit: mergedFinancialSummary.hajj.paid,
+      hajDeposit: mergedFinancialSummary.hajj.paid,
+      totalHajjPaid: mergedFinancialSummary.hajj.paid,
+      hajDue: actualHajDue, // Use actual agent hajDue (updated by transactions)
+      hajAdvance: mergedFinancialSummary.hajj.advance,
+      hajProfit: mergedFinancialSummary.hajj.profit,
+      hajCostingPrice: mergedFinancialSummary.hajj.costingPrice,
 
-      // Umrah summary
-      umrahCustomers: financialSummary.umrah.customers,
-      totalUmrahCustomers: financialSummary.umrah.customers,
-      totalUmrahHaji: financialSummary.umrah.customers,
-      umrahBill: financialSummary.umrah.billed,
-      totalUmrahBill: financialSummary.umrah.billed,
-      umrahPaid: financialSummary.umrah.paid,
-      umrahDeposit: financialSummary.umrah.paid,
-      totalUmrahPaid: financialSummary.umrah.paid,
-      umrahDue: financialSummary.umrah.due,
-      umrahAdvance: financialSummary.umrah.advance,
-      umrahProfit: financialSummary.umrah.profit,
-      umrahCostingPrice: financialSummary.umrah.costingPrice,
+      // Umrah summary - Use actual agent values for due
+      umrahCustomers: mergedFinancialSummary.umrah.customers,
+      totalUmrahCustomers: mergedFinancialSummary.umrah.customers,
+      totalUmrahHaji: mergedFinancialSummary.umrah.customers,
+      umrahBill: mergedFinancialSummary.umrah.billed,
+      totalUmrahBill: mergedFinancialSummary.umrah.billed,
+      umrahPaid: mergedFinancialSummary.umrah.paid,
+      umrahDeposit: mergedFinancialSummary.umrah.paid,
+      totalUmrahPaid: mergedFinancialSummary.umrah.paid,
+      umrahDue: actualUmrahDue, // Use actual agent umrahDue (updated by transactions)
+      umrahAdvance: mergedFinancialSummary.umrah.advance,
+      umrahProfit: mergedFinancialSummary.umrah.profit,
+      umrahCostingPrice: mergedFinancialSummary.umrah.costingPrice,
 
       // Include the full financial summary object for reference
-      financialSummary: financialSummary,
+      financialSummary: mergedFinancialSummary,
     };
 
     res.send({ success: true, data: agentWithSummary });
