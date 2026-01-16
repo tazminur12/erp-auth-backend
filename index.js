@@ -9129,39 +9129,123 @@ app.post("/vendors/bills", async (req, res) => {
       billNumber,
       totalAmount,
       amount,
+      tax,
+      discount,
+      description,
       paymentMethod,
       paymentStatus,
       dueDate,
+      notes,
       createdBy,
       branchId,
       createdAt,
+      // Air Ticket fields
+      tripType,
+      flightType,
+      bookingId,
+      gdsPnr,
+      airlinePnr,
+      airline,
+      origin,
+      destination,
+      flightDate,
+      returnDate,
+      segments,
+      agent,
+      purposeType,
+      adultCount,
+      childCount,
+      infantCount,
+      customerDeal,
+      customerPaid,
+      customerDue,
+      baseFare,
+      taxBD,
+      e5,
+      e7,
+      g8,
+      ow,
+      p7,
+      p8,
+      ts,
+      ut,
+      yq,
+      taxes,
+      totalTaxes,
+      ait,
+      commissionRate,
+      plb,
+      salmaAirServiceCharge,
+      vendorServiceCharge,
+      vendorAmount,
+      vendorPaidFh,
+      vendorDue,
+      profit,
+      segmentCount,
+      flownSegment,
+      // Hajj/Umrah fields
+      packageId,
+      packageName,
+      agentId,
+      agentName,
+      departureDate,
+      customerCount,
+      hajjYear,
+      reasonForCollection,
+      amountCollected,
+      hajjiCount,
+      totalPeople,
+      // Hotel fields
+      hotelName,
+      hotelLocation,
+      checkInDate,
+      checkOutDate,
+      numberOfNights,
+      numberOfRooms,
+      roomType,
+      perNightRate,
+      totalRoomCost,
+      visaFee,
+      serviceCharge,
+      groundServiceFee,
+      transportFee,
+      otherCharges,
+      // Old ticket reissue
+      airlineName,
+      // Others
       ...otherFields
     } = billData;
 
     // Validation
-    if (!vendorId || !billType || !billDate || !totalAmount) {
+    if (!vendorId || !billType || !billDate) {
       return res.status(400).json({
         error: true,
-        message: "Vendor ID, Bill Type, Bill Date, and Total Amount are required"
+        message: "Vendor ID, Bill Type, and Bill Date are required"
       });
     }
 
-    // Validate amount
-    const parsedTotalAmount = parseFloat(totalAmount);
-    if (isNaN(parsedTotalAmount) || parsedTotalAmount <= 0) {
+    // Validate totalAmount (can be 0 for some cases, but should be a number)
+    const parsedTotalAmount = parseFloat(totalAmount) || 0;
+    const parsedAmount = parseFloat(amount) || parsedTotalAmount;
+    const parsedTax = parseFloat(tax) || 0;
+    const parsedDiscount = parseFloat(discount) || 0;
+
+    // For some bill types, totalAmount might be calculated, so allow 0
+    // But for most cases, it should be > 0
+    if (billType !== 'others' && parsedTotalAmount <= 0 && parsedAmount <= 0) {
       return res.status(400).json({
         error: true,
-        message: "Total Amount must be greater than 0"
+        message: "Total Amount or Amount must be greater than 0"
       });
     }
 
     // Check if vendor exists
     let vendor;
     if (ObjectId.isValid(vendorId)) {
-      vendor = await vendors.findOne({ _id: new ObjectId(vendorId), isActive: true });
+      vendor = await vendors.findOne({ _id: new ObjectId(vendorId), isActive: { $ne: false } });
     } else {
       const normalized = String(vendorId).trim().toUpperCase();
-      vendor = await vendors.findOne({ vendorId: normalized, isActive: true });
+      vendor = await vendors.findOne({ vendorId: normalized, isActive: { $ne: false } });
     }
 
     if (!vendor) {
@@ -9171,24 +9255,117 @@ app.post("/vendors/bills", async (req, res) => {
       });
     }
 
-    // Create bill document
+    // Calculate paidAmount based on paymentStatus
+    let paidAmount = 0;
+    if (paymentStatus === 'paid' || paymentStatus === 'completed' || paymentStatus === 'settled') {
+      paidAmount = parsedTotalAmount || parsedAmount;
+    } else if (paymentStatus === 'partial') {
+      // For partial payment, use customerPaid if available, otherwise 0
+      paidAmount = parseFloat(customerPaid) || 0;
+    }
+
+    // Create bill document with all fields
     const newBill = {
+      // Core fields
       vendorId: vendor.vendorId || vendorId,
-      vendorName: vendor.tradeName || vendorName,
-      billType: billType.trim(),
+      vendorName: vendor.tradeName || vendorName || '',
+      billType: String(billType).trim(),
       billDate: new Date(billDate),
-      billNumber: billNumber || `${billType}-${Date.now()}`,
-      totalAmount: parsedTotalAmount,
-      amount: parseFloat(amount) || parsedTotalAmount,
+      billNumber: billNumber || `${billType.toUpperCase().substring(0, 3)}-${Date.now()}`,
+      totalAmount: parsedTotalAmount || parsedAmount,
+      amount: parsedAmount,
+      tax: parsedTax,
+      discount: parsedDiscount,
+      description: description || '',
       paymentMethod: paymentMethod || '',
       paymentStatus: paymentStatus || 'pending',
+      paidAmount: paidAmount,
       dueDate: dueDate ? new Date(dueDate) : null,
+      notes: notes || '',
       createdBy: createdBy || 'unknown',
       branchId: branchId || 'main_branch',
       createdAt: new Date(createdAt || Date.now()),
       updatedAt: new Date(),
       isActive: true,
-      // Include all other fields from the request
+      
+      // Air Ticket fields (if provided)
+      ...(tripType && { tripType }),
+      ...(flightType && { flightType }),
+      ...(bookingId && { bookingId }),
+      ...(gdsPnr && { gdsPnr }),
+      ...(airlinePnr && { airlinePnr }),
+      ...(airline && { airline }),
+      ...(origin && { origin }),
+      ...(destination && { destination }),
+      ...(flightDate && { flightDate: new Date(flightDate) }),
+      ...(returnDate && { returnDate: new Date(returnDate) }),
+      ...(Array.isArray(segments) && segments.length > 0 && { segments }),
+      ...(agent && { agent }),
+      ...(purposeType && { purposeType }),
+      ...(adultCount !== undefined && { adultCount: Number(adultCount) || 0 }),
+      ...(childCount !== undefined && { childCount: Number(childCount) || 0 }),
+      ...(infantCount !== undefined && { infantCount: Number(infantCount) || 0 }),
+      ...(customerDeal !== undefined && { customerDeal: Number(customerDeal) || 0 }),
+      ...(customerPaid !== undefined && { customerPaid: Number(customerPaid) || 0 }),
+      ...(customerDue !== undefined && { customerDue: Number(customerDue) || 0 }),
+      ...(baseFare !== undefined && { baseFare: Number(baseFare) || 0 }),
+      ...(taxBD !== undefined && { taxBD: Number(taxBD) || 0 }),
+      ...(e5 !== undefined && { e5: Number(e5) || 0 }),
+      ...(e7 !== undefined && { e7: Number(e7) || 0 }),
+      ...(g8 !== undefined && { g8: Number(g8) || 0 }),
+      ...(ow !== undefined && { ow: Number(ow) || 0 }),
+      ...(p7 !== undefined && { p7: Number(p7) || 0 }),
+      ...(p8 !== undefined && { p8: Number(p8) || 0 }),
+      ...(ts !== undefined && { ts: Number(ts) || 0 }),
+      ...(ut !== undefined && { ut: Number(ut) || 0 }),
+      ...(yq !== undefined && { yq: Number(yq) || 0 }),
+      ...(taxes !== undefined && { taxes: Number(taxes) || 0 }),
+      ...(totalTaxes !== undefined && { totalTaxes: Number(totalTaxes) || 0 }),
+      ...(ait !== undefined && { ait: Number(ait) || 0 }),
+      ...(commissionRate !== undefined && { commissionRate: Number(commissionRate) || 0 }),
+      ...(plb !== undefined && { plb: Number(plb) || 0 }),
+      ...(salmaAirServiceCharge !== undefined && { salmaAirServiceCharge: Number(salmaAirServiceCharge) || 0 }),
+      ...(vendorServiceCharge !== undefined && { vendorServiceCharge: Number(vendorServiceCharge) || 0 }),
+      ...(vendorAmount !== undefined && { vendorAmount: Number(vendorAmount) || 0 }),
+      ...(vendorPaidFh !== undefined && { vendorPaidFh: Number(vendorPaidFh) || 0 }),
+      ...(vendorDue !== undefined && { vendorDue: Number(vendorDue) || 0 }),
+      ...(profit !== undefined && { profit: Number(profit) || 0 }),
+      ...(segmentCount !== undefined && { segmentCount: Number(segmentCount) || 1 }),
+      ...(flownSegment !== undefined && { flownSegment: Boolean(flownSegment) }),
+      
+      // Hajj/Umrah fields (if provided)
+      ...(packageId && { packageId }),
+      ...(packageName && { packageName }),
+      ...(agentId && { agentId }),
+      ...(agentName && { agentName }),
+      ...(departureDate && { departureDate: new Date(departureDate) }),
+      ...(customerCount !== undefined && { customerCount: Number(customerCount) || 0 }),
+      ...(hajjYear && { hajjYear }),
+      ...(reasonForCollection && { reasonForCollection }),
+      ...(amountCollected !== undefined && { amountCollected: Number(amountCollected) || 0 }),
+      ...(hajjiCount !== undefined && { hajjiCount: Number(hajjiCount) || 0 }),
+      ...(totalPeople !== undefined && { totalPeople: Number(totalPeople) || 0 }),
+      
+      // Hotel fields (if provided)
+      ...(hotelName && { hotelName }),
+      ...(hotelLocation && { hotelLocation }),
+      ...(checkInDate && { checkInDate: new Date(checkInDate) }),
+      ...(checkOutDate && { checkOutDate: new Date(checkOutDate) }),
+      ...(numberOfNights !== undefined && { numberOfNights: Number(numberOfNights) || 0 }),
+      ...(numberOfRooms !== undefined && { numberOfRooms: Number(numberOfRooms) || 0 }),
+      ...(roomType && { roomType }),
+      ...(perNightRate !== undefined && { perNightRate: Number(perNightRate) || 0 }),
+      ...(totalRoomCost !== undefined && { totalRoomCost: Number(totalRoomCost) || 0 }),
+      ...(visaFee !== undefined && { visaFee: Number(visaFee) || 0 }),
+      ...(serviceCharge !== undefined && { serviceCharge: Number(serviceCharge) || 0 }),
+      ...(groundServiceFee !== undefined && { groundServiceFee: Number(groundServiceFee) || 0 }),
+      ...(transportFee !== undefined && { transportFee: Number(transportFee) || 0 }),
+      ...(otherCharges !== undefined && { otherCharges: Number(otherCharges) || 0 }),
+      
+      // Old ticket reissue
+      ...(airlineName && { airlineName }),
+      
+      // Include any other fields from the request
       ...otherFields
     };
 
@@ -9198,41 +9375,38 @@ app.post("/vendors/bills", async (req, res) => {
     // Update vendor financials based on bill type
     const isHajj = billType.toLowerCase().includes('hajj') || billType.toLowerCase().includes('haj');
     const isUmrah = billType.toLowerCase().includes('umrah');
+    const isAirTicket = billType.toLowerCase().includes('air') || billType.toLowerCase().includes('ticket');
 
     const vendorUpdate = { $set: { updatedAt: new Date(), lastBillDate: new Date(billDate) } };
     
-    // Increase totalDue
-    vendorUpdate.$inc = { totalDue: parsedTotalAmount };
+    // Calculate the amount to add to due (totalAmount - paidAmount)
+    const dueAmount = Math.max(0, parsedTotalAmount - paidAmount);
+    
+    // Increase totalDue by the due amount
+    vendorUpdate.$inc = { totalDue: dueAmount };
 
     // Increase specific due amounts based on bill type
     if (isHajj) {
-      vendorUpdate.$inc.hajDue = parsedTotalAmount;
+      vendorUpdate.$inc.hajDue = dueAmount;
     }
     if (isUmrah) {
-      vendorUpdate.$inc.umrahDue = parsedTotalAmount;
+      vendorUpdate.$inc.umrahDue = dueAmount;
     }
 
     // If payment was made, update totalPaid
-    if (paymentStatus === 'paid' && paymentMethod) {
-      vendorUpdate.$inc.totalPaid = parsedTotalAmount;
-      vendorUpdate.$inc.totalDue = -parsedTotalAmount; // Net effect: 0 increase in due
-      if (isHajj) {
-        vendorUpdate.$inc.hajDue = -parsedTotalAmount;
-      }
-      if (isUmrah) {
-        vendorUpdate.$inc.umrahDue = -parsedTotalAmount;
-      }
+    if (paidAmount > 0) {
+      vendorUpdate.$inc.totalPaid = paidAmount;
     }
 
     // Update vendor
     if (ObjectId.isValid(vendorId)) {
       await vendors.updateOne(
-        { _id: new ObjectId(vendorId), isActive: true },
+        { _id: new ObjectId(vendorId), isActive: { $ne: false } },
         vendorUpdate
       );
     } else {
       await vendors.updateOne(
-        { vendorId: vendor.vendorId, isActive: true },
+        { vendorId: vendor.vendorId, isActive: { $ne: false } },
         vendorUpdate
       );
     }
@@ -9250,7 +9424,8 @@ app.post("/vendors/bills", async (req, res) => {
     console.error("Error creating vendor bill:", error);
     res.status(500).json({
       error: true,
-      message: "Internal server error while creating vendor bill"
+      message: "Internal server error while creating vendor bill",
+      details: error.message
     });
   }
 });
