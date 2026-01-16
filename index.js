@@ -9054,16 +9054,33 @@ app.get("/vendors/bills/summary", async (req, res) => {
         $group: {
           _id: null,
           totalBills: { $sum: 1 },
-          totalAmount: { $sum: { $ifNull: ["$totalAmount", 0] } },
+          totalAmount: { 
+            $sum: { 
+              $ifNull: [
+                "$totalAmount", 
+                { $ifNull: ["$amount", 0] }
+              ] 
+            } 
+          },
           totalPaid: {
             $sum: {
               $ifNull: [
                 "$paidAmount",
                 {
                   $cond: [
-                    { $in: [{ $ifNull: ["$paymentStatus", ""] }, ["paid", "completed", "settled"]] },
-                    { $ifNull: ["$totalAmount", 0] },
-                    { $ifNull: ["$amount", 0] }
+                    { 
+                      $in: [
+                        { $toLower: { $ifNull: ["$paymentStatus", ""] } }, 
+                        ["paid", "completed", "settled"]
+                      ] 
+                    },
+                    { 
+                      $ifNull: [
+                        "$totalAmount", 
+                        { $ifNull: ["$amount", 0] }
+                      ] 
+                    },
+                    { $ifNull: ["$paidAmount", 0] }
                   ]
                 }
               ]
@@ -9241,14 +9258,17 @@ app.post("/vendors/bills", async (req, res) => {
 // ✅ GET: Get all vendor bills with filters
 app.get("/vendors/bills", async (req, res) => {
   try {
-    const { vendorId, billType, startDate, endDate, paymentStatus, limit = 100 } = req.query;
+    const { vendorId, billType, startDate, endDate, paymentStatus, limit = 1000 } = req.query;
 
-    // Build query
-    const query = { isActive: true };
+    // Build query - use isActive: { $ne: false } for consistency
+    const query = { isActive: { $ne: false } };
 
     if (vendorId) {
       if (ObjectId.isValid(vendorId)) {
-        query.vendorId = vendorId;
+        query.$or = [
+          { vendorId: vendorId },
+          { vendorId: new ObjectId(vendorId).toString() }
+        ];
       } else {
         query.vendorId = vendorId;
       }
@@ -9268,17 +9288,30 @@ app.get("/vendors/bills", async (req, res) => {
         query.billDate.$gte = new Date(startDate);
       }
       if (endDate) {
-        query.billDate.$lte = new Date(endDate);
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        query.billDate.$lte = end;
       }
     }
 
     const bills = await vendorBills
       .find(query)
       .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
+      .limit(Math.min(parseInt(limit) || 1000, 10000))
       .toArray();
 
-    res.json({ success: true, bills });
+    // Ensure all bills have paidAmount field for frontend calculation
+    const billsWithPaidAmount = bills.map(bill => ({
+      ...bill,
+      paidAmount: bill.paidAmount !== undefined 
+        ? Number(bill.paidAmount || 0) 
+        : (bill.paymentStatus === 'paid' || bill.paymentStatus === 'completed' || bill.paymentStatus === 'settled')
+          ? Number(bill.totalAmount || bill.amount || 0)
+          : Number(bill.amount || 0),
+      totalAmount: Number(bill.totalAmount || bill.amount || 0)
+    }));
+
+    res.json({ success: true, bills: billsWithPaidAmount });
 
   } catch (error) {
     console.error("Error fetching vendor bills:", error);
@@ -9486,6 +9519,207 @@ app.delete("/vendors/bills/:id", async (req, res) => {
     });
   }
 });
+
+
+// ✅ GET: Vendor Analytics (Enhanced)
+app.get("/vendors/analytics", async (req, res) => {
+  try {
+    // Total vendors
+    const totalVendors = await vendors.countDocuments({ isActive: { $ne: false } });
+    
+    // Active vendors
+    const activeVendors = await vendors.countDocuments({ isActive: true });
+    
+    // Inactive vendors
+    const inactiveVendors = await vendors.countDocuments({ isActive: false });
+    
+    // New this month
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const newThisMonth = await vendors.countDocuments({
+      isActive: { $ne: false },
+      createdAt: { $gte: monthStart }
+    });
+    
+    // Top locations
+    const topLocations = await vendors.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      { $group: { _id: "$tradeLocation", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 10 }
+    ]).toArray();
+
+    res.json({
+      success: true,
+      totalVendors,
+      activeVendors,
+      inactiveVendors,
+      newThisMonth,
+      topLocations: topLocations.map(loc => ({
+        location: loc._id || 'Unknown',
+        count: loc.count
+      }))
+    });
+  } catch (error) {
+    console.error("Vendor analytics error:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while fetching vendor analytics",
+    });
+  }
+});
+
+// ✅ GET: Order Analytics (Enhanced)
+app.get("/orders/analytics", async (req, res) => {
+  try {
+    const { branchId } = req.query;
+    let filter = { isActive: true };
+    if (branchId) filter.branchId = branchId;
+
+    // Date ranges
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
+    
+    const weekAgo = new Date();
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    weekAgo.setHours(0, 0, 0, 0);
+    
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    
+    const lastMonthStart = new Date(monthStart);
+    lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
+    
+    const lastMonthEnd = new Date(monthStart);
+    lastMonthEnd.setDate(0);
+    lastMonthEnd.setHours(23, 59, 59, 999);
+
+    // Order status counts
+    const statusCounts = await orders.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 }
+        }
+      }
+    ]).toArray();
+
+    const statusMap = {};
+    statusCounts.forEach(item => {
+      statusMap[item._id] = item.count;
+    });
+
+    const completedOrders = statusMap['completed'] || statusMap['confirmed'] || 0;
+    const pendingOrders = statusMap['pending'] || 0;
+    const cancelledOrders = statusMap['cancelled'] || 0;
+    const processingOrders = statusMap['processing'] || statusMap['in_progress'] || 0;
+
+    // Revenue calculations
+    const revenueData = await orders.aggregate([
+      { $match: { ...filter, status: { $in: ['completed', 'confirmed'] } } },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: { $ifNull: ["$amount", 0] } },
+          monthlyRevenue: {
+            $sum: {
+              $cond: [
+                { $gte: ["$createdAt", monthStart] },
+                { $ifNull: ["$amount", 0] },
+                0
+              ]
+            }
+          },
+          orderCount: { $sum: 1 },
+          monthlyOrderCount: {
+            $sum: {
+              $cond: [
+                { $gte: ["$createdAt", monthStart] },
+                1,
+                0
+              ]
+            }
+          }
+        }
+      }
+    ]).toArray();
+
+    const revenue = revenueData[0] || {};
+    const totalRevenue = revenue.totalRevenue || 0;
+    const monthlyRevenue = revenue.monthlyRevenue || 0;
+    const averageOrderValue = revenue.orderCount > 0 ? totalRevenue / revenue.orderCount : 0;
+
+    // Today's orders
+    const todayOrdersData = await orders.countDocuments({
+      ...filter,
+      createdAt: { $gte: today, $lte: todayEnd }
+    });
+
+    // Last week's orders (for comparison)
+    const lastWeekOrders = await orders.countDocuments({
+      ...filter,
+      createdAt: { $gte: weekAgo, $lt: today }
+    });
+    const todayOrdersChange = lastWeekOrders > 0 ? ((todayOrdersData - lastWeekOrders) / lastWeekOrders) * 100 : 0;
+
+    // This week's orders
+    const weeklyOrders = await orders.countDocuments({
+      ...filter,
+      createdAt: { $gte: weekAgo }
+    });
+
+    // Last week's orders (for comparison)
+    const lastWeekStart = new Date(weekAgo);
+    lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+    const lastWeekTotal = await orders.countDocuments({
+      ...filter,
+      createdAt: { $gte: lastWeekStart, $lt: weekAgo }
+    });
+    const weeklyOrdersChange = lastWeekTotal > 0 ? ((weeklyOrders - lastWeekTotal) / lastWeekTotal) * 100 : 0;
+
+    // This month's orders
+    const monthlyOrders = await orders.countDocuments({
+      ...filter,
+      createdAt: { $gte: monthStart }
+    });
+
+    // Last month's orders (for comparison)
+    const lastMonthOrders = await orders.countDocuments({
+      ...filter,
+      createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd }
+    });
+    const monthlyOrdersChange = lastMonthOrders > 0 ? ((monthlyOrders - lastMonthOrders) / lastMonthOrders) * 100 : 0;
+
+    res.json({
+      success: true,
+      completedOrders,
+      pendingOrders,
+      cancelledOrders,
+      processingOrders,
+      totalRevenue,
+      monthlyRevenue,
+      averageOrderValue,
+      todayOrders: todayOrdersData,
+      todayOrdersChange,
+      weeklyOrders,
+      weeklyOrdersChange,
+      monthlyOrders,
+      monthlyOrdersChange
+    });
+  } catch (error) {
+    console.error("Order analytics error:", error);
+    res.status(500).json({
+      error: true,
+      message: "Internal server error while fetching order analytics",
+    });
+  }
+});
+
 
 // Helper: Generate unique Invoice ID
 const generateInvoiceId = async (db) => {
@@ -14335,207 +14569,6 @@ app.get("/loans/dashboard/summary", async (req, res) => {
   } catch (error) {
     console.error('Loan dashboard summary error:', error);
     return res.status(500).json({ success: false, message: 'Failed to fetch loan dashboard summary' });
-  }
-});
-
-
-
-// ✅ GET: Vendor Analytics (Enhanced)
-app.get("/vendors/analytics", async (req, res) => {
-  try {
-    // Total vendors
-    const totalVendors = await vendors.countDocuments({ isActive: { $ne: false } });
-    
-    // Active vendors
-    const activeVendors = await vendors.countDocuments({ isActive: true });
-    
-    // Inactive vendors
-    const inactiveVendors = await vendors.countDocuments({ isActive: false });
-    
-    // New this month
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    monthStart.setHours(0, 0, 0, 0);
-    const newThisMonth = await vendors.countDocuments({
-      isActive: { $ne: false },
-      createdAt: { $gte: monthStart }
-    });
-    
-    // Top locations
-    const topLocations = await vendors.aggregate([
-      { $match: { isActive: { $ne: false } } },
-      { $group: { _id: "$tradeLocation", count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 10 }
-    ]).toArray();
-
-    res.json({
-      success: true,
-      totalVendors,
-      activeVendors,
-      inactiveVendors,
-      newThisMonth,
-      topLocations: topLocations.map(loc => ({
-        location: loc._id || 'Unknown',
-        count: loc.count
-      }))
-    });
-  } catch (error) {
-    console.error("Vendor analytics error:", error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while fetching vendor analytics",
-    });
-  }
-});
-
-// ✅ GET: Order Analytics (Enhanced)
-app.get("/orders/analytics", async (req, res) => {
-  try {
-    const { branchId } = req.query;
-    let filter = { isActive: true };
-    if (branchId) filter.branchId = branchId;
-
-    // Date ranges
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
-    
-    const weekAgo = new Date();
-    weekAgo.setDate(weekAgo.getDate() - 7);
-    weekAgo.setHours(0, 0, 0, 0);
-    
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    monthStart.setHours(0, 0, 0, 0);
-    
-    const lastMonthStart = new Date(monthStart);
-    lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
-    
-    const lastMonthEnd = new Date(monthStart);
-    lastMonthEnd.setDate(0);
-    lastMonthEnd.setHours(23, 59, 59, 999);
-
-    // Order status counts
-    const statusCounts = await orders.aggregate([
-      { $match: filter },
-      {
-        $group: {
-          _id: "$status",
-          count: { $sum: 1 }
-        }
-      }
-    ]).toArray();
-
-    const statusMap = {};
-    statusCounts.forEach(item => {
-      statusMap[item._id] = item.count;
-    });
-
-    const completedOrders = statusMap['completed'] || statusMap['confirmed'] || 0;
-    const pendingOrders = statusMap['pending'] || 0;
-    const cancelledOrders = statusMap['cancelled'] || 0;
-    const processingOrders = statusMap['processing'] || statusMap['in_progress'] || 0;
-
-    // Revenue calculations
-    const revenueData = await orders.aggregate([
-      { $match: { ...filter, status: { $in: ['completed', 'confirmed'] } } },
-      {
-        $group: {
-          _id: null,
-          totalRevenue: { $sum: { $ifNull: ["$amount", 0] } },
-          monthlyRevenue: {
-            $sum: {
-              $cond: [
-                { $gte: ["$createdAt", monthStart] },
-                { $ifNull: ["$amount", 0] },
-                0
-              ]
-            }
-          },
-          orderCount: { $sum: 1 },
-          monthlyOrderCount: {
-            $sum: {
-              $cond: [
-                { $gte: ["$createdAt", monthStart] },
-                1,
-                0
-              ]
-            }
-          }
-        }
-      }
-    ]).toArray();
-
-    const revenue = revenueData[0] || {};
-    const totalRevenue = revenue.totalRevenue || 0;
-    const monthlyRevenue = revenue.monthlyRevenue || 0;
-    const averageOrderValue = revenue.orderCount > 0 ? totalRevenue / revenue.orderCount : 0;
-
-    // Today's orders
-    const todayOrdersData = await orders.countDocuments({
-      ...filter,
-      createdAt: { $gte: today, $lte: todayEnd }
-    });
-
-    // Last week's orders (for comparison)
-    const lastWeekOrders = await orders.countDocuments({
-      ...filter,
-      createdAt: { $gte: weekAgo, $lt: today }
-    });
-    const todayOrdersChange = lastWeekOrders > 0 ? ((todayOrdersData - lastWeekOrders) / lastWeekOrders) * 100 : 0;
-
-    // This week's orders
-    const weeklyOrders = await orders.countDocuments({
-      ...filter,
-      createdAt: { $gte: weekAgo }
-    });
-
-    // Last week's orders (for comparison)
-    const lastWeekStart = new Date(weekAgo);
-    lastWeekStart.setDate(lastWeekStart.getDate() - 7);
-    const lastWeekTotal = await orders.countDocuments({
-      ...filter,
-      createdAt: { $gte: lastWeekStart, $lt: weekAgo }
-    });
-    const weeklyOrdersChange = lastWeekTotal > 0 ? ((weeklyOrders - lastWeekTotal) / lastWeekTotal) * 100 : 0;
-
-    // This month's orders
-    const monthlyOrders = await orders.countDocuments({
-      ...filter,
-      createdAt: { $gte: monthStart }
-    });
-
-    // Last month's orders (for comparison)
-    const lastMonthOrders = await orders.countDocuments({
-      ...filter,
-      createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd }
-    });
-    const monthlyOrdersChange = lastMonthOrders > 0 ? ((monthlyOrders - lastMonthOrders) / lastMonthOrders) * 100 : 0;
-
-    res.json({
-      success: true,
-      completedOrders,
-      pendingOrders,
-      cancelledOrders,
-      processingOrders,
-      totalRevenue,
-      monthlyRevenue,
-      averageOrderValue,
-      todayOrders: todayOrdersData,
-      todayOrdersChange,
-      weeklyOrders,
-      weeklyOrdersChange,
-      monthlyOrders,
-      monthlyOrdersChange
-    });
-  } catch (error) {
-    console.error("Order analytics error:", error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while fetching order analytics",
-    });
   }
 });
 
