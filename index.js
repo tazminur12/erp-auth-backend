@@ -24584,6 +24584,8 @@ async function generateSequentialId(prefix) {
   return `${prefix}${seq}`;
 }
 
+
+// Miraj Industries // 
 // POST: Create employee
 app.post("/api/employees", async (req, res) => {
   try {
@@ -24663,6 +24665,86 @@ app.get("/api/employees/:id", async (req, res) => {
   } catch (e) {
     console.error('Get farm employee error:', e);
     res.status(500).json({ success: false, message: 'Failed to fetch employee' });
+  }
+});
+
+// PATCH: Update employee by id
+app.patch("/api/employees/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body || {};
+
+    // Check if employee exists
+    const emp = await farmEmployees.findOne({ id, isActive: { $ne: false } });
+    if (!emp) {
+      return res.status(404).json({ success: false, message: 'Employee not found' });
+    }
+
+    // Prepare update object - only allow specific fields to be updated
+    const allowedFields = [
+      'name',
+      'position',
+      'phone',
+      'email',
+      'address',
+      'joinDate',
+      'salary',
+      'workHours',
+      'status',
+      'notes'
+    ];
+
+    const update = { $set: { updatedAt: new Date() } };
+
+    // Update only provided fields
+    allowedFields.forEach(field => {
+      if (updateData[field] !== undefined) {
+        if (field === 'salary' || field === 'workHours') {
+          update.$set[field] = Number(updateData[field]);
+        } else {
+          update.$set[field] = String(updateData[field]).trim();
+        }
+      }
+    });
+
+    // Validate required fields if being updated
+    if (update.$set.name !== undefined && !update.$set.name) {
+      return res.status(400).json({ success: false, message: 'Name cannot be empty' });
+    }
+    if (update.$set.position !== undefined && !update.$set.position) {
+      return res.status(400).json({ success: false, message: 'Position cannot be empty' });
+    }
+    if (update.$set.phone !== undefined && !update.$set.phone) {
+      return res.status(400).json({ success: false, message: 'Phone cannot be empty' });
+    }
+    if (update.$set.salary !== undefined && (isNaN(update.$set.salary) || update.$set.salary < 0)) {
+      return res.status(400).json({ success: false, message: 'Salary must be a valid positive number' });
+    }
+    if (update.$set.workHours !== undefined && (isNaN(update.$set.workHours) || update.$set.workHours < 0)) {
+      return res.status(400).json({ success: false, message: 'Work hours must be a valid positive number' });
+    }
+
+    // Update employee
+    const result = await farmEmployees.updateOne(
+      { id, isActive: { $ne: false } },
+      update
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: 'Employee not found' });
+    }
+
+    // Get updated employee
+    const updatedEmp = await farmEmployees.findOne({ id, isActive: { $ne: false } });
+
+    res.json({
+      success: true,
+      message: 'Employee updated successfully',
+      data: updatedEmp
+    });
+  } catch (e) {
+    console.error('Update farm employee error:', e);
+    res.status(500).json({ success: false, message: 'Failed to update employee' });
   }
 });
 
