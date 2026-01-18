@@ -15875,7 +15875,9 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
         ticket: createdTicket
       });
     } finally {
-      await session.endSession();
+      if (session) {
+        await session.endSession();
+      }
     }
 
   } catch (error) {
