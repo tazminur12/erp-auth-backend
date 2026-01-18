@@ -974,7 +974,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, visaProcessingServices, ticketChecks, oldTicketReissues, otherServices, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, airlines, tickets, notifications, licenses, vendorBankAccounts;
+let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, visaProcessingServices, ticketChecks, oldTicketReissues, otherServices, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, dilars, airlines, tickets, notifications, licenses, vendorBankAccounts;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -1036,6 +1036,7 @@ async function initializeDatabase() {
     farmIncomes = db.collection("farmIncomes");
     // Currency Exchange
     exchanges = db.collection("exchanges");
+    dilars = db.collection("dilars");
     // Airlines
     airlines = db.collection("airlines");
     // Air Ticketing Tickets
@@ -26585,6 +26586,532 @@ app.delete("/api/exchanges/:id", async (req, res) => {
       success: false,
       error: 'Internal server error',
       message: 'Failed to delete exchange'
+    });
+  }
+});
+
+// ==================== DILAR (DEALER) ROUTES ====================
+
+// POST: Create new dilar
+app.post("/api/dilars", async (req, res) => {
+  try {
+    const {
+      ownerName,
+      contactNo,
+      tradeLocation,
+      logo
+    } = req.body || {};
+
+    // Validation
+    if (!ownerName || !ownerName.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Validation error',
+        message: 'Owner name is required'
+      });
+    }
+
+    if (!contactNo || !contactNo.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Validation error',
+        message: 'Contact number is required'
+      });
+    }
+
+    // Validate phone number format
+    const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+    if (!phoneRegex.test(contactNo.trim())) {
+      return res.status(400).json({
+        success: false,
+        error: 'Validation error',
+        message: 'Invalid contact number format'
+      });
+    }
+
+    if (!tradeLocation || !tradeLocation.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Validation error',
+        message: 'Trade location is required'
+      });
+    }
+
+    // Check if contact number already exists
+    const existingDilar = await dilars.findOne({
+      contactNo: contactNo.trim(),
+      isActive: { $ne: false }
+    });
+
+    if (existingDilar) {
+      return res.status(400).json({
+        success: false,
+        error: 'Duplicate entry',
+        message: 'A dilar with this contact number already exists'
+      });
+    }
+
+    // Create dilar document
+    const dilarData = {
+      ownerName: ownerName.trim(),
+      contactNo: contactNo.trim(),
+      tradeLocation: tradeLocation.trim(),
+      logo: logo || '',
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await dilars.insertOne(dilarData);
+
+    res.status(201).json({
+      success: true,
+      message: 'Dilar created successfully',
+      data: { ...dilarData, _id: result.insertedId }
+    });
+
+  } catch (error) {
+    console.error('Create dilar error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to create dilar',
+      details: error.message
+    });
+  }
+});
+
+// GET: Get all dilars with pagination and filters
+app.get("/api/dilars", async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 10,
+      search
+    } = req.query || {};
+
+    // Validate and parse pagination
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build query
+    const query = { isActive: { $ne: false } };
+
+    // Search filter
+    if (search && String(search).trim()) {
+      const searchTerm = String(search).trim();
+      // Escape special regex characters
+      const escapedSearchTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query.$or = [
+        { ownerName: { $regex: escapedSearchTerm, $options: 'i' } },
+        { contactNo: { $regex: escapedSearchTerm, $options: 'i' } },
+        { tradeLocation: { $regex: escapedSearchTerm, $options: 'i' } }
+      ];
+    }
+
+    // Get total count and dilars in parallel
+    let total = 0;
+    let dilarsList = [];
+
+    try {
+      [total, dilarsList] = await Promise.all([
+        dilars.countDocuments(query),
+        dilars
+          .find(query)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limitNum)
+          .toArray()
+      ]);
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      total = 0;
+      dilarsList = [];
+    }
+
+    // Ensure dilarsList is an array
+    if (!Array.isArray(dilarsList)) {
+      dilarsList = [];
+    }
+
+    res.json({
+      success: true,
+      data: dilarsList,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: total || 0,
+        pages: Math.ceil((total || 0) / limitNum) || 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Get dilars error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to fetch dilars',
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
+// GET: Get single dilar by ID
+app.get("/api/dilars/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Validate id parameter
+    if (!id || !String(id).trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid ID',
+        message: 'Dilar ID is required'
+      });
+    }
+
+    // Build query filters
+    const orFilters = [
+      { contactNo: String(id).trim() }
+    ];
+    
+    // Only add ObjectId filter if id is valid ObjectId
+    try {
+      if (ObjectId.isValid(id)) {
+        orFilters.unshift({ _id: new ObjectId(id) });
+      }
+    } catch (objectIdError) {
+      // Ignore ObjectId conversion errors
+      console.warn("ObjectId conversion warning:", objectIdError.message);
+    }
+
+    let dilar = null;
+    try {
+      dilar = await dilars.findOne({
+        $or: orFilters,
+        isActive: { $ne: false }
+      });
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to query dilar",
+        details: queryError.message
+      });
+    }
+
+    if (!dilar) {
+      return res.status(404).json({
+        success: false,
+        error: 'Not found',
+        message: 'Dilar not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: dilar
+    });
+
+  } catch (error) {
+    console.error('Get dilar error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to fetch dilar',
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
+// PUT: Update dilar by ID
+app.put("/api/dilars/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      ownerName,
+      contactNo,
+      tradeLocation,
+      logo
+    } = req.body || {};
+
+    // Validate id parameter
+    if (!id || !String(id).trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid ID',
+        message: 'Dilar ID is required'
+      });
+    }
+
+    // Build query filters
+    const orFilters = [
+      { contactNo: String(id).trim() }
+    ];
+    
+    try {
+      if (ObjectId.isValid(id)) {
+        orFilters.unshift({ _id: new ObjectId(id) });
+      }
+    } catch (objectIdError) {
+      console.warn("ObjectId conversion warning:", objectIdError.message);
+    }
+
+    // Check if dilar exists
+    let existingDilar = null;
+    try {
+      existingDilar = await dilars.findOne({
+        $or: orFilters,
+        isActive: { $ne: false }
+      });
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to query dilar",
+        details: queryError.message
+      });
+    }
+
+    if (!existingDilar) {
+      return res.status(404).json({
+        success: false,
+        error: 'Not found',
+        message: 'Dilar not found'
+      });
+    }
+
+    // Build update object
+    const updateData = {
+      updatedAt: new Date()
+    };
+
+    // Validate and add fields to update
+    if (ownerName !== undefined) {
+      if (!ownerName || !ownerName.trim()) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'Owner name is required'
+        });
+      }
+      updateData.ownerName = ownerName.trim();
+    }
+
+    if (contactNo !== undefined) {
+      if (!contactNo || !contactNo.trim()) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'Contact number is required'
+        });
+      }
+
+      // Validate phone number format
+      const phoneRegex = /^\+?[0-9\-()\s]{6,20}$/;
+      if (!phoneRegex.test(contactNo.trim())) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'Invalid contact number format'
+        });
+      }
+
+      // Check if contact number already exists (excluding current dilar)
+      const contactExists = await dilars.findOne({
+        contactNo: contactNo.trim(),
+        isActive: { $ne: false },
+        _id: { $ne: existingDilar._id }
+      });
+
+      if (contactExists) {
+        return res.status(400).json({
+          success: false,
+          error: 'Duplicate entry',
+          message: 'A dilar with this contact number already exists'
+        });
+      }
+
+      updateData.contactNo = contactNo.trim();
+    }
+
+    if (tradeLocation !== undefined) {
+      if (!tradeLocation || !tradeLocation.trim()) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          message: 'Trade location is required'
+        });
+      }
+      updateData.tradeLocation = tradeLocation.trim();
+    }
+
+    if (logo !== undefined) {
+      updateData.logo = logo || '';
+    }
+
+    // Update dilar
+    let result = null;
+    try {
+      result = await dilars.updateOne(
+        {
+          $or: orFilters,
+          isActive: { $ne: false }
+        },
+        { $set: updateData }
+      );
+    } catch (updateError) {
+      console.error("❌ Database update error:", updateError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to update dilar",
+        details: updateError.message
+      });
+    }
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Not found',
+        message: 'Dilar not found'
+      });
+    }
+
+    // Get updated dilar
+    let updatedDilar = null;
+    try {
+      updatedDilar = await dilars.findOne({
+        $or: orFilters,
+        isActive: { $ne: false }
+      });
+    } catch (queryError) {
+      console.error("❌ Database query error after update:", queryError);
+      return res.json({
+        success: true,
+        message: "Dilar updated successfully",
+        data: null,
+        warning: "Updated but could not fetch updated data"
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Dilar updated successfully',
+      data: updatedDilar
+    });
+
+  } catch (error) {
+    console.error('Update dilar error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to update dilar',
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
+// DELETE: Delete dilar by ID (soft delete)
+app.delete("/api/dilars/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Validate id parameter
+    if (!id || !String(id).trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid ID',
+        message: 'Dilar ID is required'
+      });
+    }
+
+    // Build query filters
+    const orFilters = [
+      { contactNo: String(id).trim() }
+    ];
+    
+    try {
+      if (ObjectId.isValid(id)) {
+        orFilters.unshift({ _id: new ObjectId(id) });
+      }
+    } catch (objectIdError) {
+      console.warn("ObjectId conversion warning:", objectIdError.message);
+    }
+
+    // Check if dilar exists
+    let existingDilar = null;
+    try {
+      existingDilar = await dilars.findOne({
+        $or: orFilters,
+        isActive: { $ne: false }
+      });
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to query dilar",
+        details: queryError.message
+      });
+    }
+
+    if (!existingDilar) {
+      return res.status(404).json({
+        success: false,
+        error: 'Not found',
+        message: 'Dilar not found'
+      });
+    }
+
+    // Soft delete
+    let result = null;
+    try {
+      result = await dilars.updateOne(
+        {
+          $or: orFilters,
+          isActive: { $ne: false }
+        },
+        {
+          $set: {
+            isActive: false,
+            updatedAt: new Date()
+          }
+        }
+      );
+    } catch (updateError) {
+      console.error("❌ Database update error:", updateError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to delete dilar",
+        details: updateError.message
+      });
+    }
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Not found',
+        message: 'Dilar not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Dilar deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete dilar error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to delete dilar',
+      details: error.message || "Unknown error occurred"
     });
   }
 });
