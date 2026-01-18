@@ -15772,6 +15772,18 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
       updatedAt: new Date()
     };
 
+    // Verify vendor exists if vendorId is provided (already checked above, but get vendor object)
+    let vendor = null;
+    if (ticketData.vendorId) {
+      vendor = await vendors.findOne({
+        $or: [
+          { vendorId: ticketData.vendorId },
+          { _id: ObjectId.isValid(ticketData.vendorId) ? new ObjectId(ticketData.vendorId) : null }
+        ],
+        isActive: { $ne: false }
+      });
+    }
+
     // Start transaction for atomic operations
     let session = null;
     let insertedTicketObjectId = null;
@@ -15805,6 +15817,53 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
           },
           { session }
         );
+
+        // Update vendor's financial information if vendorId is provided
+        if (vendor && ticketData.vendorId) {
+          const vendorAmount = parseFloat(ticketData.vendorAmount) || 0;
+          const vendorPaidFh = parseFloat(ticketData.vendorPaidFh) || 0;
+          const vendorDue = parseFloat(ticketData.vendorDue) || 0;
+
+          // Calculate vendor financial updates
+          // vendorAmount = total amount vendor should receive
+          // vendorPaidFh = amount already paid to vendor
+          // vendorDue = vendorAmount - vendorPaidFh (net amount still owed)
+          
+          // Logic:
+          // - totalDue should increase by vendorDue (amount still owed to vendor)
+          // - totalPaid should increase by vendorPaidFh (amount already paid to vendor)
+          // This way: totalDue += vendorDue, totalPaid += vendorPaidFh
+          // Net effect: vendor's balance reflects the ticket's vendor financials
+
+          const vendorUpdate = {
+            $set: { updatedAt: new Date() },
+            $inc: {
+              totalDue: vendorDue,      // Amount still owed to vendor
+              totalPaid: vendorPaidFh  // Amount already paid to vendor
+            }
+          };
+
+          // Update vendor
+          await vendors.updateOne(
+            { _id: vendor._id },
+            vendorUpdate,
+            { session }
+          );
+
+          // Clamp negative values (safety check)
+          const updatedVendor = await vendors.findOne({ _id: vendor._id }, { session });
+          const clampUpdate = {};
+          if ((updatedVendor.totalDue || 0) < 0) clampUpdate.totalDue = 0;
+          if ((updatedVendor.totalPaid || 0) < 0) clampUpdate.totalPaid = 0;
+          if (Object.keys(clampUpdate).length > 0) {
+            clampUpdate.updatedAt = new Date();
+            await vendors.updateOne(
+              { _id: vendor._id },
+              { $set: clampUpdate },
+              { session }
+            );
+          }
+        }
       });
 
       // Return created ticket
@@ -16346,15 +16405,22 @@ app.put("/api/air-ticketing/tickets/:id", async (req, res) => {
     if (updateData.flownSegment !== undefined) updateDoc.flownSegment = updateData.flownSegment;
 
     // Check if financial fields are being updated
-    const financialFieldsUpdated = 
+    const customerFinancialFieldsUpdated = 
       updateData.customerDeal !== undefined || 
       updateData.customerPaid !== undefined || 
       updateData.customerDue !== undefined;
 
+    const vendorFinancialFieldsUpdated =
+      updateData.vendorAmount !== undefined ||
+      updateData.vendorPaidFh !== undefined ||
+      updateData.vendorDue !== undefined;
+
+    const needsTransaction = customerFinancialFieldsUpdated || vendorFinancialFieldsUpdated;
+
     // Start transaction if financial fields are updated
     let session = null;
     try {
-      if (financialFieldsUpdated && existingTicket.customerId) {
+      if (needsTransaction) {
         session = client.startSession();
         await session.withTransaction(async () => {
           // Update ticket
@@ -16364,46 +16430,105 @@ app.put("/api/air-ticketing/tickets/:id", async (req, res) => {
             { session }
           );
 
-          // Find customer in airCustomers collection
-          const customer = await airCustomers.findOne({
-            $or: [
-              { customerId: existingTicket.customerId },
-              { _id: ObjectId.isValid(existingTicket.customerId) ? new ObjectId(existingTicket.customerId) : null }
-            ],
-            isActive: { $ne: false }
-          }, { session });
+          // Update customer financials if customer fields are updated
+          if (customerFinancialFieldsUpdated && existingTicket.customerId) {
+            // Find customer in airCustomers collection
+            const customer = await airCustomers.findOne({
+              $or: [
+                { customerId: existingTicket.customerId },
+                { _id: ObjectId.isValid(existingTicket.customerId) ? new ObjectId(existingTicket.customerId) : null }
+              ],
+              isActive: { $ne: false }
+            }, { session });
 
-          if (customer) {
-            // Calculate differences
-            const oldDeal = parseFloat(existingTicket.customerDeal) || 0;
-            const oldPaid = parseFloat(existingTicket.customerPaid) || 0;
-            const oldDue = parseFloat(existingTicket.customerDue) || 0;
+            if (customer) {
+              // Calculate differences
+              const oldDeal = parseFloat(existingTicket.customerDeal) || 0;
+              const oldPaid = parseFloat(existingTicket.customerPaid) || 0;
+              const oldDue = parseFloat(existingTicket.customerDue) || 0;
 
-            const newDeal = updateData.customerDeal !== undefined ? (parseFloat(updateData.customerDeal) || 0) : oldDeal;
-            const newPaid = updateData.customerPaid !== undefined ? (parseFloat(updateData.customerPaid) || 0) : oldPaid;
-            const newDue = updateData.customerDue !== undefined ? (parseFloat(updateData.customerDue) || 0) : oldDue;
+              const newDeal = updateData.customerDeal !== undefined ? (parseFloat(updateData.customerDeal) || 0) : oldDeal;
+              const newPaid = updateData.customerPaid !== undefined ? (parseFloat(updateData.customerPaid) || 0) : oldPaid;
+              const newDue = updateData.customerDue !== undefined ? (parseFloat(updateData.customerDue) || 0) : oldDue;
 
-            const dealDiff = newDeal - oldDeal;
-            const paidDiff = newPaid - oldPaid;
-            const dueDiff = newDue - oldDue;
+              const dealDiff = newDeal - oldDeal;
+              const paidDiff = newPaid - oldPaid;
+              const dueDiff = newDue - oldDue;
 
-            // Update customer totals
-            const currentTotalAmount = (customer.totalAmount || 0) + dealDiff;
-            const currentPaidAmount = (customer.paidAmount || 0) + paidDiff;
-            const currentTotalDue = (customer.totalDue || 0) + dueDiff;
+              // Update customer totals
+              const currentTotalAmount = (customer.totalAmount || 0) + dealDiff;
+              const currentPaidAmount = (customer.paidAmount || 0) + paidDiff;
+              const currentTotalDue = (customer.totalDue || 0) + dueDiff;
 
-            await airCustomers.updateOne(
-              { _id: customer._id },
-              {
-                $set: {
-                  totalAmount: Math.max(0, currentTotalAmount),
-                  paidAmount: Math.max(0, currentPaidAmount),
-                  totalDue: Math.max(0, currentTotalDue),
-                  updatedAt: new Date()
+              await airCustomers.updateOne(
+                { _id: customer._id },
+                {
+                  $set: {
+                    totalAmount: Math.max(0, currentTotalAmount),
+                    paidAmount: Math.max(0, currentPaidAmount),
+                    totalDue: Math.max(0, currentTotalDue),
+                    updatedAt: new Date()
+                  }
+                },
+                { session }
+              );
+            }
+          }
+
+          // Update vendor financials if vendor fields are updated
+          if (vendorFinancialFieldsUpdated && existingTicket.vendorId) {
+            // Find vendor
+            const vendor = await vendors.findOne({
+              $or: [
+                { vendorId: existingTicket.vendorId },
+                { _id: ObjectId.isValid(existingTicket.vendorId) ? new ObjectId(existingTicket.vendorId) : null }
+              ],
+              isActive: { $ne: false }
+            }, { session });
+
+            if (vendor) {
+              // Calculate differences
+              const oldVendorAmount = parseFloat(existingTicket.vendorAmount) || 0;
+              const oldVendorPaidFh = parseFloat(existingTicket.vendorPaidFh) || 0;
+              const oldVendorDue = parseFloat(existingTicket.vendorDue) || 0;
+
+              const newVendorAmount = updateData.vendorAmount !== undefined ? (parseFloat(updateData.vendorAmount) || 0) : oldVendorAmount;
+              const newVendorPaidFh = updateData.vendorPaidFh !== undefined ? (parseFloat(updateData.vendorPaidFh) || 0) : oldVendorPaidFh;
+              const newVendorDue = updateData.vendorDue !== undefined ? (parseFloat(updateData.vendorDue) || 0) : oldVendorDue;
+
+              // Calculate differences
+              const vendorDueDiff = newVendorDue - oldVendorDue;
+              const vendorPaidDiff = newVendorPaidFh - oldVendorPaidFh;
+
+              // Update vendor totals
+              const vendorUpdate = {
+                $set: { updatedAt: new Date() },
+                $inc: {
+                  totalDue: vendorDueDiff,
+                  totalPaid: vendorPaidDiff
                 }
-              },
-              { session }
-            );
+              };
+
+              await vendors.updateOne(
+                { _id: vendor._id },
+                vendorUpdate,
+                { session }
+              );
+
+              // Clamp negative values (safety check)
+              const updatedVendor = await vendors.findOne({ _id: vendor._id }, { session });
+              const clampUpdate = {};
+              if ((updatedVendor.totalDue || 0) < 0) clampUpdate.totalDue = 0;
+              if ((updatedVendor.totalPaid || 0) < 0) clampUpdate.totalPaid = 0;
+              if (Object.keys(clampUpdate).length > 0) {
+                clampUpdate.updatedAt = new Date();
+                await vendors.updateOne(
+                  { _id: vendor._id },
+                  { $set: clampUpdate },
+                  { session }
+                );
+              }
+            }
           }
         });
       } else {
