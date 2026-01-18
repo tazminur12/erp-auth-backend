@@ -1028,7 +1028,8 @@ async function initializeDatabase() {
     breedings = db.collection("breedings");
     calvings = db.collection("calvings");
     // Farm HR (for EmployeeManagement frontend)
-    farmEmployees = db.collection("farmEmployees");
+    farmEmployees = db.collection("farmEmployees"); // Keep for backward compatibility
+    employees = db.collection("employees"); // Main employees collection (used by frontend)
     attendanceRecords = db.collection("attendanceRecords");
     // Farm Finance (for FinancialReport frontend)
     farmExpenses = db.collection("farmExpenses");
@@ -11378,12 +11379,11 @@ app.post("/api/transactions", async (req, res) => {
             let employeeQuery = null;
             
             // Try by _id (ObjectId) in employees collection
-            if (ObjectId.isValid(employeeId)) {
+            if (ObjectId.isValid(employeeId) && employees) {
               try {
-                const employeesCollection = db.collection("employees");
-                employee = await employeesCollection.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
+                employee = await employees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
                 if (employee) {
-                  employeeCollection = employeesCollection;
+                  employeeCollection = employees;
                   employeeQuery = { _id: employee._id };
                   employee._isFromEmployees = true;
                 }
@@ -11393,12 +11393,11 @@ app.post("/api/transactions", async (req, res) => {
             }
             
             // Try by employeeId field in employees collection
-            if (!employee) {
+            if (!employee && employees) {
               try {
-                const employeesCollection = db.collection("employees");
-                employee = await employeesCollection.findOne({ employeeId: employeeId, isActive: { $ne: false } }, { session });
+                employee = await employees.findOne({ employeeId: employeeId, isActive: { $ne: false } }, { session });
                 if (employee) {
-                  employeeCollection = employeesCollection;
+                  employeeCollection = employees;
                   employeeQuery = { employeeId: employeeId };
                   employee._isFromEmployees = true;
                 }
@@ -11408,12 +11407,11 @@ app.post("/api/transactions", async (req, res) => {
             }
             
             // Try by id field (numeric) in employees collection
-            if (!employee && !isNaN(Number(employeeId))) {
+            if (!employee && !isNaN(Number(employeeId)) && employees) {
               try {
-                const employeesCollection = db.collection("employees");
-                employee = await employeesCollection.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
+                employee = await employees.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
                 if (employee) {
-                  employeeCollection = employeesCollection;
+                  employeeCollection = employees;
                   employeeQuery = { id: employee.id };
                   employee._isFromEmployees = true;
                 }
@@ -12346,12 +12344,11 @@ app.delete("/api/transactions/:id", async (req, res) => {
               let employeeQuery = null;
               
               // Try by _id (ObjectId) in employees collection
-              if (ObjectId.isValid(employeeId)) {
+              if (ObjectId.isValid(employeeId) && employees) {
                 try {
-                  const employeesCollection = db.collection("employees");
-                  employee = await employeesCollection.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
+                  employee = await employees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
                   if (employee) {
-                    employeeCollection = employeesCollection;
+                    employeeCollection = employees;
                     employeeQuery = { _id: employee._id };
                   }
                 } catch (e) {
@@ -12360,12 +12357,11 @@ app.delete("/api/transactions/:id", async (req, res) => {
               }
               
               // Try by employeeId field in employees collection
-              if (!employee) {
+              if (!employee && employees) {
                 try {
-                  const employeesCollection = db.collection("employees");
-                  employee = await employeesCollection.findOne({ employeeId: employeeId, isActive: { $ne: false } }, { session });
+                  employee = await employees.findOne({ employeeId: employeeId, isActive: { $ne: false } }, { session });
                   if (employee) {
-                    employeeCollection = employeesCollection;
+                    employeeCollection = employees;
                     employeeQuery = { employeeId: employeeId };
                   }
                 } catch (e) {
@@ -12374,12 +12370,11 @@ app.delete("/api/transactions/:id", async (req, res) => {
               }
               
               // Try by id field (numeric) in employees collection
-              if (!employee && !isNaN(Number(employeeId))) {
+              if (!employee && !isNaN(Number(employeeId)) && employees) {
                 try {
-                  const employeesCollection = db.collection("employees");
-                  employee = await employeesCollection.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
+                  employee = await employees.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
                   if (employee) {
-                    employeeCollection = employeesCollection;
+                    employeeCollection = employees;
                     employeeQuery = { id: employee.id };
                   }
                 } catch (e) {
@@ -25068,10 +25063,10 @@ app.post("/api/employees", async (req, res) => {
       updatedAt: new Date()
     };
 
-    await farmEmployees.insertOne(doc);
+    await employees.insertOne(doc);
     res.json({ success: true, data: doc });
   } catch (e) {
-    console.error('Create farm employee error:', e);
+    console.error('Create employee error:', e);
     res.status(500).json({ success: false, message: 'Failed to create employee' });
   }
 });
@@ -25090,10 +25085,18 @@ app.get("/api/employees", async (req, res) => {
         { phone: { $regex: s } }
       ];
     }
-    const data = await farmEmployees.find(filter).sort({ createdAt: -1 }).toArray();
-    res.json({ success: true, data });
+    const data = await employees.find(filter).sort({ createdAt: -1 }).toArray();
+    
+    // Ensure paidAmount and totalDue fields are included (default to 0 if not present)
+    const dataWithBalance = data.map(emp => ({
+      ...emp,
+      paidAmount: Number(emp.paidAmount || 0),
+      totalDue: Number(emp.totalDue || 0)
+    }));
+    
+    res.json({ success: true, data: dataWithBalance });
   } catch (e) {
-    console.error('List farm employees error:', e);
+    console.error('List employees error:', e);
     res.status(500).json({ success: false, message: 'Failed to fetch employees' });
   }
 });
@@ -25102,11 +25105,23 @@ app.get("/api/employees", async (req, res) => {
 app.get("/api/employees/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const emp = await farmEmployees.findOne({ id, isActive: { $ne: false } });
+    // Try employees collection first, fallback to farmEmployees for backward compatibility
+    let emp = await employees.findOne({ id, isActive: { $ne: false } });
+    if (!emp) {
+      emp = await farmEmployees.findOne({ id, isActive: { $ne: false } });
+    }
     if (!emp) return res.status(404).json({ success: false, message: 'Employee not found' });
-    res.json({ success: true, data: emp });
+    
+    // Ensure paidAmount and totalDue fields are included (default to 0 if not present)
+    const empWithBalance = {
+      ...emp,
+      paidAmount: Number(emp.paidAmount || 0),
+      totalDue: Number(emp.totalDue || 0)
+    };
+    
+    res.json({ success: true, data: empWithBalance });
   } catch (e) {
-    console.error('Get farm employee error:', e);
+    console.error('Get employee error:', e);
     res.status(500).json({ success: false, message: 'Failed to fetch employee' });
   }
 });
@@ -25117,8 +25132,15 @@ app.patch("/api/employees/:id", async (req, res) => {
     const { id } = req.params;
     const updateData = req.body || {};
 
-    // Check if employee exists
-    const emp = await farmEmployees.findOne({ id, isActive: { $ne: false } });
+    // Check if employee exists - try employees collection first, fallback to farmEmployees
+    let emp = await employees.findOne({ id, isActive: { $ne: false } });
+    let employeeCollection = employees;
+    if (!emp) {
+      emp = await farmEmployees.findOne({ id, isActive: { $ne: false } });
+      if (emp) {
+        employeeCollection = farmEmployees;
+      }
+    }
     if (!emp) {
       return res.status(404).json({ success: false, message: 'Employee not found' });
     }
@@ -25168,7 +25190,7 @@ app.patch("/api/employees/:id", async (req, res) => {
     }
 
     // Update employee
-    const result = await farmEmployees.updateOne(
+    const result = await employeeCollection.updateOne(
       { id, isActive: { $ne: false } },
       update
     );
@@ -25178,7 +25200,7 @@ app.patch("/api/employees/:id", async (req, res) => {
     }
 
     // Get updated employee
-    const updatedEmp = await farmEmployees.findOne({ id, isActive: { $ne: false } });
+    const updatedEmp = await employeeCollection.findOne({ id, isActive: { $ne: false } });
 
     res.json({
       success: true,
@@ -25195,13 +25217,21 @@ app.patch("/api/employees/:id", async (req, res) => {
 app.delete("/api/employees/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const emp = await farmEmployees.findOne({ id, isActive: { $ne: false } });
+    // Try employees collection first, fallback to farmEmployees
+    let emp = await employees.findOne({ id, isActive: { $ne: false } });
+    let employeeCollection = employees;
+    if (!emp) {
+      emp = await farmEmployees.findOne({ id, isActive: { $ne: false } });
+      if (emp) {
+        employeeCollection = farmEmployees;
+      }
+    }
     if (!emp) return res.status(404).json({ success: false, message: 'Employee not found' });
-    await farmEmployees.updateOne({ id }, { $set: { isActive: false, updatedAt: new Date() } });
+    await employeeCollection.updateOne({ id }, { $set: { isActive: false, updatedAt: new Date() } });
     await attendanceRecords.updateMany({ employeeId: id }, { $set: { isActive: false, updatedAt: new Date() } });
     res.json({ success: true, message: 'Employee deleted' });
   } catch (e) {
-    console.error('Delete farm employee error:', e);
+    console.error('Delete employee error:', e);
     res.status(500).json({ success: false, message: 'Failed to delete employee' });
   }
 });
@@ -25222,7 +25252,11 @@ app.post("/api/attendance", async (req, res) => {
       return res.status(400).json({ success: false, message: 'employeeId and date are required' });
     }
 
-    const emp = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } });
+    // Try employees collection first, fallback to farmEmployees
+    let emp = await employees.findOne({ id: employeeId, isActive: { $ne: false } });
+    if (!emp) {
+      emp = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } });
+    }
     if (!emp) return res.status(404).json({ success: false, message: 'Employee not found' });
 
     const attId = await generateSequentialId('ATT');
@@ -25273,7 +25307,20 @@ app.get("/api/employees/stats", async (req, res) => {
     const today = new Date().toISOString().split('T')[0];
     const thisMonth = new Date().toISOString().slice(0, 7);
 
-    const allEmployees = await farmEmployees.find({ isActive: { $ne: false } }).toArray();
+    // Get employees from both collections and merge
+    const employeesList = await employees.find({ isActive: { $ne: false } }).toArray();
+    const farmEmployeesList = await farmEmployees.find({ isActive: { $ne: false } }).toArray();
+    
+    // Merge and deduplicate by id
+    const employeeMap = new Map();
+    employeesList.forEach(emp => employeeMap.set(emp.id, emp));
+    farmEmployeesList.forEach(emp => {
+      if (!employeeMap.has(emp.id)) {
+        employeeMap.set(emp.id, emp);
+      }
+    });
+    const allEmployees = Array.from(employeeMap.values());
+    
     const activeEmployees = allEmployees.filter(e => e.status === 'active').length;
     const totalSalary = allEmployees
       .filter(e => e.status === 'active')
@@ -27058,8 +27105,8 @@ app.get("/api/dashboard/summary", async (req, res) => {
 
     const milkStat = milkStats[0] || { totalProduction: 0, totalCount: 0 };
 
-    // Farm Employees
-    const farmEmployeeStats = await farmEmployees.aggregate([
+    // Farm Employees - aggregate from both employees and farmEmployees collections
+    const employeesStats = await employees.aggregate([
       { $match: { isActive: { $ne: false } } },
       {
         $group: {
@@ -27069,6 +27116,40 @@ app.get("/api/dashboard/summary", async (req, res) => {
         }
       }
     ]).toArray();
+    
+    const farmEmployeesStats = await farmEmployees.aggregate([
+      { $match: { isActive: { $ne: false } } },
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          totalSalary: { $sum: { $ifNull: ["$salary", 0] } }
+        }
+      }
+    ]).toArray();
+
+    // Merge stats from both collections, deduplicate by status
+    const statusMap = new Map();
+    employeesStats.forEach(stat => {
+      const existing = statusMap.get(stat._id) || { count: 0, totalSalary: 0 };
+      statusMap.set(stat._id, {
+        count: existing.count + stat.count,
+        totalSalary: existing.totalSalary + stat.totalSalary
+      });
+    });
+    farmEmployeesStats.forEach(stat => {
+      const existing = statusMap.get(stat._id) || { count: 0, totalSalary: 0 };
+      statusMap.set(stat._id, {
+        count: existing.count + stat.count,
+        totalSalary: existing.totalSalary + stat.totalSalary
+      });
+    });
+    
+    const farmEmployeeStats = Array.from(statusMap.entries()).map(([status, data]) => ({
+      _id: status,
+      count: data.count,
+      totalSalary: data.totalSalary
+    }));
 
     let totalFarmEmployees = 0;
     let activeFarmEmployees = 0;
