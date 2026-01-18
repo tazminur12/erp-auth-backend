@@ -11346,6 +11346,145 @@ app.post("/api/transactions", async (req, res) => {
       await loans.updateOne({ _id: party._id, status: { $ne: 'Active' } }, { $set: { status: 'Active', updatedAt: new Date() } }, { session });
       }
 
+      // 8.6.1 If employeeReference is provided OR if customerType is 'miraj-employee', update employee financial data
+      let updatedEmployee = null;
+      const isEmployeeTransaction = employeeReference || (req.body?.customerType === 'miraj-employee' || finalPartyType === 'employee');
+
+      if (isEmployeeTransaction) {
+        try {
+          // Determine employee ID from multiple sources
+          let employeeId = null;
+          
+          if (employeeReference) {
+            // If employeeReference is an object, extract ID
+            if (typeof employeeReference === 'object' && employeeReference.id) {
+              employeeId = String(employeeReference.id).trim();
+            } else if (typeof employeeReference === 'object' && employeeReference.employeeId) {
+              employeeId = String(employeeReference.employeeId).trim();
+            } else if (typeof employeeReference === 'string') {
+              employeeId = String(employeeReference).trim();
+            }
+          }
+          
+          // If no employeeId from employeeReference, try partyId when customerType is 'miraj-employee'
+          if (!employeeId && (req.body?.customerType === 'miraj-employee' || finalPartyType === 'employee')) {
+            employeeId = String(finalPartyId).trim();
+          }
+          
+          if (employeeId) {
+            // Try to find employee in 'employees' collection first (main collection)
+            let employee = null;
+            let employeeCollection = null;
+            let employeeQuery = null;
+            
+            // Try by _id (ObjectId) in employees collection
+            if (ObjectId.isValid(employeeId)) {
+              try {
+                const employeesCollection = db.collection("employees");
+                employee = await employeesCollection.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = employeesCollection;
+                  employeeQuery = { _id: employee._id };
+                  employee._isFromEmployees = true;
+                }
+              } catch (e) {
+                // employees collection might not exist, continue
+              }
+            }
+            
+            // Try by employeeId field in employees collection
+            if (!employee) {
+              try {
+                const employeesCollection = db.collection("employees");
+                employee = await employeesCollection.findOne({ employeeId: employeeId, isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = employeesCollection;
+                  employeeQuery = { employeeId: employeeId };
+                  employee._isFromEmployees = true;
+                }
+              } catch (e) {
+                // employees collection might not exist, continue
+              }
+            }
+            
+            // Try by id field (numeric) in employees collection
+            if (!employee && !isNaN(Number(employeeId))) {
+              try {
+                const employeesCollection = db.collection("employees");
+                employee = await employeesCollection.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = employeesCollection;
+                  employeeQuery = { id: employee.id };
+                  employee._isFromEmployees = true;
+                }
+              } catch (e) {
+                // employees collection might not exist, continue
+              }
+            }
+            
+            // Fallback: Try farmEmployees if not found in employees (for backward compatibility)
+            if (!employee) {
+              if (ObjectId.isValid(employeeId)) {
+                employee = await farmEmployees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = farmEmployees;
+                  employeeQuery = { _id: employee._id };
+                }
+              } else if (!isNaN(Number(employeeId))) {
+                employee = await farmEmployees.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = farmEmployees;
+                  employeeQuery = { id: employee.id };
+                }
+              } else {
+                employee = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = farmEmployees;
+                  employeeQuery = { id: employee.id };
+                }
+              }
+            }
+            
+            if (employee && employeeCollection && employeeQuery) {
+              // Employee transaction logic:
+              // Debit = payment to employee (salary/advance) -> increases paidAmount, decreases totalDue
+              // Credit = employee pays back -> decreases paidAmount, increases totalDue
+              const employeeDueDelta = transactionType === 'debit' ? -numericAmount : (transactionType === 'credit' ? numericAmount : 0);
+              
+              const employeeUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: employeeDueDelta } };
+              
+              // Track paidAmount: debit increases it (payment to employee), credit decreases it (employee pays back)
+              if (transactionType === 'debit') {
+                employeeUpdate.$inc.paidAmount = (employeeUpdate.$inc.paidAmount || 0) + numericAmount;
+              } else if (transactionType === 'credit') {
+                employeeUpdate.$inc.paidAmount = (employeeUpdate.$inc.paidAmount || 0) - numericAmount;
+              }
+              
+              await employeeCollection.updateOne(employeeQuery, employeeUpdate, { session });
+              
+              // Clamp negatives and ensure paidAmount doesn't go negative
+              const afterEmployee = await employeeCollection.findOne(employeeQuery, { session });
+              const setClampEmployee = {};
+              if ((afterEmployee.totalDue || 0) < 0) setClampEmployee.totalDue = 0;
+              if ((afterEmployee.paidAmount || 0) < 0) setClampEmployee.paidAmount = 0;
+              
+              if (Object.keys(setClampEmployee).length) {
+                setClampEmployee.updatedAt = new Date();
+                await employeeCollection.updateOne(employeeQuery, { $set: setClampEmployee }, { session });
+              }
+              
+              updatedEmployee = await employeeCollection.findOne(employeeQuery, { session });
+              console.log(`Employee balance updated: ${employeeId}, dueDelta: ${employeeDueDelta}, paidAmount: ${transactionType === 'debit' ? '+' : '-'}${numericAmount}`);
+            } else {
+              console.warn(`Employee not found for employeeId: ${employeeId}`);
+            }
+          }
+        } catch (employeeUpdateErr) {
+          console.warn('Failed to update employee from transaction:', employeeUpdateErr?.message);
+          // Don't fail the transaction if employee update fails
+        }
+      }
+
       transactionResult = await transactions.insertOne(transactionData, { session });
 
       // 8.7 If Miraj (farm) income/expense, sync the corresponding doc's amount to transaction amount
@@ -11523,6 +11662,7 @@ app.post("/api/transactions", async (req, res) => {
         agent: updatedAgent || null,
         customer: updatedCustomer || null,
         vendor: updatedVendor || null,
+        employee: updatedEmployee || null,
         invoice: updatedInvoice || null
       });
 
@@ -12172,6 +12312,138 @@ app.delete("/api/transactions/:id", async (req, res) => {
               clampLoan.updatedAt = new Date();
               await loans.updateOne({ _id: loanDoc._id }, { $set: clampLoan }, { session });
             }
+          }
+        }
+
+        // 2.7 Employee (reverse employee financial updates)
+        const isEmployeeTransactionDelete = tx.employeeReference || (tx.customerType === 'miraj-employee' || partyType === 'employee');
+        
+        if (isEmployeeTransactionDelete) {
+          try {
+            // Determine employee ID from multiple sources
+            let employeeId = null;
+            
+            if (tx.employeeReference) {
+              // If employeeReference is an object, extract ID
+              if (typeof tx.employeeReference === 'object' && tx.employeeReference.id) {
+                employeeId = String(tx.employeeReference.id).trim();
+              } else if (typeof tx.employeeReference === 'object' && tx.employeeReference.employeeId) {
+                employeeId = String(tx.employeeReference.employeeId).trim();
+              } else if (typeof tx.employeeReference === 'string') {
+                employeeId = String(tx.employeeReference).trim();
+              }
+            }
+            
+            // If no employeeId from employeeReference, try partyId when customerType is 'miraj-employee'
+            if (!employeeId && (tx.customerType === 'miraj-employee' || partyType === 'employee')) {
+              employeeId = String(partyId).trim();
+            }
+            
+            if (employeeId) {
+              // Try to find employee in 'employees' collection first (main collection)
+              let employee = null;
+              let employeeCollection = null;
+              let employeeQuery = null;
+              
+              // Try by _id (ObjectId) in employees collection
+              if (ObjectId.isValid(employeeId)) {
+                try {
+                  const employeesCollection = db.collection("employees");
+                  employee = await employeesCollection.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
+                  if (employee) {
+                    employeeCollection = employeesCollection;
+                    employeeQuery = { _id: employee._id };
+                  }
+                } catch (e) {
+                  // employees collection might not exist, continue
+                }
+              }
+              
+              // Try by employeeId field in employees collection
+              if (!employee) {
+                try {
+                  const employeesCollection = db.collection("employees");
+                  employee = await employeesCollection.findOne({ employeeId: employeeId, isActive: { $ne: false } }, { session });
+                  if (employee) {
+                    employeeCollection = employeesCollection;
+                    employeeQuery = { employeeId: employeeId };
+                  }
+                } catch (e) {
+                  // employees collection might not exist, continue
+                }
+              }
+              
+              // Try by id field (numeric) in employees collection
+              if (!employee && !isNaN(Number(employeeId))) {
+                try {
+                  const employeesCollection = db.collection("employees");
+                  employee = await employeesCollection.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
+                  if (employee) {
+                    employeeCollection = employeesCollection;
+                    employeeQuery = { id: employee.id };
+                  }
+                } catch (e) {
+                  // employees collection might not exist, continue
+                }
+              }
+              
+              // Fallback: Try farmEmployees if not found in employees (for backward compatibility)
+              if (!employee) {
+                if (ObjectId.isValid(employeeId)) {
+                  employee = await farmEmployees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
+                  if (employee) {
+                    employeeCollection = farmEmployees;
+                    employeeQuery = { _id: employee._id };
+                  }
+                } else if (!isNaN(Number(employeeId))) {
+                  employee = await farmEmployees.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
+                  if (employee) {
+                    employeeCollection = farmEmployees;
+                    employeeQuery = { id: employee.id };
+                  }
+                } else {
+                  employee = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
+                  if (employee) {
+                    employeeCollection = farmEmployees;
+                    employeeQuery = { id: employee.id };
+                  }
+                }
+              }
+              
+              if (employee && employeeCollection && employeeQuery) {
+                // Reverse employee transaction logic:
+                // Creation: debit => -due, +paidAmount | credit => +due, -paidAmount
+                // Deletion: debit => +due, -paidAmount | credit => -due, +paidAmount
+                const employeeDueDelta = transactionType === 'debit' ? numericAmount : (transactionType === 'credit' ? -numericAmount : 0);
+                
+                const employeeUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: employeeDueDelta } };
+                
+                // Reverse paidAmount: debit decreases it, credit increases it
+                if (transactionType === 'debit') {
+                  employeeUpdate.$inc.paidAmount = (employeeUpdate.$inc.paidAmount || 0) - numericAmount;
+                } else if (transactionType === 'credit') {
+                  employeeUpdate.$inc.paidAmount = (employeeUpdate.$inc.paidAmount || 0) + numericAmount;
+                }
+                
+                await employeeCollection.updateOne(employeeQuery, employeeUpdate, { session });
+                
+                // Clamp negatives
+                const afterEmployee = await employeeCollection.findOne(employeeQuery, { session });
+                const setClampEmployee = {};
+                if ((afterEmployee.totalDue || 0) < 0) setClampEmployee.totalDue = 0;
+                if ((afterEmployee.paidAmount || 0) < 0) setClampEmployee.paidAmount = 0;
+                
+                if (Object.keys(setClampEmployee).length) {
+                  setClampEmployee.updatedAt = new Date();
+                  await employeeCollection.updateOne(employeeQuery, { $set: setClampEmployee }, { session });
+                }
+                
+                console.log(`Employee balance reversed: ${employeeId}, dueDelta: ${employeeDueDelta}, paidAmount: ${transactionType === 'debit' ? '-' : '+'}${numericAmount}`);
+              }
+            }
+          } catch (employeeReverseErr) {
+            console.warn('Failed to reverse employee update from transaction deletion:', employeeReverseErr?.message);
+            // Don't fail the transaction deletion if employee reversal fails
           }
         }
       }
@@ -24320,7 +24592,7 @@ app.get("/api/hr/employers", async (req, res) => {
   try {
     const {
       page = 1,
-      limit = 10,
+      limit = 1000,
       search,
       department,
       status,
@@ -24332,65 +24604,100 @@ app.get("/api/hr/employers", async (req, res) => {
     // Build filter object
     const filter = { isActive: true };
 
+    // Build $or conditions array (combine all $or conditions)
+    const orConditions = [];
+
+    // Search filter - use text search if available, fallback to regex
     if (search) {
-      filter.$or = [
-        { firstName: { $regex: search, $options: 'i' } },
-        { lastName: { $regex: search, $options: 'i' } },
-        { name: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
-        { position: { $regex: search, $options: 'i' } },
-        { designation: { $regex: search, $options: 'i' } },
-        { employeeId: { $regex: search, $options: 'i' } }
-      ];
+      const searchTerm = String(search).trim();
+      // Try text search first (faster)
+      try {
+        filter.$text = { $search: searchTerm };
+      } catch {
+        // Fallback to regex if text search fails
+        orConditions.push(
+          { firstName: { $regex: searchTerm, $options: 'i' } },
+          { lastName: { $regex: searchTerm, $options: 'i' } },
+          { name: { $regex: searchTerm, $options: 'i' } },
+          { email: { $regex: searchTerm, $options: 'i' } },
+          { phone: { $regex: searchTerm, $options: 'i' } },
+          { position: { $regex: searchTerm, $options: 'i' } },
+          { designation: { $regex: searchTerm, $options: 'i' } },
+          { employeeId: { $regex: searchTerm, $options: 'i' } }
+        );
+      }
     }
 
+    // Department filter (exact match for better performance)
     if (department) {
-      filter.department = { $regex: department, $options: 'i' };
+      filter.department = String(department).trim();
     }
 
+    // Status filter
     if (status) {
-      filter.status = status;
+      filter.status = String(status).trim();
     }
 
+    // Branch filter - add to $or conditions
     if (branch) {
-      filter.$or = [
-        { branch: branch },
-        { branchId: branch }
-      ];
+      orConditions.push(
+        { branch: String(branch).trim() },
+        { branchId: String(branch).trim() }
+      );
     }
 
+    // Position filter - add to $or conditions
     if (position) {
-      filter.$or = [
-        { position: { $regex: position, $options: 'i' } },
-        { designation: { $regex: position, $options: 'i' } }
-      ];
+      const positionTerm = String(position).trim();
+      orConditions.push(
+        { position: { $regex: positionTerm, $options: 'i' } },
+        { designation: { $regex: positionTerm, $options: 'i' } }
+      );
     }
 
+    // Employment type filter
     if (employmentType) {
-      filter.employmentType = employmentType;
+      filter.employmentType = String(employmentType).trim();
+    }
+
+    // Combine all $or conditions if any exist
+    if (orConditions.length > 0) {
+      if (filter.$or) {
+        // If $or already exists (from text search), combine with $and
+        filter.$and = [
+          { $or: filter.$or },
+          { $or: orConditions }
+        ];
+        delete filter.$or;
+      } else {
+        filter.$or = orConditions;
+      }
     }
 
     // Calculate pagination
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const total = await hrManagement.countDocuments(filter);
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+    const skip = (pageNum - 1) * limitNum;
 
-    // Get employees with pagination
-    const employees = await hrManagement
-      .find(filter)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .toArray();
+    // Use Promise.all for parallel execution
+    const [employees, total] = await Promise.all([
+      hrManagement
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .toArray(),
+      hrManagement.countDocuments(filter)
+    ]);
 
     res.json({
       success: true,
       data: employees,
       pagination: {
-        currentPage: parseInt(page),
-        totalPages: Math.ceil(total / parseInt(limit)),
+        currentPage: pageNum,
+        totalPages: Math.ceil(total / limitNum),
         totalItems: total,
-        itemsPerPage: parseInt(limit)
+        itemsPerPage: limitNum
       }
     });
 
@@ -24399,7 +24706,8 @@ app.get("/api/hr/employers", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Internal server error",
-      message: "Failed to fetch employees"
+      message: "Failed to fetch employees",
+      details: error.message
     });
   }
 });
