@@ -24594,115 +24594,156 @@ app.get("/api/hr/employers", async (req, res) => {
       branch,
       position,
       employmentType
-    } = req.query;
+    } = req.query || {};
 
     // Build filter object
     const filter = { isActive: true };
 
-    // Build $or conditions array (combine all $or conditions)
-    const orConditions = [];
+    // Build $or conditions array for search
+    const searchConditions = [];
 
-    // Search filter - use text search if available, fallback to regex
-    if (search) {
+    // Search filter - use regex for flexible search
+    if (search && String(search).trim()) {
       const searchTerm = String(search).trim();
-      // Try text search first (faster)
-      try {
-        filter.$text = { $search: searchTerm };
-      } catch {
-        // Fallback to regex if text search fails
-        orConditions.push(
-          { firstName: { $regex: searchTerm, $options: 'i' } },
-          { lastName: { $regex: searchTerm, $options: 'i' } },
-          { name: { $regex: searchTerm, $options: 'i' } },
-          { email: { $regex: searchTerm, $options: 'i' } },
-          { phone: { $regex: searchTerm, $options: 'i' } },
-          { position: { $regex: searchTerm, $options: 'i' } },
-          { designation: { $regex: searchTerm, $options: 'i' } },
-          { employeeId: { $regex: searchTerm, $options: 'i' } }
-        );
-      }
+      // Escape special regex characters to prevent errors
+      const escapedSearchTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      searchConditions.push(
+        { firstName: { $regex: escapedSearchTerm, $options: 'i' } },
+        { lastName: { $regex: escapedSearchTerm, $options: 'i' } },
+        { name: { $regex: escapedSearchTerm, $options: 'i' } },
+        { email: { $regex: escapedSearchTerm, $options: 'i' } },
+        { phone: { $regex: escapedSearchTerm, $options: 'i' } },
+        { position: { $regex: escapedSearchTerm, $options: 'i' } },
+        { designation: { $regex: escapedSearchTerm, $options: 'i' } },
+        { employeeId: { $regex: escapedSearchTerm, $options: 'i' } }
+      );
     }
 
     // Department filter (exact match for better performance)
-    if (department) {
+    if (department && String(department).trim()) {
       filter.department = String(department).trim();
     }
 
     // Status filter
-    if (status) {
+    if (status && String(status).trim()) {
       filter.status = String(status).trim();
     }
 
-    // Branch filter - add to $or conditions
-    if (branch) {
-      orConditions.push(
-        { branch: String(branch).trim() },
-        { branchId: String(branch).trim() }
-      );
-    }
-
-    // Position filter - add to $or conditions
-    if (position) {
-      const positionTerm = String(position).trim();
-      orConditions.push(
-        { position: { $regex: positionTerm, $options: 'i' } },
-        { designation: { $regex: positionTerm, $options: 'i' } }
-      );
-    }
-
-    // Employment type filter
-    if (employmentType) {
-      filter.employmentType = String(employmentType).trim();
-    }
-
-    // Combine all $or conditions if any exist
-    if (orConditions.length > 0) {
-      if (filter.$or) {
-        // If $or already exists (from text search), combine with $and
-        filter.$and = [
-          { $or: filter.$or },
-          { $or: orConditions }
-        ];
-        delete filter.$or;
+    // Branch filter - add to search conditions if not already in search
+    if (branch && String(branch).trim()) {
+      const branchTerm = String(branch).trim();
+      if (!search || !String(search).trim()) {
+        // Only add branch to $or if there's no search term
+        searchConditions.push(
+          { branch: branchTerm },
+          { branchId: branchTerm }
+        );
       } else {
-        filter.$or = orConditions;
+        // If search exists, add branch as separate filter
+        filter.$or = [
+          { branch: branchTerm },
+          { branchId: branchTerm }
+        ];
       }
     }
 
-    // Calculate pagination
+    // Position filter
+    if (position && String(position).trim()) {
+      const positionTerm = String(position).trim();
+      const escapedPositionTerm = positionTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      if (!search || !String(search).trim()) {
+        // Only add position to $or if there's no search term
+        searchConditions.push(
+          { position: { $regex: escapedPositionTerm, $options: 'i' } },
+          { designation: { $regex: escapedPositionTerm, $options: 'i' } }
+        );
+      } else {
+        // If search exists, combine with $and
+        if (!filter.$and) filter.$and = [];
+        filter.$and.push({
+          $or: [
+            { position: { $regex: escapedPositionTerm, $options: 'i' } },
+            { designation: { $regex: escapedPositionTerm, $options: 'i' } }
+          ]
+        });
+      }
+    }
+
+    // Employment type filter
+    if (employmentType && String(employmentType).trim()) {
+      filter.employmentType = String(employmentType).trim();
+    }
+
+    // Add search conditions to filter
+    if (searchConditions.length > 0) {
+      if (filter.$or) {
+        // If $or already exists (from branch filter), combine with $and
+        if (!filter.$and) filter.$and = [];
+        filter.$and.push({ $or: filter.$or });
+        filter.$and.push({ $or: searchConditions });
+        delete filter.$or;
+      } else {
+        filter.$or = searchConditions;
+      }
+    }
+
+    // Calculate pagination with validation
     const pageNum = Math.max(parseInt(page) || 1, 1);
-    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 1000);
     const skip = (pageNum - 1) * limitNum;
 
-    // Use Promise.all for parallel execution
-    const [employees, total] = await Promise.all([
-      hrManagement
-        .find(filter)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .toArray(),
-      hrManagement.countDocuments(filter)
-    ]);
+    // Validate filter before query
+    if (!filter || typeof filter !== 'object') {
+      throw new Error('Invalid filter object');
+    }
+
+    // Use Promise.all for parallel execution with error handling
+    let employees = [];
+    let total = 0;
+
+    try {
+      [employees, total] = await Promise.all([
+        hrManagement
+          .find(filter)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limitNum)
+          .toArray(),
+        hrManagement.countDocuments(filter)
+      ]);
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      // If query fails, return empty result instead of crashing
+      employees = [];
+      total = 0;
+    }
+
+    // Ensure employees is an array
+    if (!Array.isArray(employees)) {
+      employees = [];
+    }
 
     res.json({
       success: true,
       data: employees,
       pagination: {
         currentPage: pageNum,
-        totalPages: Math.ceil(total / limitNum),
-        totalItems: total,
+        totalPages: Math.ceil(total / limitNum) || 0,
+        totalItems: total || 0,
         itemsPerPage: limitNum
       }
     });
 
   } catch (error) {
     console.error("❌ Get employees error:", error);
+    // Return error response that won't crash the UI
     res.status(500).json({
       success: false,
       error: "Internal server error",
       message: "Failed to fetch employees",
-      details: error.message
+      details: error.message || "Unknown error occurred"
     });
   }
 });
@@ -24712,18 +24753,45 @@ app.get("/api/hr/employers/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    const orFilters = [
-      { employeeId: id },
-      { employerId: id } // For backward compatibility
-    ];
-    if (ObjectId.isValid(id)) {
-      orFilters.unshift({ _id: new ObjectId(id) });
+    // Validate id parameter
+    if (!id || !String(id).trim()) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid ID",
+        message: "Employee ID is required"
+      });
     }
 
-    const employee = await hrManagement.findOne({
-      $or: orFilters,
-      isActive: true
-    });
+    const orFilters = [
+      { employeeId: String(id).trim() },
+      { employerId: String(id).trim() } // For backward compatibility
+    ];
+    
+    // Only add ObjectId filter if id is valid ObjectId
+    try {
+      if (ObjectId.isValid(id)) {
+        orFilters.unshift({ _id: new ObjectId(id) });
+      }
+    } catch (objectIdError) {
+      // Ignore ObjectId conversion errors, continue with other filters
+      console.warn("ObjectId conversion warning:", objectIdError.message);
+    }
+
+    let employee = null;
+    try {
+      employee = await hrManagement.findOne({
+        $or: orFilters,
+        isActive: true
+      });
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to query employee",
+        details: queryError.message
+      });
+    }
 
     if (!employee) {
       return res.status(404).json({
@@ -24743,7 +24811,8 @@ app.get("/api/hr/employers/:id", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Internal server error",
-      message: "Failed to fetch employee"
+      message: "Failed to fetch employee",
+      details: error.message || "Unknown error occurred"
     });
   }
 });
@@ -24752,7 +24821,16 @@ app.get("/api/hr/employers/:id", async (req, res) => {
 app.put("/api/hr/employers/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const updateData = req.body;
+    const updateData = req.body || {};
+
+    // Validate id parameter
+    if (!id || !String(id).trim()) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid ID",
+        message: "Employee ID is required"
+      });
+    }
 
     // Remove fields that shouldn't be updated directly
     delete updateData._id;
@@ -24760,15 +24838,38 @@ app.put("/api/hr/employers/:id", async (req, res) => {
     delete updateData.employerId;
     delete updateData.createdAt;
 
+    // Build query filters
+    const orFilters = [
+      { employeeId: String(id).trim() },
+      { employerId: String(id).trim() } // For backward compatibility
+    ];
+    
+    // Only add ObjectId filter if id is valid ObjectId
+    try {
+      if (ObjectId.isValid(id)) {
+        orFilters.unshift({ _id: new ObjectId(id) });
+      }
+    } catch (objectIdError) {
+      // Ignore ObjectId conversion errors, continue with other filters
+      console.warn("ObjectId conversion warning:", objectIdError.message);
+    }
+
     // Check if employee exists
-    const existingEmployee = await hrManagement.findOne({
-      $or: [
-        { _id: new ObjectId(id) },
-        { employeeId: id },
-        { employerId: id } // For backward compatibility
-      ],
-      isActive: true
-    });
+    let existingEmployee = null;
+    try {
+      existingEmployee = await hrManagement.findOne({
+        $or: orFilters,
+        isActive: true
+      });
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to query employee",
+        details: queryError.message
+      });
+    }
 
     if (!existingEmployee) {
       return res.status(404).json({
@@ -24832,17 +24933,37 @@ app.put("/api/hr/employers/:id", async (req, res) => {
       updateFields.allowances = parseFloat(updateFields.allowances) || 0;
     }
 
-    const result = await hrManagement.updateOne(
-      {
-        $or: [
-          { _id: new ObjectId(id) },
-          { employeeId: id },
-          { employerId: id } // For backward compatibility
-        ],
-        isActive: true
-      },
-      { $set: updateFields }
-    );
+    // Build update query filters (same as find query)
+    const updateOrFilters = [
+      { employeeId: String(id).trim() },
+      { employerId: String(id).trim() }
+    ];
+    try {
+      if (ObjectId.isValid(id)) {
+        updateOrFilters.unshift({ _id: new ObjectId(id) });
+      }
+    } catch (objectIdError) {
+      // Ignore ObjectId conversion errors
+    }
+
+    let result = null;
+    try {
+      result = await hrManagement.updateOne(
+        {
+          $or: updateOrFilters,
+          isActive: true
+        },
+        { $set: updateFields }
+      );
+    } catch (updateError) {
+      console.error("❌ Database update error:", updateError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to update employee",
+        details: updateError.message
+      });
+    }
 
     if (result.matchedCount === 0) {
       return res.status(404).json({
@@ -24853,14 +24974,22 @@ app.put("/api/hr/employers/:id", async (req, res) => {
     }
 
     // Get updated employee
-    const updatedEmployee = await hrManagement.findOne({
-      $or: [
-        { _id: new ObjectId(id) },
-        { employeeId: id },
-        { employerId: id } // For backward compatibility
-      ],
-      isActive: true
-    });
+    let updatedEmployee = null;
+    try {
+      updatedEmployee = await hrManagement.findOne({
+        $or: updateOrFilters,
+        isActive: true
+      });
+    } catch (queryError) {
+      console.error("❌ Database query error after update:", queryError);
+      // Still return success but without updated data
+      return res.json({
+        success: true,
+        message: "Employee updated successfully",
+        data: null,
+        warning: "Updated but could not fetch updated data"
+      });
+    }
 
     res.json({
       success: true,
@@ -24873,7 +25002,8 @@ app.put("/api/hr/employers/:id", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Internal server error",
-      message: "Failed to update employee"
+      message: "Failed to update employee",
+      details: error.message || "Unknown error occurred"
     });
   }
 });
@@ -24883,15 +25013,46 @@ app.delete("/api/hr/employers/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
+    // Validate id parameter
+    if (!id || !String(id).trim()) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid ID",
+        message: "Employee ID is required"
+      });
+    }
+
+    // Build query filters
+    const orFilters = [
+      { employeeId: String(id).trim() },
+      { employerId: String(id).trim() }
+    ];
+    
+    try {
+      if (ObjectId.isValid(id)) {
+        orFilters.unshift({ _id: new ObjectId(id) });
+      }
+    } catch (objectIdError) {
+      // Ignore ObjectId conversion errors
+      console.warn("ObjectId conversion warning:", objectIdError.message);
+    }
+
     // Check if employee exists
-    const existingEmployee = await hrManagement.findOne({
-      $or: [
-        { _id: new ObjectId(id) },
-        { employeeId: id },
-        { employerId: id } // For backward compatibility
-      ],
-      isActive: true
-    });
+    let existingEmployee = null;
+    try {
+      existingEmployee = await hrManagement.findOne({
+        $or: orFilters,
+        isActive: true
+      });
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to query employee",
+        details: queryError.message
+      });
+    }
 
     if (!existingEmployee) {
       return res.status(404).json({
@@ -24902,23 +25063,30 @@ app.delete("/api/hr/employers/:id", async (req, res) => {
     }
 
     // Soft delete
-    const result = await hrManagement.updateOne(
-      {
-        $or: [
-          { _id: new ObjectId(id) },
-          { employeeId: id },
-          { employerId: id } // For backward compatibility
-        ],
-        isActive: true
-      },
-      {
-        $set: {
-          isActive: false,
-          deletedAt: new Date(),
-          updatedAt: new Date()
+    let result = null;
+    try {
+      result = await hrManagement.updateOne(
+        {
+          $or: orFilters,
+          isActive: true
+        },
+        {
+          $set: {
+            isActive: false,
+            deletedAt: new Date(),
+            updatedAt: new Date()
+          }
         }
-      }
-    );
+      );
+    } catch (updateError) {
+      console.error("❌ Database update error:", updateError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to delete employee",
+        details: updateError.message
+      });
+    }
 
     if (result.matchedCount === 0) {
       return res.status(404).json({
@@ -24938,7 +25106,8 @@ app.delete("/api/hr/employers/:id", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Internal server error",
-      message: "Failed to delete employee"
+      message: "Failed to delete employee",
+      details: error.message || "Unknown error occurred"
     });
   }
 });
@@ -24946,52 +25115,88 @@ app.delete("/api/hr/employers/:id", async (req, res) => {
 // ✅ GET: Get employee statistics
 app.get("/api/hr/employers/stats/overview", async (req, res) => {
   try {
-    const { branch, branchId } = req.query;
+    const { branch, branchId } = req.query || {};
 
     const filter = { isActive: true };
-    if (branch) {
+    if (branch && String(branch).trim()) {
       filter.$or = [
-        { branch: branch },
-        { branchId: branch }
+        { branch: String(branch).trim() },
+        { branchId: String(branch).trim() }
       ];
-    } else if (branchId) {
+    } else if (branchId && String(branchId).trim()) {
       filter.$or = [
-        { branch: branchId },
-        { branchId: branchId }
+        { branch: String(branchId).trim() },
+        { branchId: String(branchId).trim() }
       ];
     }
 
-    const totalEmployees = await hrManagement.countDocuments(filter);
-    const activeEmployees = await hrManagement.countDocuments({ ...filter, status: "active" });
-    const inactiveEmployees = await hrManagement.countDocuments({ ...filter, status: "inactive" });
+    // Initialize default values
+    let totalEmployees = 0;
+    let activeEmployees = 0;
+    let inactiveEmployees = 0;
+    let departmentStats = [];
+    let positionStats = [];
+    let employmentTypeStats = [];
 
-    // Get department-wise count
-    const departmentStats = await hrManagement.aggregate([
-      { $match: filter },
-      { $group: { _id: "$department", count: { $sum: 1 } } },
-      { $sort: { count: -1 } }
-    ]).toArray();
+    try {
+      // Use Promise.all for parallel execution
+      [totalEmployees, activeEmployees, inactiveEmployees] = await Promise.all([
+        hrManagement.countDocuments(filter),
+        hrManagement.countDocuments({ ...filter, status: "active" }),
+        hrManagement.countDocuments({ ...filter, status: "inactive" })
+      ]);
 
-    // Get position-wise count
-    const positionStats = await hrManagement.aggregate([
-      { $match: filter },
-      { $group: { _id: "$position", count: { $sum: 1 } } },
-      { $sort: { count: -1 } }
-    ]).toArray();
+      // Get department-wise count
+      try {
+        departmentStats = await hrManagement.aggregate([
+          { $match: filter },
+          { $group: { _id: "$department", count: { $sum: 1 } } },
+          { $sort: { count: -1 } }
+        ]).toArray();
+      } catch (deptError) {
+        console.warn("❌ Department stats error:", deptError.message);
+        departmentStats = [];
+      }
 
-    // Get employment type-wise count
-    const employmentTypeStats = await hrManagement.aggregate([
-      { $match: filter },
-      { $group: { _id: "$employmentType", count: { $sum: 1 } } },
-      { $sort: { count: -1 } }
-    ]).toArray();
+      // Get position-wise count
+      try {
+        positionStats = await hrManagement.aggregate([
+          { $match: filter },
+          { $group: { _id: "$position", count: { $sum: 1 } } },
+          { $sort: { count: -1 } }
+        ]).toArray();
+      } catch (posError) {
+        console.warn("❌ Position stats error:", posError.message);
+        positionStats = [];
+      }
+
+      // Get employment type-wise count
+      try {
+        employmentTypeStats = await hrManagement.aggregate([
+          { $match: filter },
+          { $group: { _id: "$employmentType", count: { $sum: 1 } } },
+          { $sort: { count: -1 } }
+        ]).toArray();
+      } catch (empTypeError) {
+        console.warn("❌ Employment type stats error:", empTypeError.message);
+        employmentTypeStats = [];
+      }
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      // Return default values instead of crashing
+    }
+
+    // Ensure arrays are valid
+    if (!Array.isArray(departmentStats)) departmentStats = [];
+    if (!Array.isArray(positionStats)) positionStats = [];
+    if (!Array.isArray(employmentTypeStats)) employmentTypeStats = [];
 
     res.json({
       success: true,
       data: {
-        totalEmployees,
-        activeEmployees,
-        inactiveEmployees,
+        totalEmployees: totalEmployees || 0,
+        activeEmployees: activeEmployees || 0,
+        inactiveEmployees: inactiveEmployees || 0,
         departmentStats,
         positionStats,
         employmentTypeStats
@@ -25003,7 +25208,8 @@ app.get("/api/hr/employers/stats/overview", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Internal server error",
-      message: "Failed to fetch employee statistics"
+      message: "Failed to fetch employee statistics",
+      details: error.message || "Unknown error occurred"
     });
   }
 });
