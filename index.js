@@ -73,7 +73,7 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
     // Early return if already completed (idempotent)
     if (tx.status === 'completed') {
       // Return the current party snapshots (optional)
-      let agent = null, customer = null, vendor = null, invoice = null, sourceAccount = null, targetAccount = null;
+      let agent = null, customer = null, vendor = null, employee = null, invoice = null, sourceAccount = null, targetAccount = null;
 
       if (tx.partyType === 'agent' && tx.partyId) {
         const cond = ObjectId.isValid(tx.partyId)
@@ -112,6 +112,52 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
         invoice = await invoices.findOne(invCond);
       }
 
+      // Check for employee
+      const isEmployeeTx = tx.employeeReference || (tx.customerType === 'miraj-employee' || tx.partyType === 'employee');
+      if (isEmployeeTx) {
+        let employeeId = null;
+        if (tx.employeeReference) {
+          if (typeof tx.employeeReference === 'object' && tx.employeeReference.id) {
+            employeeId = String(tx.employeeReference.id).trim();
+          } else if (typeof tx.employeeReference === 'object' && tx.employeeReference.employeeId) {
+            employeeId = String(tx.employeeReference.employeeId).trim();
+          } else if (typeof tx.employeeReference === 'string') {
+            employeeId = String(tx.employeeReference).trim();
+          }
+        }
+        if (!employeeId && (tx.customerType === 'miraj-employee' || tx.partyType === 'employee')) {
+          employeeId = String(tx.partyId).trim();
+        }
+        if (employeeId) {
+          // Try employees collection first
+          if (ObjectId.isValid(employeeId) && employees) {
+            try {
+              employee = await employees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }).catch(() => null);
+            } catch (e) {}
+          }
+          if (!employee && employees) {
+            try {
+              employee = await employees.findOne({ employeeId: employeeId, isActive: { $ne: false } }).catch(() => null);
+            } catch (e) {}
+          }
+          if (!employee && !isNaN(Number(employeeId)) && employees) {
+            try {
+              employee = await employees.findOne({ id: Number(employeeId), isActive: { $ne: false } }).catch(() => null);
+            } catch (e) {}
+          }
+          // Fallback to farmEmployees
+          if (!employee) {
+            if (ObjectId.isValid(employeeId)) {
+              employee = await farmEmployees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }).catch(() => null);
+            } else if (!isNaN(Number(employeeId))) {
+              employee = await farmEmployees.findOne({ id: Number(employeeId), isActive: { $ne: false } }).catch(() => null);
+            } else {
+              employee = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } }).catch(() => null);
+            }
+          }
+        }
+      }
+
       if (tx.sourceAccountId) {
         sourceAccount = await accounts.findOne({ _id: new ObjectId(tx.sourceAccountId) }).catch(() => null);
       }
@@ -123,7 +169,7 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
         success: true,
         message: 'Already completed',
         transaction: tx,
-        agent, customer, vendor, invoice,
+        agent, customer, vendor, employee, invoice,
         sourceAccount, targetAccount
       });
     }
@@ -135,6 +181,7 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
     let updatedAgent = null;
     let updatedCustomer = null;
     let updatedVendor = null;
+    let updatedEmployee = null;
     let updatedInvoice = null;
     let updatedSourceAccount = null;
     let updatedTargetAccount = null;
@@ -491,6 +538,138 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
         }
       }
 
+      // Employee balance update logic (similar to section 8.6.1 in POST /api/transactions)
+      const isEmployeeTransaction = tx.employeeReference || (tx.customerType === 'miraj-employee' || partyType === 'employee');
+
+      if (isEmployeeTransaction && hasValidAmount) {
+        try {
+          // Determine employee ID from multiple sources
+          let employeeId = null;
+          
+          if (tx.employeeReference) {
+            // If employeeReference is an object, extract ID
+            if (typeof tx.employeeReference === 'object' && tx.employeeReference.id) {
+              employeeId = String(tx.employeeReference.id).trim();
+            } else if (typeof tx.employeeReference === 'object' && tx.employeeReference.employeeId) {
+              employeeId = String(tx.employeeReference.employeeId).trim();
+            } else if (typeof tx.employeeReference === 'string') {
+              employeeId = String(tx.employeeReference).trim();
+            }
+          }
+          
+          // If no employeeId from employeeReference, try partyId when customerType is 'miraj-employee'
+          if (!employeeId && (tx.customerType === 'miraj-employee' || partyType === 'employee')) {
+            employeeId = String(tx.partyId).trim();
+          }
+          
+          if (employeeId) {
+            // Try to find employee in 'employees' collection first (main collection)
+            let employee = null;
+            let employeeCollection = null;
+            let employeeQuery = null;
+            
+            // Try by _id (ObjectId) in employees collection
+            if (ObjectId.isValid(employeeId) && employees) {
+              try {
+                employee = await employees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = employees;
+                  employeeQuery = { _id: employee._id };
+                }
+              } catch (e) {
+                // employees collection might not exist, continue
+              }
+            }
+            
+            // Try by employeeId field in employees collection
+            if (!employee && employees) {
+              try {
+                employee = await employees.findOne({ employeeId: employeeId, isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = employees;
+                  employeeQuery = { employeeId: employeeId };
+                }
+              } catch (e) {
+                // employees collection might not exist, continue
+              }
+            }
+            
+            // Try by id field (numeric) in employees collection
+            if (!employee && !isNaN(Number(employeeId)) && employees) {
+              try {
+                employee = await employees.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = employees;
+                  employeeQuery = { id: employee.id };
+                }
+              } catch (e) {
+                // employees collection might not exist, continue
+              }
+            }
+            
+            // Fallback: Try farmEmployees if not found in employees (for backward compatibility)
+            if (!employee) {
+              if (ObjectId.isValid(employeeId)) {
+                employee = await farmEmployees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = farmEmployees;
+                  employeeQuery = { _id: employee._id };
+                }
+              } else if (!isNaN(Number(employeeId))) {
+                employee = await farmEmployees.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = farmEmployees;
+                  employeeQuery = { id: employee.id };
+                }
+              } else {
+                employee = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = farmEmployees;
+                  employeeQuery = { id: employee.id };
+                }
+              }
+            }
+            
+            if (employee && employeeCollection && employeeQuery) {
+              // Employee transaction logic:
+              // Debit = payment to employee (salary/advance) -> increases paidAmount, decreases totalDue
+              // Credit = employee pays back -> decreases paidAmount, increases totalDue
+              const employeeDueDelta = transactionType === 'debit' ? -numericAmount : (transactionType === 'credit' ? numericAmount : 0);
+              
+              const employeeUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: employeeDueDelta } };
+              
+              // Track paidAmount: debit increases it (payment to employee), credit decreases it (employee pays back)
+              if (transactionType === 'debit') {
+                employeeUpdate.$inc.paidAmount = (employeeUpdate.$inc.paidAmount || 0) + numericAmount;
+              } else if (transactionType === 'credit') {
+                employeeUpdate.$inc.paidAmount = (employeeUpdate.$inc.paidAmount || 0) - numericAmount;
+              }
+              
+              await employeeCollection.updateOne(employeeQuery, employeeUpdate, { session });
+              
+              // Clamp negatives and ensure paidAmount doesn't go negative
+              const afterEmployee = await employeeCollection.findOne(employeeQuery, { session });
+              const setClampEmployee = {};
+              if ((afterEmployee.totalDue || 0) < 0) setClampEmployee.totalDue = 0;
+              if ((afterEmployee.paidAmount || 0) < 0) setClampEmployee.paidAmount = 0;
+              
+              if (Object.keys(setClampEmployee).length) {
+                setClampEmployee.updatedAt = new Date();
+                await employeeCollection.updateOne(employeeQuery, { $set: setClampEmployee }, { session });
+              }
+              
+              updatedEmployee = await employeeCollection.findOne(employeeQuery, { session });
+              console.log(`Employee balance updated in completeTransaction: ${employeeId}, dueDelta: ${employeeDueDelta}, paidAmount: ${transactionType === 'debit' ? '+' : '-'}${numericAmount}`);
+            } else {
+              console.warn(`Employee not found in completeTransaction for employeeId: ${employeeId}`);
+            }
+          }
+        } catch (employeeUpdateErr) {
+          console.warn('Failed to update employee from completeTransaction:', employeeUpdateErr?.message);
+          // Don't fail the transaction if employee update fails
+        }
+      }
+
       // Mark transaction completed now
       await transactions.updateOne(
         { _id: tx._id, status: { $ne: 'completed' } },
@@ -506,6 +685,7 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
         agent: updatedAgent || null,
         customer: updatedCustomer || null,
         vendor: updatedVendor || null,
+        employee: updatedEmployee || null,
         invoice: updatedInvoice || null,
         sourceAccount: updatedSourceAccount || null,
         targetAccount: updatedTargetAccount || null
