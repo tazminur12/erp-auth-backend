@@ -8069,9 +8069,50 @@ const normalizePersonalCategory = (doc) => ({
   name: doc.name || "",
   icon: doc.icon || "DollarSign",
   description: doc.description || "",
+  type: doc.type || "regular", // 'regular' or 'irregular'
   totalAmount: Number(doc.totalAmount || 0),
   lastUpdated: doc.lastUpdated || null,
   createdAt: doc.createdAt || null
+});
+
+// CREATE personal expense category
+app.post("/api/personal-expenses/categories", async (req, res) => {
+  try {
+    const { name, icon = "DollarSign", description = "", type = "regular" } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: true, message: "Name is required" });
+    }
+
+    // Validate type field
+    const validType = type === "regular" || type === "irregular" ? type : "regular";
+
+    // Prevent duplicate name (case-insensitive)
+    const existing = await personalExpenseCategories.findOne(
+      { name: String(name).trim() },
+      { collation: { locale: "en", strength: 2 } }
+    );
+    if (existing) {
+      return res.status(409).json({ error: true, message: "A category with this name already exists" });
+    }
+
+    const doc = {
+      name: String(name).trim(),
+      icon: String(icon || "DollarSign"),
+      description: String(description || "").trim(),
+      type: validType, // 'regular' or 'irregular'
+      createdAt: new Date().toISOString()
+    };
+
+    const result = await personalExpenseCategories.insertOne(doc);
+    const created = await personalExpenseCategories.findOne({ _id: result.insertedId });
+    return res.status(201).json(normalizePersonalCategory(created));
+  } catch (err) {
+    console.error("POST /api/personal-expenses/categories error:", err);
+    if (err && err.code === 11000) {
+      return res.status(409).json({ error: true, message: "A category with this name already exists" });
+    }
+    return res.status(500).json({ error: true, message: "Failed to create category" });
+  }
 });
 
 // GET all personal expense categories
@@ -8126,42 +8167,6 @@ app.get("/api/personal-expenses/categories/:id", async (req, res) => {
   } catch (err) {
     console.error("GET /api/personal-expenses/categories/:id error:", err);
     return res.status(500).json({ error: true, message: "Failed to load category" });
-  }
-});
-
-// CREATE personal expense category
-app.post("/api/personal-expenses/categories", async (req, res) => {
-  try {
-    const { name, icon = "DollarSign", description = "" } = req.body || {};
-    if (!name || !String(name).trim()) {
-      return res.status(400).json({ error: true, message: "Name is required" });
-    }
-
-    // Prevent duplicate name (case-insensitive)
-    const existing = await personalExpenseCategories.findOne(
-      { name: String(name).trim() },
-      { collation: { locale: "en", strength: 2 } }
-    );
-    if (existing) {
-      return res.status(409).json({ error: true, message: "A category with this name already exists" });
-    }
-
-    const doc = {
-      name: String(name).trim(),
-      icon: String(icon || "DollarSign"),
-      description: String(description || "").trim(),
-      createdAt: new Date().toISOString()
-    };
-
-    const result = await personalExpenseCategories.insertOne(doc);
-    const created = await personalExpenseCategories.findOne({ _id: result.insertedId });
-    return res.status(201).json(normalizePersonalCategory(created));
-  } catch (err) {
-    console.error("POST /api/personal-expenses/categories error:", err);
-    if (err && err.code === 11000) {
-      return res.status(409).json({ error: true, message: "A category with this name already exists" });
-    }
-    return res.status(500).json({ error: true, message: "Failed to create category" });
   }
 });
 
