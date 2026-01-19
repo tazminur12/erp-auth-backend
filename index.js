@@ -607,6 +607,19 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
               }
             }
             
+            // Try by id field (string) in employees collection (for string IDs like "EMP001")
+            if (!employee && employees) {
+              try {
+                employee = await employees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = employees;
+                  employeeQuery = { id: employee.id };
+                }
+              } catch (e) {
+                // employees collection might not exist, continue
+              }
+            }
+            
             // Fallback: Try farmEmployees if not found in employees (for backward compatibility)
             if (!employee) {
               if (ObjectId.isValid(employeeId)) {
@@ -622,6 +635,7 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
                   employeeQuery = { id: employee.id };
                 }
               } else {
+                // Try string id field
                 employee = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
                 if (employee) {
                   employeeCollection = farmEmployees;
@@ -11601,6 +11615,20 @@ app.post("/api/transactions", async (req, res) => {
               }
             }
             
+            // Try by id field (string) in employees collection (for string IDs like "EMP001")
+            if (!employee && employees) {
+              try {
+                employee = await employees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = employees;
+                  employeeQuery = { id: employee.id };
+                  employee._isFromEmployees = true;
+                }
+              } catch (e) {
+                // employees collection might not exist, continue
+              }
+            }
+            
             // Fallback: Try farmEmployees if not found in employees (for backward compatibility)
             if (!employee) {
               if (ObjectId.isValid(employeeId)) {
@@ -11616,6 +11644,7 @@ app.post("/api/transactions", async (req, res) => {
                   employeeQuery = { id: employee.id };
                 }
               } else {
+                // Try string id field
                 employee = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
                 if (employee) {
                   employeeCollection = farmEmployees;
@@ -12563,6 +12592,19 @@ app.delete("/api/transactions/:id", async (req, res) => {
                 }
               }
               
+              // Try by id field (string) in employees collection (for string IDs like "EMP001")
+              if (!employee && employees) {
+                try {
+                  employee = await employees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
+                  if (employee) {
+                    employeeCollection = employees;
+                    employeeQuery = { id: employee.id };
+                  }
+                } catch (e) {
+                  // employees collection might not exist, continue
+                }
+              }
+              
               // Fallback: Try farmEmployees if not found in employees (for backward compatibility)
               if (!employee) {
                 if (ObjectId.isValid(employeeId)) {
@@ -12578,6 +12620,7 @@ app.delete("/api/transactions/:id", async (req, res) => {
                     employeeQuery = { id: employee.id };
                   }
                 } else {
+                  // Try string id field
                   employee = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
                   if (employee) {
                     employeeCollection = farmEmployees;
