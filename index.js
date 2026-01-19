@@ -129,31 +129,21 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
           employeeId = String(tx.partyId).trim();
         }
         if (employeeId) {
-          // Try employees collection first
-          if (ObjectId.isValid(employeeId) && employees) {
+          // Try farmEmployees collection
+          if (ObjectId.isValid(employeeId) && farmEmployees) {
             try {
-              employee = await employees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }).catch(() => null);
-            } catch (e) {}
-          }
-          if (!employee && employees) {
-            try {
-              employee = await employees.findOne({ employeeId: employeeId, isActive: { $ne: false } }).catch(() => null);
-            } catch (e) {}
-          }
-          if (!employee && !isNaN(Number(employeeId)) && employees) {
-            try {
-              employee = await employees.findOne({ id: Number(employeeId), isActive: { $ne: false } }).catch(() => null);
-            } catch (e) {}
-          }
-          // Fallback to farmEmployees
-          if (!employee) {
-            if (ObjectId.isValid(employeeId)) {
               employee = await farmEmployees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }).catch(() => null);
-            } else if (!isNaN(Number(employeeId))) {
-              employee = await farmEmployees.findOne({ id: Number(employeeId), isActive: { $ne: false } }).catch(() => null);
-            } else {
+            } catch (e) {}
+          }
+          if (!employee && farmEmployees) {
+            try {
+              employee = await farmEmployees.findOne({ phone: employeeId, isActive: { $ne: false } }).catch(() => null);
+            } catch (e) {}
+          }
+          if (!employee && farmEmployees) {
+            try {
               employee = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } }).catch(() => null);
-            }
+            } catch (e) {}
           }
         }
       }
@@ -539,15 +529,187 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
       }
 
       // Employee balance update logic (similar to section 8.6.1 in POST /api/transactions)
-      const isEmployeeTransaction = tx.employeeReference || (tx.customerType === 'miraj-employee' || partyType === 'employee');
+      const isEmployeeTransactionMain = tx.employeeReference || (tx.customerType === 'miraj-employee' || partyType === 'employee');
 
-      if (isEmployeeTransaction && hasValidAmount) {
+      if (isEmployeeTransactionMain && hasValidAmount) {
         try {
+          console.log('🔍 Employee transaction detected in completeTransaction:', {
+            employeeReference: tx.employeeReference,
+            customerType: tx.customerType,
+            partyType,
+            partyId: tx.partyId
+          });
+          
           // Determine employee ID from multiple sources
           let employeeId = null;
           
           if (tx.employeeReference) {
             // If employeeReference is an object, extract ID
+            if (typeof tx.employeeReference === 'object') {
+              // Try _id first (ObjectId)
+              if (tx.employeeReference._id) {
+                employeeId = String(tx.employeeReference._id).trim();
+                console.log('📌 Extracted employeeId from tx.employeeReference._id:', employeeId);
+              } else if (tx.employeeReference.id) {
+                employeeId = String(tx.employeeReference.id).trim();
+                console.log('📌 Extracted employeeId from tx.employeeReference.id:', employeeId);
+              } else if (tx.employeeReference.employeeId) {
+                employeeId = String(tx.employeeReference.employeeId).trim();
+                console.log('📌 Extracted employeeId from tx.employeeReference.employeeId:', employeeId);
+              }
+            } else if (typeof tx.employeeReference === 'string') {
+              employeeId = String(tx.employeeReference).trim();
+              console.log('📌 Extracted employeeId from tx.employeeReference (string):', employeeId);
+            }
+          }
+          
+          // If no employeeId from employeeReference, try partyId when customerType is 'miraj-employee'
+          if (!employeeId && (tx.customerType === 'miraj-employee' || partyType === 'employee')) {
+            employeeId = String(tx.partyId).trim();
+            console.log('📌 Using tx.partyId as employeeId:', employeeId);
+          }
+          
+          if (employeeId) {
+            console.log('🔎 Searching for employee with ID in completeTransaction:', employeeId);
+            // Try to find employee in farmEmployees collection
+            let employee = null;
+            let employeeCollection = null;
+            let employeeQuery = null;
+            
+            // Try by _id (ObjectId) in farmEmployees collection
+            if (ObjectId.isValid(employeeId) && farmEmployees) {
+              try {
+                employee = await farmEmployees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = farmEmployees;
+                  employeeQuery = { _id: employee._id };
+                  console.log('✅ Found employee by ObjectId in farmEmployees collection');
+                }
+              } catch (e) {
+                console.warn('⚠️ ObjectId search failed in farmEmployees:', e.message);
+              }
+            }
+            
+            // Try by phone number in farmEmployees collection
+            if (!employee && farmEmployees) {
+              try {
+                employee = await farmEmployees.findOne({ phone: employeeId, isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = farmEmployees;
+                  employeeQuery = { phone: employeeId };
+                  console.log('✅ Found employee by phone in farmEmployees collection');
+                }
+              } catch (e) {
+                console.warn('⚠️ Phone search failed in farmEmployees:', e.message);
+              }
+            }
+            
+            // Try by id field in farmEmployees collection
+            if (!employee && farmEmployees) {
+              try {
+                console.log('🔍 Trying id field search in farmEmployees collection:', employeeId);
+                employee = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = farmEmployees;
+                  employeeQuery = { id: employeeId };
+                  console.log('✅ Found employee by id field in farmEmployees collection:', employeeId);
+                }
+              } catch (e) {
+                console.warn('⚠️ Id field search failed in farmEmployees:', e.message);
+              }
+            }
+            
+            
+            if (employee && employeeCollection && employeeQuery) {
+              console.log('💰 Updating employee balance in completeTransaction:', {
+                employeeId: employee.id || employee._id,
+                transactionType,
+                amount: numericAmount,
+                currentPaidAmount: employee.paidAmount || 0,
+                currentTotalDue: employee.totalDue || 0
+              });
+              // Employee transaction logic:
+              // Debit = payment to employee (salary/advance) -> increases paidAmount
+              // Credit = employee pays back -> decreases paidAmount
+              // totalDue = salary - paidAmount (calculated after update)
+              
+              const employeeUpdate = { $set: { updatedAt: new Date() } };
+              
+              // Track paidAmount: debit increases it (payment to employee), credit decreases it (employee pays back)
+              if (transactionType === 'debit') {
+                employeeUpdate.$inc = { paidAmount: numericAmount };
+              } else if (transactionType === 'credit') {
+                employeeUpdate.$inc = { paidAmount: -numericAmount };
+              }
+              
+              await employeeCollection.updateOne(employeeQuery, employeeUpdate, { session });
+              
+              // Get updated employee to calculate totalDue
+              const afterEmployee = await employeeCollection.findOne(employeeQuery, { session });
+              
+              // Calculate totalDue = salary - paidAmount (if salary exists)
+              const salary = Number(afterEmployee.salary || 0);
+              const paidAmount = Number(afterEmployee.paidAmount || 0);
+              const calculatedDue = salary > 0 ? Math.max(0, salary - paidAmount) : (Number(afterEmployee.totalDue || 0));
+              
+              const setClampEmployee = {};
+              
+              // Ensure paidAmount doesn't go negative
+              if (paidAmount < 0) {
+                setClampEmployee.paidAmount = 0;
+              }
+              
+              // Set totalDue based on salary calculation
+              if (salary > 0) {
+                setClampEmployee.totalDue = calculatedDue;
+              } else {
+                // If no salary, maintain current totalDue but ensure it's not negative
+                if ((afterEmployee.totalDue || 0) < 0) {
+                  setClampEmployee.totalDue = 0;
+                }
+              }
+              
+              if (Object.keys(setClampEmployee).length) {
+                setClampEmployee.updatedAt = new Date();
+                await employeeCollection.updateOne(employeeQuery, { $set: setClampEmployee }, { session });
+              }
+              
+              updatedEmployee = await employeeCollection.findOne(employeeQuery, { session });
+              
+              console.log(`✅ Employee balance updated successfully in completeTransaction:`, {
+                employeeId: employeeId,
+                employeeFoundId: updatedEmployee?.id || updatedEmployee?._id,
+                collection: 'farmEmployees',
+                paidAmountChange: `${transactionType === 'debit' ? '+' : '-'}${numericAmount}`,
+                newPaidAmount: updatedEmployee?.paidAmount || 0,
+                newTotalDue: updatedEmployee?.totalDue || 0
+              });
+            } else {
+              console.error(`❌ Employee not found in completeTransaction for employeeId: ${employeeId}`, {
+                searchedIn: ['farmEmployees'],
+                searchMethods: ['ObjectId', 'employeeId field', 'numeric id', 'string id']
+              });
+            }
+          } else {
+            console.warn('⚠️ No employeeId extracted from employeeReference or partyId in completeTransaction');
+          }
+        } catch (employeeUpdateErr) {
+          console.error('❌ Failed to update employee from completeTransaction:', employeeUpdateErr?.message, employeeUpdateErr?.stack);
+          // Don't fail the transaction if employee update fails
+        }
+      } else {
+        console.log('ℹ️ Not an employee transaction in completeTransaction - skipping employee update');
+      }
+
+      // Employee balance update logic for farmEmployees
+      let updatedFarmEmployee = null;
+      const isEmployeeTransactionFarm = tx.employeeReference || (tx.customerType === 'miraj-employee' || partyType === 'employee');
+      if (isEmployeeTransactionFarm && hasValidAmount) {
+        try {
+          // Determine employee ID from multiple sources
+          let employeeId = null;
+          
+          if (tx.employeeReference) {
             if (typeof tx.employeeReference === 'object' && tx.employeeReference.id) {
               employeeId = String(tx.employeeReference.id).trim();
             } else if (typeof tx.employeeReference === 'object' && tx.employeeReference.employeeId) {
@@ -557,94 +719,40 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
             }
           }
           
-          // If no employeeId from employeeReference, try partyId when customerType is 'miraj-employee'
           if (!employeeId && (tx.customerType === 'miraj-employee' || partyType === 'employee')) {
             employeeId = String(tx.partyId).trim();
           }
           
           if (employeeId) {
-            // Try to find employee in 'employees' collection first (main collection)
+            // Try to find employee in farmEmployees collection
             let employee = null;
-            let employeeCollection = null;
             let employeeQuery = null;
             
-            // Try by _id (ObjectId) in employees collection
-            if (ObjectId.isValid(employeeId) && employees) {
-              try {
-                employee = await employees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
-                if (employee) {
-                  employeeCollection = employees;
-                  employeeQuery = { _id: employee._id };
-                }
-              } catch (e) {
-                // employees collection might not exist, continue
+            // Try by ObjectId
+            if (ObjectId.isValid(employeeId)) {
+              employee = await farmEmployees.findOne({ _id: new ObjectId(employeeId), isActive: true }, { session });
+              if (employee) {
+                employeeQuery = { _id: employee._id };
               }
             }
             
-            // Try by employeeId field in employees collection
-            if (!employee && employees) {
-              try {
-                employee = await employees.findOne({ employeeId: employeeId, isActive: { $ne: false } }, { session });
-                if (employee) {
-                  employeeCollection = employees;
-                  employeeQuery = { employeeId: employeeId };
-                }
-              } catch (e) {
-                // employees collection might not exist, continue
-              }
-            }
-            
-            // Try by id field (numeric) in employees collection
-            if (!employee && !isNaN(Number(employeeId)) && employees) {
-              try {
-                employee = await employees.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
-                if (employee) {
-                  employeeCollection = employees;
-                  employeeQuery = { id: employee.id };
-                }
-              } catch (e) {
-                // employees collection might not exist, continue
-              }
-            }
-            
-            // Try by id field (string) in employees collection (for string IDs like "EMP001")
-            if (!employee && employees) {
-              try {
-                employee = await employees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
-                if (employee) {
-                  employeeCollection = employees;
-                  employeeQuery = { id: employee.id };
-                }
-              } catch (e) {
-                // employees collection might not exist, continue
-              }
-            }
-            
-            // Fallback: Try farmEmployees if not found in employees (for backward compatibility)
+            // Try by phone number (as backend supports phone lookup)
             if (!employee) {
-              if (ObjectId.isValid(employeeId)) {
-                employee = await farmEmployees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
-                if (employee) {
-                  employeeCollection = farmEmployees;
-                  employeeQuery = { _id: employee._id };
-                }
-              } else if (!isNaN(Number(employeeId))) {
-                employee = await farmEmployees.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
-                if (employee) {
-                  employeeCollection = farmEmployees;
-                  employeeQuery = { id: employee.id };
-                }
-              } else {
-                // Try string id field
-                employee = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
-                if (employee) {
-                  employeeCollection = farmEmployees;
-                  employeeQuery = { id: employee.id };
-                }
+              employee = await farmEmployees.findOne({ phone: employeeId, isActive: true }, { session });
+              if (employee) {
+                employeeQuery = { phone: employeeId };
               }
             }
             
-            if (employee && employeeCollection && employeeQuery) {
+            // Try by string id field
+            if (!employee) {
+              employee = await farmEmployees.findOne({ id: employeeId, isActive: true }, { session });
+              if (employee) {
+                employeeQuery = { id: employeeId };
+              }
+            }
+            
+            if (employee && employeeQuery) {
               // Employee transaction logic:
               // Debit = payment to employee (salary/advance) -> increases paidAmount, decreases totalDue
               // Credit = employee pays back -> decreases paidAmount, increases totalDue
@@ -659,27 +767,33 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
                 employeeUpdate.$inc.paidAmount = (employeeUpdate.$inc.paidAmount || 0) - numericAmount;
               }
               
-              await employeeCollection.updateOne(employeeQuery, employeeUpdate, { session });
+              await farmEmployees.updateOne(employeeQuery, employeeUpdate, { session });
               
               // Clamp negatives and ensure paidAmount doesn't go negative
-              const afterEmployee = await employeeCollection.findOne(employeeQuery, { session });
+              const afterEmployee = await farmEmployees.findOne(employeeQuery, { session });
               const setClampEmployee = {};
               if ((afterEmployee.totalDue || 0) < 0) setClampEmployee.totalDue = 0;
               if ((afterEmployee.paidAmount || 0) < 0) setClampEmployee.paidAmount = 0;
               
+              // Recalculate totalDue based on salary - paidAmount
+              const salary = Number(afterEmployee.salary || 0);
+              const paidAmount = Number(afterEmployee.paidAmount || 0);
+              const calculatedTotalDue = Math.max(0, salary - paidAmount);
+              setClampEmployee.totalDue = calculatedTotalDue;
+              
               if (Object.keys(setClampEmployee).length) {
                 setClampEmployee.updatedAt = new Date();
-                await employeeCollection.updateOne(employeeQuery, { $set: setClampEmployee }, { session });
+                await farmEmployees.updateOne(employeeQuery, { $set: setClampEmployee }, { session });
               }
               
-              updatedEmployee = await employeeCollection.findOne(employeeQuery, { session });
-              console.log(`Employee balance updated in completeTransaction: ${employeeId}, dueDelta: ${employeeDueDelta}, paidAmount: ${transactionType === 'debit' ? '+' : '-'}${numericAmount}`);
+              updatedFarmEmployee = await farmEmployees.findOne(employeeQuery, { session });
+              console.log(`Farm employee balance updated in completeTransaction: ${employeeId}, dueDelta: ${employeeDueDelta}, paidAmount: ${transactionType === 'debit' ? '+' : '-'}${numericAmount}`);
             } else {
-              console.warn(`Employee not found in completeTransaction for employeeId: ${employeeId}`);
+              console.warn(`Farm employee not found in completeTransaction for employeeId: ${employeeId}`);
             }
           }
         } catch (employeeUpdateErr) {
-          console.warn('Failed to update employee from completeTransaction:', employeeUpdateErr?.message);
+          console.warn('Failed to update farm employee from completeTransaction:', employeeUpdateErr?.message);
           // Don't fail the transaction if employee update fails
         }
       }
@@ -699,7 +813,7 @@ app.post("/api/transactions/:id/complete", async (req, res) => {
         agent: updatedAgent || null,
         customer: updatedCustomer || null,
         vendor: updatedVendor || null,
-        employee: updatedEmployee || null,
+        employee: updatedFarmEmployee || updatedEmployee || null,
         invoice: updatedInvoice || null,
         sourceAccount: updatedSourceAccount || null,
         targetAccount: updatedTargetAccount || null
@@ -1221,9 +1335,7 @@ async function initializeDatabase() {
     vetVisits = db.collection("vetVisits");
     breedings = db.collection("breedings");
     calvings = db.collection("calvings");
-    // Farm HR (for EmployeeManagement frontend)
-    farmEmployees = db.collection("farmEmployees"); // Keep for backward compatibility
-    employees = db.collection("employees"); // Main employees collection (used by frontend)
+    farmEmployees = db.collection("farmEmployees");
     attendanceRecords = db.collection("attendanceRecords");
     // Farm Finance (for FinancialReport frontend)
     farmExpenses = db.collection("farmExpenses");
@@ -1314,12 +1426,20 @@ async function initializeDatabase() {
         airCustomers.createIndex({ email: 1 }, { sparse: true, name: "airCustomers_email" }),
         airCustomers.createIndex({ passportNumber: 1 }, { sparse: true, name: "airCustomers_passportNumber" }),
         airCustomers.createIndex({ isActive: 1, createdAt: -1 }, { name: "airCustomers_active_createdAt" }),
-        airCustomers.createIndex({ name: "text", mobile: "text", email: "text", passportNumber: "text" }, { name: "airCustomers_text_search" }),
         // Notifications
         notifications.createIndex({ userId: 1, isRead: 1, isActive: 1, createdAt: -1 }, { name: "notifications_user_read_active_createdAt" }),
-        notifications.createIndex({ isActive: 1, createdAt: -1 }, { name: "notifications_active_createdAt" }),
-        // HR Management
-        hrManagement.createIndex({
+        notifications.createIndex({ isActive: 1, createdAt: -1 }, { name: "notifications_active_createdAt" })
+      ]);
+      
+      // Create text indexes separately (not supported with apiStrict: true, so we catch errors)
+      try {
+        await airCustomers.createIndex({ name: "text", mobile: "text", email: "text", passportNumber: "text" }, { name: "airCustomers_text_search" });
+      } catch (textIndexError) {
+        console.warn("⚠️ Text index creation skipped (not supported with apiStrict: true): airCustomers_text_search");
+      }
+      
+      try {
+        await hrManagement.createIndex({
           name: "text",
           email: "text",
           phone: "text",
@@ -1330,8 +1450,10 @@ async function initializeDatabase() {
         }, {
           name: "hr_search_index",
           background: true
-        })
-      ]);
+        });
+      } catch (textIndexError) {
+        console.warn("⚠️ Text index creation skipped (not supported with apiStrict: true): hr_search_index");
+      }
     } catch (e) {
       console.warn("⚠️ Index creation warning:", e.message);
     }
@@ -11551,130 +11673,133 @@ app.post("/api/transactions", async (req, res) => {
           // Determine employee ID from multiple sources
           let employeeId = null;
           
+          console.log('🔍 Employee transaction detected:', {
+            employeeReference,
+            customerType: req.body?.customerType,
+            finalPartyType,
+            finalPartyId
+          });
+          
           if (employeeReference) {
             // If employeeReference is an object, extract ID
-            if (typeof employeeReference === 'object' && employeeReference.id) {
-              employeeId = String(employeeReference.id).trim();
-            } else if (typeof employeeReference === 'object' && employeeReference.employeeId) {
-              employeeId = String(employeeReference.employeeId).trim();
+            if (typeof employeeReference === 'object') {
+              // Try _id first (ObjectId)
+              if (employeeReference._id) {
+                employeeId = String(employeeReference._id).trim();
+                console.log('📌 Extracted employeeId from employeeReference._id:', employeeId);
+              } else if (employeeReference.id) {
+                employeeId = String(employeeReference.id).trim();
+                console.log('📌 Extracted employeeId from employeeReference.id:', employeeId);
+              } else if (employeeReference.employeeId) {
+                employeeId = String(employeeReference.employeeId).trim();
+                console.log('📌 Extracted employeeId from employeeReference.employeeId:', employeeId);
+              }
             } else if (typeof employeeReference === 'string') {
               employeeId = String(employeeReference).trim();
+              console.log('📌 Extracted employeeId from employeeReference (string):', employeeId);
             }
           }
           
           // If no employeeId from employeeReference, try partyId when customerType is 'miraj-employee'
           if (!employeeId && (req.body?.customerType === 'miraj-employee' || finalPartyType === 'employee')) {
             employeeId = String(finalPartyId).trim();
+            console.log('📌 Using finalPartyId as employeeId:', employeeId);
           }
           
           if (employeeId) {
-            // Try to find employee in 'employees' collection first (main collection)
+            console.log('🔎 Searching for employee with ID in farmEmployees collection:', employeeId);
+            // Try to find employee in farmEmployees collection
             let employee = null;
             let employeeCollection = null;
             let employeeQuery = null;
             
-            // Try by _id (ObjectId) in employees collection
-            if (ObjectId.isValid(employeeId) && employees) {
+            // Try by _id (ObjectId) in farmEmployees collection
+            if (ObjectId.isValid(employeeId) && farmEmployees) {
               try {
-                employee = await employees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
-                if (employee) {
-                  employeeCollection = employees;
-                  employeeQuery = { _id: employee._id };
-                  employee._isFromEmployees = true;
-                }
-              } catch (e) {
-                // employees collection might not exist, continue
-              }
-            }
-            
-            // Try by employeeId field in employees collection
-            if (!employee && employees) {
-              try {
-                employee = await employees.findOne({ employeeId: employeeId, isActive: { $ne: false } }, { session });
-                if (employee) {
-                  employeeCollection = employees;
-                  employeeQuery = { employeeId: employeeId };
-                  employee._isFromEmployees = true;
-                }
-              } catch (e) {
-                // employees collection might not exist, continue
-              }
-            }
-            
-            // Try by id field (numeric) in employees collection
-            if (!employee && !isNaN(Number(employeeId)) && employees) {
-              try {
-                employee = await employees.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
-                if (employee) {
-                  employeeCollection = employees;
-                  employeeQuery = { id: employee.id };
-                  employee._isFromEmployees = true;
-                }
-              } catch (e) {
-                // employees collection might not exist, continue
-              }
-            }
-            
-            // Try by id field (string) in employees collection (for string IDs like "EMP001")
-            if (!employee && employees) {
-              try {
-                employee = await employees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
-                if (employee) {
-                  employeeCollection = employees;
-                  employeeQuery = { id: employee.id };
-                  employee._isFromEmployees = true;
-                }
-              } catch (e) {
-                // employees collection might not exist, continue
-              }
-            }
-            
-            // Fallback: Try farmEmployees if not found in employees (for backward compatibility)
-            if (!employee) {
-              if (ObjectId.isValid(employeeId)) {
+                console.log('🔍 Trying ObjectId search in farmEmployees collection:', employeeId);
                 employee = await farmEmployees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
                 if (employee) {
                   employeeCollection = farmEmployees;
                   employeeQuery = { _id: employee._id };
+                  console.log('✅ Found employee by ObjectId in farmEmployees collection');
                 }
-              } else if (!isNaN(Number(employeeId))) {
-                employee = await farmEmployees.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
-                if (employee) {
-                  employeeCollection = farmEmployees;
-                  employeeQuery = { id: employee.id };
-                }
-              } else {
-                // Try string id field
-                employee = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
-                if (employee) {
-                  employeeCollection = farmEmployees;
-                  employeeQuery = { id: employee.id };
-                }
+              } catch (e) {
+                console.warn('⚠️ ObjectId search failed in farmEmployees:', e.message);
               }
             }
             
+            // Try by phone number in farmEmployees collection
+            if (!employee && farmEmployees) {
+              try {
+                console.log('🔍 Trying phone search in farmEmployees collection:', employeeId);
+                employee = await farmEmployees.findOne({ phone: employeeId, isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = farmEmployees;
+                  employeeQuery = { phone: employeeId };
+                  console.log('✅ Found employee by phone in farmEmployees collection');
+                }
+              } catch (e) {
+                console.warn('⚠️ Phone search failed in farmEmployees:', e.message);
+              }
+            }
+            
+            // Try by id field in farmEmployees collection
+            if (!employee && farmEmployees) {
+              try {
+                console.log('🔍 Trying id field search in farmEmployees collection:', employeeId);
+                employee = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
+                if (employee) {
+                  employeeCollection = farmEmployees;
+                  employeeQuery = { id: employeeId };
+                  console.log('✅ Found employee by id field in farmEmployees collection:', employeeId);
+                }
+              } catch (e) {
+                console.warn('⚠️ Id field search failed in farmEmployees:', e.message);
+              }
+            }
+            
+            
             if (employee && employeeCollection && employeeQuery) {
               // Employee transaction logic:
-              // Debit = payment to employee (salary/advance) -> increases paidAmount, decreases totalDue
-              // Credit = employee pays back -> decreases paidAmount, increases totalDue
-              const employeeDueDelta = transactionType === 'debit' ? -numericAmount : (transactionType === 'credit' ? numericAmount : 0);
+              // Debit = payment to employee (salary/advance) -> increases paidAmount
+              // Credit = employee pays back -> decreases paidAmount
+              // totalDue = salary - paidAmount (calculated after update)
               
-              const employeeUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: employeeDueDelta } };
+              const employeeUpdate = { $set: { updatedAt: new Date() } };
               
               // Track paidAmount: debit increases it (payment to employee), credit decreases it (employee pays back)
               if (transactionType === 'debit') {
-                employeeUpdate.$inc.paidAmount = (employeeUpdate.$inc.paidAmount || 0) + numericAmount;
+                employeeUpdate.$inc = { paidAmount: numericAmount };
               } else if (transactionType === 'credit') {
-                employeeUpdate.$inc.paidAmount = (employeeUpdate.$inc.paidAmount || 0) - numericAmount;
+                employeeUpdate.$inc = { paidAmount: -numericAmount };
               }
               
               await employeeCollection.updateOne(employeeQuery, employeeUpdate, { session });
               
-              // Clamp negatives and ensure paidAmount doesn't go negative
+              // Get updated employee to calculate totalDue
               const afterEmployee = await employeeCollection.findOne(employeeQuery, { session });
+              
+              // Calculate totalDue = salary - paidAmount (if salary exists)
+              const salary = Number(afterEmployee.salary || 0);
+              const paidAmount = Number(afterEmployee.paidAmount || 0);
+              const calculatedDue = salary > 0 ? Math.max(0, salary - paidAmount) : (Number(afterEmployee.totalDue || 0));
+              
               const setClampEmployee = {};
-              if ((afterEmployee.totalDue || 0) < 0) setClampEmployee.totalDue = 0;
-              if ((afterEmployee.paidAmount || 0) < 0) setClampEmployee.paidAmount = 0;
+              
+              // Ensure paidAmount doesn't go negative
+              if (paidAmount < 0) {
+                setClampEmployee.paidAmount = 0;
+              }
+              
+              // Set totalDue based on salary calculation
+              if (salary > 0) {
+                setClampEmployee.totalDue = calculatedDue;
+              } else {
+                // If no salary, maintain current totalDue but ensure it's not negative
+                if ((afterEmployee.totalDue || 0) < 0) {
+                  setClampEmployee.totalDue = 0;
+                }
+              }
               
               if (Object.keys(setClampEmployee).length) {
                 setClampEmployee.updatedAt = new Date();
@@ -11682,15 +11807,28 @@ app.post("/api/transactions", async (req, res) => {
               }
               
               updatedEmployee = await employeeCollection.findOne(employeeQuery, { session });
-              console.log(`Employee balance updated: ${employeeId}, dueDelta: ${employeeDueDelta}, paidAmount: ${transactionType === 'debit' ? '+' : '-'}${numericAmount}`);
+              
+              console.log(`✅ Employee balance updated successfully in farmEmployees:`, {
+                employeeId: employeeId,
+                employeeFoundId: updatedEmployee?.id || updatedEmployee?._id,
+                collection: 'farmEmployees',
+                paidAmountChange: `${transactionType === 'debit' ? '+' : '-'}${numericAmount}`,
+                newPaidAmount: updatedEmployee?.paidAmount || 0,
+                newTotalDue: updatedEmployee?.totalDue || 0
+              });
             } else {
-              console.warn(`Employee not found for employeeId: ${employeeId}`);
+              console.error(`❌ Employee not found for employeeId: ${employeeId}`, {
+                searchedIn: ['farmEmployees'],
+                searchMethods: ['ObjectId', 'employeeId field', 'numeric id', 'string id']
+              });
             }
           }
         } catch (employeeUpdateErr) {
-          console.warn('Failed to update employee from transaction:', employeeUpdateErr?.message);
+          console.error('❌ Failed to update employee from transaction:', employeeUpdateErr?.message, employeeUpdateErr?.stack);
           // Don't fail the transaction if employee update fails
         }
+      } else {
+        console.log('ℹ️ Not an employee transaction - skipping employee update');
       }
 
       transactionResult = await transactions.insertOne(transactionData, { session });
@@ -12548,116 +12686,110 @@ app.delete("/api/transactions/:id", async (req, res) => {
             }
             
             if (employeeId) {
-              // Try to find employee in 'employees' collection first (main collection)
+              // Try to find employee in farmEmployees collection
               let employee = null;
               let employeeCollection = null;
               let employeeQuery = null;
               
-              // Try by _id (ObjectId) in employees collection
-              if (ObjectId.isValid(employeeId) && employees) {
+              // Try by _id (ObjectId) in farmEmployees collection
+              if (ObjectId.isValid(employeeId) && farmEmployees) {
                 try {
-                  employee = await employees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
-                  if (employee) {
-                    employeeCollection = employees;
-                    employeeQuery = { _id: employee._id };
-                  }
-                } catch (e) {
-                  // employees collection might not exist, continue
-                }
-              }
-              
-              // Try by employeeId field in employees collection
-              if (!employee && employees) {
-                try {
-                  employee = await employees.findOne({ employeeId: employeeId, isActive: { $ne: false } }, { session });
-                  if (employee) {
-                    employeeCollection = employees;
-                    employeeQuery = { employeeId: employeeId };
-                  }
-                } catch (e) {
-                  // employees collection might not exist, continue
-                }
-              }
-              
-              // Try by id field (numeric) in employees collection
-              if (!employee && !isNaN(Number(employeeId)) && employees) {
-                try {
-                  employee = await employees.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
-                  if (employee) {
-                    employeeCollection = employees;
-                    employeeQuery = { id: employee.id };
-                  }
-                } catch (e) {
-                  // employees collection might not exist, continue
-                }
-              }
-              
-              // Try by id field (string) in employees collection (for string IDs like "EMP001")
-              if (!employee && employees) {
-                try {
-                  employee = await employees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
-                  if (employee) {
-                    employeeCollection = employees;
-                    employeeQuery = { id: employee.id };
-                  }
-                } catch (e) {
-                  // employees collection might not exist, continue
-                }
-              }
-              
-              // Fallback: Try farmEmployees if not found in employees (for backward compatibility)
-              if (!employee) {
-                if (ObjectId.isValid(employeeId)) {
                   employee = await farmEmployees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } }, { session });
                   if (employee) {
                     employeeCollection = farmEmployees;
                     employeeQuery = { _id: employee._id };
                   }
-                } else if (!isNaN(Number(employeeId))) {
-                  employee = await farmEmployees.findOne({ id: Number(employeeId), isActive: { $ne: false } }, { session });
+                } catch (e) {
+                  console.warn('⚠️ ObjectId search failed in farmEmployees:', e.message);
+                }
+              }
+              
+              // Try by phone number in farmEmployees collection
+              if (!employee && farmEmployees) {
+                try {
+                  employee = await farmEmployees.findOne({ phone: employeeId, isActive: { $ne: false } }, { session });
                   if (employee) {
                     employeeCollection = farmEmployees;
-                    employeeQuery = { id: employee.id };
+                    employeeQuery = { phone: employeeId };
                   }
-                } else {
-                  // Try string id field
+                } catch (e) {
+                  console.warn('⚠️ Phone search failed in farmEmployees:', e.message);
+                }
+              }
+              
+              // Try by id field in farmEmployees collection
+              if (!employee && farmEmployees) {
+                try {
                   employee = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } }, { session });
                   if (employee) {
                     employeeCollection = farmEmployees;
-                    employeeQuery = { id: employee.id };
+                    employeeQuery = { id: employeeId };
                   }
+                } catch (e) {
+                  console.warn('⚠️ Id field search failed in farmEmployees:', e.message);
                 }
               }
               
               if (employee && employeeCollection && employeeQuery) {
                 // Reverse employee transaction logic:
-                // Creation: debit => -due, +paidAmount | credit => +due, -paidAmount
-                // Deletion: debit => +due, -paidAmount | credit => -due, +paidAmount
-                const employeeDueDelta = transactionType === 'debit' ? numericAmount : (transactionType === 'credit' ? -numericAmount : 0);
+                // Creation: debit => +paidAmount | credit => -paidAmount
+                // Deletion: debit => -paidAmount | credit => +paidAmount
+                // totalDue = salary - paidAmount (calculated after update)
                 
-                const employeeUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: employeeDueDelta } };
+                const employeeUpdate = { $set: { updatedAt: new Date() }, $inc: { totalDue: 0 } };
                 
                 // Reverse paidAmount: debit decreases it, credit increases it
+                const employeeDueDelta = transactionType === 'debit' ? numericAmount : (transactionType === 'credit' ? -numericAmount : 0);
+                employeeUpdate.$inc.totalDue = employeeDueDelta;
+                
                 if (transactionType === 'debit') {
-                  employeeUpdate.$inc.paidAmount = (employeeUpdate.$inc.paidAmount || 0) - numericAmount;
+                  employeeUpdate.$inc.paidAmount = -numericAmount;
                 } else if (transactionType === 'credit') {
-                  employeeUpdate.$inc.paidAmount = (employeeUpdate.$inc.paidAmount || 0) + numericAmount;
+                  employeeUpdate.$inc.paidAmount = numericAmount;
                 }
                 
                 await employeeCollection.updateOne(employeeQuery, employeeUpdate, { session });
                 
-                // Clamp negatives
+                // Get updated employee to calculate totalDue
                 const afterEmployee = await employeeCollection.findOne(employeeQuery, { session });
+                
+                // Calculate totalDue = salary - paidAmount (if salary exists)
+                const salary = Number(afterEmployee.salary || 0);
+                const paidAmount = Number(afterEmployee.paidAmount || 0);
+                const calculatedDue = salary > 0 ? Math.max(0, salary - paidAmount) : (Number(afterEmployee.totalDue || 0));
+                
                 const setClampEmployee = {};
-                if ((afterEmployee.totalDue || 0) < 0) setClampEmployee.totalDue = 0;
-                if ((afterEmployee.paidAmount || 0) < 0) setClampEmployee.paidAmount = 0;
+                
+                // Ensure paidAmount doesn't go negative
+                if (paidAmount < 0) {
+                  setClampEmployee.paidAmount = 0;
+                }
+                
+                // Set totalDue based on salary calculation
+                if (salary > 0) {
+                  setClampEmployee.totalDue = calculatedDue;
+                } else {
+                  // If no salary, maintain current totalDue but ensure it's not negative
+                  if ((afterEmployee.totalDue || 0) < 0) {
+                    setClampEmployee.totalDue = 0;
+                  }
+                }
                 
                 if (Object.keys(setClampEmployee).length) {
                   setClampEmployee.updatedAt = new Date();
                   await employeeCollection.updateOne(employeeQuery, { $set: setClampEmployee }, { session });
                 }
                 
-                console.log(`Employee balance reversed: ${employeeId}, dueDelta: ${employeeDueDelta}, paidAmount: ${transactionType === 'debit' ? '-' : '+'}${numericAmount}`);
+                console.log(`✅ Employee balance reversed successfully in farmEmployees:`, {
+                  employeeId: employeeId,
+                  employeeFoundId: afterEmployee?.id || afterEmployee?._id,
+                  collection: 'farmEmployees',
+                  paidAmountChange: `${transactionType === 'debit' ? '-' : '+'}${numericAmount}`,
+                  newPaidAmount: afterEmployee?.paidAmount || 0,
+                  newTotalDue: afterEmployee?.totalDue || 0
+                });
+              } else {
+                console.warn(`⚠️ Farm employee not found for reversal: ${employeeId}`);
               }
             }
           } catch (employeeReverseErr) {
@@ -25438,233 +25570,739 @@ app.get("/api/hr/employers/stats/overview", async (req, res) => {
   }
 });
 
-// ==================== FARM EMPLOYEE MANAGEMENT (Simple API) ====================
+// ==================== FARM EMPLOYEES CRUD ROUTES (/api/farmEmployees) ====================
 
-// Helper to generate simple sequential IDs with prefix (stored in counters)
-async function generateSequentialId(prefix) {
-  const key = `seq_${prefix}`;
-  const result = await counters.findOneAndUpdate(
-    { counterKey: key },
-    { $inc: { sequence: 1 } },
-    { upsert: true, returnDocument: 'after' }
-  );
-  const seq = String((result.value?.sequence) || 1).padStart(3, '0');
-  return `${prefix}${seq}`;
-}
-
-
-// Miraj Industries // 
-// POST: Create employee
-app.post("/api/employees", async (req, res) => {
+// ✅ POST: Create new farm employee
+app.post("/api/farmEmployees", async (req, res) => {
   try {
     const {
       name,
       position,
       phone,
-      email = '',
-      address = '',
+      email,
+      address,
       joinDate,
       salary,
       workHours,
-      status = 'active',
-      notes = ''
-    } = req.body || {};
+      status = "active",
+      notes,
+      paidAmount = 0,
+      totalDue = 0
+    } = req.body;
 
-    if (!name || !position || !phone || !joinDate || salary === undefined || workHours === undefined) {
-      return res.status(400).json({ success: false, message: "Missing required fields" });
+    // Validate required fields
+    if (!name || !position || !phone || !joinDate || !salary) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing required fields",
+        message: "Name, position, phone, join date, and salary are required"
+      });
     }
 
-    const id = await generateSequentialId('EMP');
+    // Check if phone already exists
+    const existingEmployee = await farmEmployees.findOne({
+      phone: phone.trim(),
+      isActive: true
+    });
 
-    const doc = {
-      id,
-      name: String(name).trim(),
-      position: String(position).trim(),
-      phone: String(phone).trim(),
-      email: String(email || '').trim(),
-      address: String(address || '').trim(),
-      joinDate: String(joinDate), // yyyy-mm-dd
-      salary: Number(salary),
-      workHours: Number(workHours),
-      status: String(status),
-      notes: String(notes || ''),
+    if (existingEmployee) {
+      return res.status(400).json({
+        success: false,
+        error: "Phone already exists",
+        message: "An employee with this phone number already exists"
+      });
+    }
+
+    const newEmployee = {
+      name: name.trim(),
+      position: position.trim(),
+      phone: phone.trim(),
+      email: email ? email.toLowerCase().trim() : "",
+      address: address || "",
+      joinDate: joinDate,
+      salary: parseFloat(salary) || 0,
+      workHours: parseFloat(workHours) || 0,
+      status: status || "active",
+      notes: notes || "",
+      paidAmount: parseFloat(paidAmount) || 0,
+      totalDue: parseFloat(totalDue) || 0,
       isActive: true,
       createdAt: new Date(),
       updatedAt: new Date()
     };
 
-    await employees.insertOne(doc);
-    res.json({ success: true, data: doc });
-  } catch (e) {
-    console.error('Create employee error:', e);
-    res.status(500).json({ success: false, message: 'Failed to create employee' });
+    const result = await farmEmployees.insertOne(newEmployee);
+
+    res.status(201).json({
+      success: true,
+      message: "Farm employee created successfully",
+      data: {
+        id: result.insertedId,
+        ...newEmployee,
+        _id: String(result.insertedId)
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Create farm employee error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to create farm employee",
+      details: error.message || "Unknown error occurred"
+    });
   }
 });
 
-// GET: List employees with optional filters: search, status
-app.get("/api/employees", async (req, res) => {
+// ✅ GET: Get all farm employees with filters
+app.get("/api/farmEmployees", async (req, res) => {
   try {
-    const { search = '', status = 'all' } = req.query || {};
-    const filter = { isActive: { $ne: false } };
-    if (status && status !== 'all') filter.status = String(status);
-    if (search) {
-      const s = String(search);
-      filter.$or = [
-        { name: { $regex: s, $options: 'i' } },
-        { position: { $regex: s, $options: 'i' } },
-        { phone: { $regex: s } }
-      ];
+    const {
+      page = 1,
+      limit = 1000,
+      search,
+      status,
+      position
+    } = req.query || {};
+
+    // Build filter object
+    const filter = { isActive: true };
+
+    // Build $or conditions array for search
+    const searchConditions = [];
+
+    // Search filter - use regex for flexible search
+    if (search && String(search).trim()) {
+      const searchTerm = String(search).trim();
+      // Escape special regex characters to prevent errors
+      const escapedSearchTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      searchConditions.push(
+        { name: { $regex: escapedSearchTerm, $options: 'i' } },
+        { phone: { $regex: escapedSearchTerm, $options: 'i' } },
+        { email: { $regex: escapedSearchTerm, $options: 'i' } },
+        { position: { $regex: escapedSearchTerm, $options: 'i' } }
+      );
     }
-    const data = await employees.find(filter).sort({ createdAt: -1 }).toArray();
-    
-    // Ensure paidAmount and totalDue fields are included (default to 0 if not present)
-    const dataWithBalance = data.map(emp => ({
-      ...emp,
-      paidAmount: Number(emp.paidAmount || 0),
-      totalDue: Number(emp.totalDue || 0)
+
+    // Status filter
+    if (status && String(status).trim() && status !== 'all') {
+      filter.status = String(status).trim();
+    }
+
+    // Position filter
+    if (position && String(position).trim()) {
+      const positionTerm = String(position).trim();
+      const escapedPositionTerm = positionTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      if (!search || !String(search).trim()) {
+        searchConditions.push(
+          { position: { $regex: escapedPositionTerm, $options: 'i' } }
+        );
+      } else {
+        if (!filter.$and) filter.$and = [];
+        filter.$and.push({
+          position: { $regex: escapedPositionTerm, $options: 'i' }
+        });
+      }
+    }
+
+    // Add search conditions to filter
+    if (searchConditions.length > 0) {
+      if (filter.$or) {
+        if (!filter.$and) filter.$and = [];
+        filter.$and.push({ $or: filter.$or });
+        filter.$and.push({ $or: searchConditions });
+        delete filter.$or;
+      } else {
+        filter.$or = searchConditions;
+      }
+    }
+
+    // Calculate pagination with validation
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 1000);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Validate filter before query
+    if (!filter || typeof filter !== 'object') {
+      throw new Error('Invalid filter object');
+    }
+
+    // Use Promise.all for parallel execution with error handling
+    let employees = [];
+    let total = 0;
+
+    try {
+      [employees, total] = await Promise.all([
+        farmEmployees
+          .find(filter)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limitNum)
+          .toArray(),
+        farmEmployees.countDocuments(filter)
+      ]);
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      employees = [];
+      total = 0;
+    }
+
+    // Ensure employees is an array and format response
+    if (!Array.isArray(employees)) {
+      employees = [];
+    }
+
+    // Format employees data
+    const formattedEmployees = employees.map(emp => ({
+      id: String(emp._id),
+      _id: String(emp._id),
+      name: emp.name || '',
+      position: emp.position || '',
+      phone: emp.phone || '',
+      email: emp.email || '',
+      address: emp.address || '',
+      joinDate: emp.joinDate || '',
+      salary: Number(emp.salary) || 0,
+      workHours: Number(emp.workHours) || 0,
+      status: emp.status || 'active',
+      notes: emp.notes || '',
+      paidAmount: Number(emp.paidAmount) || 0,
+      totalDue: Number(emp.totalDue) || 0,
+      createdAt: emp.createdAt,
+      updatedAt: emp.updatedAt
     }));
-    
-    res.json({ success: true, data: dataWithBalance });
-  } catch (e) {
-    console.error('List employees error:', e);
-    res.status(500).json({ success: false, message: 'Failed to fetch employees' });
+
+    res.json({
+      success: true,
+      data: formattedEmployees,
+      pagination: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(total / limitNum) || 0,
+        totalItems: total || 0,
+        itemsPerPage: limitNum
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Get farm employees error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to fetch farm employees",
+      details: error.message || "Unknown error occurred"
+    });
   }
 });
 
-// GET: Single employee by id
-app.get("/api/employees/:id", async (req, res) => {
+// ✅ GET: Get single farm employee by ID
+app.get("/api/farmEmployees/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    // Try employees collection first, fallback to farmEmployees for backward compatibility
-    let emp = await employees.findOne({ id, isActive: { $ne: false } });
-    if (!emp) {
-      emp = await farmEmployees.findOne({ id, isActive: { $ne: false } });
+
+    // Validate id parameter
+    if (!id || !String(id).trim()) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid ID",
+        message: "Employee ID is required"
+      });
     }
-    if (!emp) return res.status(404).json({ success: false, message: 'Employee not found' });
+
+    const orFilters = [];
     
-    // Ensure paidAmount and totalDue fields are included (default to 0 if not present)
-    const empWithBalance = {
-      ...emp,
-      paidAmount: Number(emp.paidAmount || 0),
-      totalDue: Number(emp.totalDue || 0)
+    // Only add ObjectId filter if id is valid ObjectId
+    try {
+      if (ObjectId.isValid(id)) {
+        orFilters.push({ _id: new ObjectId(id) });
+      }
+    } catch (objectIdError) {
+      console.warn("ObjectId conversion warning:", objectIdError.message);
+    }
+
+    // Also try by phone number
+    orFilters.push({ phone: String(id).trim() });
+
+    let employee = null;
+    try {
+      employee = await farmEmployees.findOne({
+        $or: orFilters.length > 0 ? orFilters : [{ _id: new ObjectId(id) }],
+        isActive: true
+      });
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to query employee",
+        details: queryError.message
+      });
+    }
+
+    if (!employee) {
+      return res.status(404).json({
+        success: false,
+        error: "Employee not found",
+        message: "No employee found with the provided ID"
+      });
+    }
+
+    // Format employee data
+    const formattedEmployee = {
+      id: String(employee._id),
+      _id: String(employee._id),
+      name: employee.name || '',
+      position: employee.position || '',
+      phone: employee.phone || '',
+      email: employee.email || '',
+      address: employee.address || '',
+      joinDate: employee.joinDate || '',
+      salary: Number(employee.salary) || 0,
+      workHours: Number(employee.workHours) || 0,
+      status: employee.status || 'active',
+      notes: employee.notes || '',
+      paidAmount: Number(employee.paidAmount) || 0,
+      totalDue: Number(employee.totalDue) || 0,
+      createdAt: employee.createdAt,
+      updatedAt: employee.updatedAt
     };
-    
-    res.json({ success: true, data: empWithBalance });
-  } catch (e) {
-    console.error('Get employee error:', e);
-    res.status(500).json({ success: false, message: 'Failed to fetch employee' });
+
+    res.json({
+      success: true,
+      data: formattedEmployee
+    });
+
+  } catch (error) {
+    console.error("❌ Get farm employee error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to fetch farm employee",
+      details: error.message || "Unknown error occurred"
+    });
   }
 });
 
-// PATCH: Update employee by id
-app.patch("/api/employees/:id", async (req, res) => {
+// ✅ PUT: Update farm employee
+app.put("/api/farmEmployees/:id", async (req, res) => {
   try {
     const { id } = req.params;
     const updateData = req.body || {};
 
-    // Check if employee exists - try employees collection first, fallback to farmEmployees
-    let emp = await employees.findOne({ id, isActive: { $ne: false } });
-    let employeeCollection = employees;
-    if (!emp) {
-      emp = await farmEmployees.findOne({ id, isActive: { $ne: false } });
-      if (emp) {
-        employeeCollection = farmEmployees;
+    // Validate id parameter
+    if (!id || !String(id).trim()) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid ID",
+        message: "Employee ID is required"
+      });
+    }
+
+    // Remove fields that shouldn't be updated directly
+    delete updateData._id;
+    delete updateData.createdAt;
+
+    // Build query filters
+    const orFilters = [];
+    
+    try {
+      if (ObjectId.isValid(id)) {
+        orFilters.push({ _id: new ObjectId(id) });
+      }
+    } catch (objectIdError) {
+      console.warn("ObjectId conversion warning:", objectIdError.message);
+    }
+
+    orFilters.push({ phone: String(id).trim() });
+
+    // Check if employee exists
+    let existingEmployee = null;
+    try {
+      existingEmployee = await farmEmployees.findOne({
+        $or: orFilters.length > 0 ? orFilters : [{ _id: new ObjectId(id) }],
+        isActive: true
+      });
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to query employee",
+        details: queryError.message
+      });
+    }
+
+    if (!existingEmployee) {
+      return res.status(404).json({
+        success: false,
+        error: "Employee not found",
+        message: "No employee found with the provided ID"
+      });
+    }
+
+    // Check if phone is being updated and if it already exists
+    if (updateData.phone && updateData.phone !== existingEmployee.phone) {
+      const phoneExists = await farmEmployees.findOne({
+        phone: updateData.phone.trim(),
+        isActive: true,
+        _id: { $ne: existingEmployee._id }
+      });
+
+      if (phoneExists) {
+        return res.status(400).json({
+          success: false,
+          error: "Phone already exists",
+          message: "An employee with this phone number already exists"
+        });
       }
     }
-    if (!emp) {
-      return res.status(404).json({ success: false, message: 'Employee not found' });
+
+    // Prepare update data
+    const updateFields = {
+      ...updateData,
+      updatedAt: new Date()
+    };
+
+    // Clean up the data
+    if (updateFields.name) {
+      updateFields.name = updateFields.name.trim();
+    }
+    if (updateFields.position) {
+      updateFields.position = updateFields.position.trim();
+    }
+    if (updateFields.phone) {
+      updateFields.phone = updateFields.phone.trim();
+    }
+    if (updateFields.email) {
+      updateFields.email = updateFields.email.toLowerCase().trim();
+    }
+    if (updateFields.address) {
+      updateFields.address = updateFields.address.trim();
+    }
+    if (updateFields.salary !== undefined) {
+      updateFields.salary = parseFloat(updateFields.salary) || 0;
+    }
+    if (updateFields.workHours !== undefined) {
+      updateFields.workHours = parseFloat(updateFields.workHours) || 0;
+    }
+    if (updateFields.paidAmount !== undefined) {
+      updateFields.paidAmount = parseFloat(updateFields.paidAmount) || 0;
+    }
+    if (updateFields.totalDue !== undefined) {
+      updateFields.totalDue = parseFloat(updateFields.totalDue) || 0;
     }
 
-    // Prepare update object - only allow specific fields to be updated
-    const allowedFields = [
-      'name',
-      'position',
-      'phone',
-      'email',
-      'address',
-      'joinDate',
-      'salary',
-      'workHours',
-      'status',
-      'notes'
-    ];
-
-    const update = { $set: { updatedAt: new Date() } };
-
-    // Update only provided fields
-    allowedFields.forEach(field => {
-      if (updateData[field] !== undefined) {
-        if (field === 'salary' || field === 'workHours') {
-          update.$set[field] = Number(updateData[field]);
-        } else {
-          update.$set[field] = String(updateData[field]).trim();
-        }
+    // Build update query filters (same as find query)
+    const updateOrFilters = [];
+    try {
+      if (ObjectId.isValid(id)) {
+        updateOrFilters.push({ _id: new ObjectId(id) });
       }
-    });
+    } catch (objectIdError) {
+      // Ignore ObjectId conversion errors
+    }
+    updateOrFilters.push({ phone: String(id).trim() });
 
-    // Validate required fields if being updated
-    if (update.$set.name !== undefined && !update.$set.name) {
-      return res.status(400).json({ success: false, message: 'Name cannot be empty' });
+    let result = null;
+    try {
+      result = await farmEmployees.updateOne(
+        {
+          $or: updateOrFilters.length > 0 ? updateOrFilters : [{ _id: new ObjectId(id) }],
+          isActive: true
+        },
+        { $set: updateFields }
+      );
+    } catch (updateError) {
+      console.error("❌ Database update error:", updateError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to update employee",
+        details: updateError.message
+      });
     }
-    if (update.$set.position !== undefined && !update.$set.position) {
-      return res.status(400).json({ success: false, message: 'Position cannot be empty' });
-    }
-    if (update.$set.phone !== undefined && !update.$set.phone) {
-      return res.status(400).json({ success: false, message: 'Phone cannot be empty' });
-    }
-    if (update.$set.salary !== undefined && (isNaN(update.$set.salary) || update.$set.salary < 0)) {
-      return res.status(400).json({ success: false, message: 'Salary must be a valid positive number' });
-    }
-    if (update.$set.workHours !== undefined && (isNaN(update.$set.workHours) || update.$set.workHours < 0)) {
-      return res.status(400).json({ success: false, message: 'Work hours must be a valid positive number' });
-    }
-
-    // Update employee
-    const result = await employeeCollection.updateOne(
-      { id, isActive: { $ne: false } },
-      update
-    );
 
     if (result.matchedCount === 0) {
-      return res.status(404).json({ success: false, message: 'Employee not found' });
+      return res.status(404).json({
+        success: false,
+        error: "Employee not found",
+        message: "No employee found with the provided ID"
+      });
     }
 
     // Get updated employee
-    const updatedEmp = await employeeCollection.findOne({ id, isActive: { $ne: false } });
+    let updatedEmployee = null;
+    try {
+      updatedEmployee = await farmEmployees.findOne({
+        $or: updateOrFilters.length > 0 ? updateOrFilters : [{ _id: new ObjectId(id) }],
+        isActive: true
+      });
+    } catch (queryError) {
+      console.error("❌ Database query error after update:", queryError);
+      return res.json({
+        success: true,
+        message: "Employee updated successfully",
+        data: null,
+        warning: "Updated but could not fetch updated data"
+      });
+    }
+
+    // Format updated employee data
+    const formattedEmployee = updatedEmployee ? {
+      id: String(updatedEmployee._id),
+      _id: String(updatedEmployee._id),
+      name: updatedEmployee.name || '',
+      position: updatedEmployee.position || '',
+      phone: updatedEmployee.phone || '',
+      email: updatedEmployee.email || '',
+      address: updatedEmployee.address || '',
+      joinDate: updatedEmployee.joinDate || '',
+      salary: Number(updatedEmployee.salary) || 0,
+      workHours: Number(updatedEmployee.workHours) || 0,
+      status: updatedEmployee.status || 'active',
+      notes: updatedEmployee.notes || '',
+      paidAmount: Number(updatedEmployee.paidAmount) || 0,
+      totalDue: Number(updatedEmployee.totalDue) || 0,
+      createdAt: updatedEmployee.createdAt,
+      updatedAt: updatedEmployee.updatedAt
+    } : null;
 
     res.json({
       success: true,
-      message: 'Employee updated successfully',
-      data: updatedEmp
+      message: "Farm employee updated successfully",
+      data: formattedEmployee
     });
-  } catch (e) {
-    console.error('Update farm employee error:', e);
-    res.status(500).json({ success: false, message: 'Failed to update employee' });
+
+  } catch (error) {
+    console.error("❌ Update farm employee error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to update farm employee",
+      details: error.message || "Unknown error occurred"
+    });
   }
 });
 
-// DELETE: Employee by id (soft delete) and cascade attendance soft delete
-app.delete("/api/employees/:id", async (req, res) => {
+// ✅ DELETE: Delete farm employee (soft delete)
+app.delete("/api/farmEmployees/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    // Try employees collection first, fallback to farmEmployees
-    let emp = await employees.findOne({ id, isActive: { $ne: false } });
-    let employeeCollection = employees;
-    if (!emp) {
-      emp = await farmEmployees.findOne({ id, isActive: { $ne: false } });
-      if (emp) {
-        employeeCollection = farmEmployees;
-      }
+
+    // Validate id parameter
+    if (!id || !String(id).trim()) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid ID",
+        message: "Employee ID is required"
+      });
     }
-    if (!emp) return res.status(404).json({ success: false, message: 'Employee not found' });
-    await employeeCollection.updateOne({ id }, { $set: { isActive: false, updatedAt: new Date() } });
-    await attendanceRecords.updateMany({ employeeId: id }, { $set: { isActive: false, updatedAt: new Date() } });
-    res.json({ success: true, message: 'Employee deleted' });
-  } catch (e) {
-    console.error('Delete employee error:', e);
-    res.status(500).json({ success: false, message: 'Failed to delete employee' });
+
+    // Build query filters
+    const orFilters = [];
+    
+    try {
+      if (ObjectId.isValid(id)) {
+        orFilters.push({ _id: new ObjectId(id) });
+      }
+    } catch (objectIdError) {
+      console.warn("ObjectId conversion warning:", objectIdError.message);
+    }
+
+    orFilters.push({ phone: String(id).trim() });
+
+    // Check if employee exists
+    let existingEmployee = null;
+    try {
+      existingEmployee = await farmEmployees.findOne({
+        $or: orFilters.length > 0 ? orFilters : [{ _id: new ObjectId(id) }],
+        isActive: true
+      });
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to query employee",
+        details: queryError.message
+      });
+    }
+
+    if (!existingEmployee) {
+      return res.status(404).json({
+        success: false,
+        error: "Employee not found",
+        message: "No employee found with the provided ID"
+      });
+    }
+
+    // Soft delete
+    let result = null;
+    try {
+      result = await farmEmployees.updateOne(
+        {
+          $or: orFilters.length > 0 ? orFilters : [{ _id: new ObjectId(id) }],
+          isActive: true
+        },
+        {
+          $set: {
+            isActive: false,
+            deletedAt: new Date(),
+            updatedAt: new Date()
+          }
+        }
+      );
+    } catch (updateError) {
+      console.error("❌ Database update error:", updateError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to delete employee",
+        details: updateError.message
+      });
+    }
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "Employee not found",
+        message: "No employee found with the provided ID"
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Farm employee deleted successfully"
+    });
+
+  } catch (error) {
+    console.error("❌ Delete farm employee error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to delete farm employee",
+      details: error.message || "Unknown error occurred"
+    });
   }
 });
+
+// ✅ GET: Get farm employee statistics
+app.get("/api/farmEmployees/stats/overview", async (req, res) => {
+  try {
+    const filter = { isActive: true };
+
+    // Initialize default values
+    let totalEmployees = 0;
+    let activeEmployees = 0;
+    let inactiveEmployees = 0;
+    let positionStats = [];
+    let statusStats = [];
+
+    try {
+      // Use Promise.all for parallel execution
+      [totalEmployees, activeEmployees, inactiveEmployees] = await Promise.all([
+        farmEmployees.countDocuments(filter),
+        farmEmployees.countDocuments({ ...filter, status: "active" }),
+        farmEmployees.countDocuments({ ...filter, status: "inactive" })
+      ]);
+
+      // Get position-wise count
+      try {
+        positionStats = await farmEmployees.aggregate([
+          { $match: filter },
+          { $group: { _id: "$position", count: { $sum: 1 } } },
+          { $sort: { count: -1 } }
+        ]).toArray();
+      } catch (posError) {
+        console.warn("❌ Position stats error:", posError.message);
+        positionStats = [];
+      }
+
+      // Get status-wise count
+      try {
+        statusStats = await farmEmployees.aggregate([
+          { $match: filter },
+          { $group: { _id: "$status", count: { $sum: 1 } } },
+          { $sort: { count: -1 } }
+        ]).toArray();
+      } catch (statusError) {
+        console.warn("❌ Status stats error:", statusError.message);
+        statusStats = [];
+      }
+
+      // Calculate total monthly salary
+      const salaryData = await farmEmployees.aggregate([
+        { $match: { ...filter, status: "active" } },
+        { $group: { _id: null, totalSalary: { $sum: { $toDouble: "$salary" } } } }
+      ]).toArray();
+
+      const totalMonthlySalary = salaryData[0]?.totalSalary || 0;
+
+      // Get today's date for attendance stats
+      const today = new Date().toISOString().split('T')[0];
+      const presentToday = await attendanceRecords.countDocuments({
+        date: today,
+        status: 'present',
+        isActive: { $ne: false }
+      });
+      const absentToday = await attendanceRecords.countDocuments({
+        date: today,
+        status: 'absent',
+        isActive: { $ne: false }
+      });
+
+      // Get monthly attendance
+      const thisMonth = new Date().toISOString().slice(0, 7);
+      const monthlyAttendance = await attendanceRecords.countDocuments({
+        date: { $regex: `^${thisMonth}` },
+        status: 'present',
+        isActive: { $ne: false }
+      });
+
+      res.json({
+        success: true,
+        data: {
+          totalEmployees: totalEmployees || 0,
+          activeEmployees: activeEmployees || 0,
+          inactiveEmployees: inactiveEmployees || 0,
+          totalMonthlySalary: totalMonthlySalary || 0,
+          presentToday: presentToday || 0,
+          absentToday: absentToday || 0,
+          monthlyAttendance: monthlyAttendance || 0,
+          positionStats: positionStats || [],
+          statusStats: statusStats || []
+        }
+      });
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      res.json({
+        success: true,
+        data: {
+          totalEmployees: 0,
+          activeEmployees: 0,
+          inactiveEmployees: 0,
+          totalMonthlySalary: 0,
+          presentToday: 0,
+          absentToday: 0,
+          monthlyAttendance: 0,
+          positionStats: [],
+          statusStats: []
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error("❌ Get farm employee stats error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to fetch farm employee statistics",
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
 
 // POST: Attendance
 app.post("/api/attendance", async (req, res) => {
@@ -25682,12 +26320,36 @@ app.post("/api/attendance", async (req, res) => {
       return res.status(400).json({ success: false, message: 'employeeId and date are required' });
     }
 
-    // Try employees collection first, fallback to farmEmployees
-    let emp = await employees.findOne({ id: employeeId, isActive: { $ne: false } });
-    if (!emp) {
-      emp = await farmEmployees.findOne({ id: employeeId, isActive: { $ne: false } });
+    // Find employee in farmEmployees collection
+    let emp = null;
+    // Try by ObjectId if valid
+    if (ObjectId.isValid(employeeId) && farmEmployees) {
+      try {
+        emp = await farmEmployees.findOne({ _id: new ObjectId(employeeId), isActive: { $ne: false } });
+      } catch (e) {
+        console.warn('⚠️ ObjectId search failed in attendance:', e.message);
+      }
     }
-    if (!emp) return res.status(404).json({ success: false, message: 'Employee not found' });
+    // Try by phone number if not found
+    if (!emp && farmEmployees) {
+      try {
+        emp = await farmEmployees.findOne({ phone: String(employeeId).trim(), isActive: { $ne: false } });
+      } catch (e) {
+        console.warn('⚠️ Phone search failed in attendance:', e.message);
+      }
+    }
+    // Try by id field if not found
+    if (!emp && farmEmployees) {
+      try {
+        emp = await farmEmployees.findOne({ id: String(employeeId).trim(), isActive: { $ne: false } });
+      } catch (e) {
+        console.warn('⚠️ Id field search failed in attendance:', e.message);
+      }
+    }
+    if (!emp) {
+      console.error(`❌ Employee not found in farmEmployees for attendance: ${employeeId}`);
+      return res.status(404).json({ success: false, message: 'Employee not found in farmEmployees collection' });
+    }
 
     const attId = await generateSequentialId('ATT');
     const doc = {
@@ -25728,58 +26390,6 @@ app.get("/api/attendance", async (req, res) => {
   } catch (e) {
     console.error('List attendance error:', e);
     res.status(500).json({ success: false, message: 'Failed to fetch attendance' });
-  }
-});
-
-// GET: Employee stats for dashboard
-app.get("/api/employees/stats", async (req, res) => {
-  try {
-    const today = new Date().toISOString().split('T')[0];
-    const thisMonth = new Date().toISOString().slice(0, 7);
-
-    // Get employees from both collections and merge
-    const employeesList = await employees.find({ isActive: { $ne: false } }).toArray();
-    const farmEmployeesList = await farmEmployees.find({ isActive: { $ne: false } }).toArray();
-    
-    // Merge and deduplicate by id
-    const employeeMap = new Map();
-    employeesList.forEach(emp => employeeMap.set(emp.id, emp));
-    farmEmployeesList.forEach(emp => {
-      if (!employeeMap.has(emp.id)) {
-        employeeMap.set(emp.id, emp);
-      }
-    });
-    const allEmployees = Array.from(employeeMap.values());
-    
-    const activeEmployees = allEmployees.filter(e => e.status === 'active').length;
-    const totalSalary = allEmployees
-      .filter(e => e.status === 'active')
-      .reduce((sum, e) => sum + (Number(e.salary) || 0), 0);
-
-    const todays = await attendanceRecords.find({ date: today, isActive: { $ne: false } }).toArray();
-    const presentToday = todays.filter(a => a.status === 'present').length;
-    const absentToday = todays.filter(a => a.status === 'absent').length;
-
-    const monthlyAttendance = await attendanceRecords.countDocuments({
-      date: { $regex: `^${thisMonth}` },
-      status: 'present',
-      isActive: { $ne: false }
-    });
-
-    res.json({
-      success: true,
-      data: {
-        totalEmployees: allEmployees.length,
-        activeEmployees,
-        totalSalary,
-        monthlyAttendance,
-        presentToday,
-        absentToday
-      }
-    });
-  } catch (e) {
-    console.error('Get employee stats error:', e);
-    res.status(500).json({ success: false, message: 'Failed to fetch stats' });
   }
 });
 
@@ -28314,18 +28924,7 @@ app.get("/api/dashboard/summary", async (req, res) => {
 
     const milkStat = milkStats[0] || { totalProduction: 0, totalCount: 0 };
 
-    // Farm Employees - aggregate from both employees and farmEmployees collections
-    const employeesStats = await employees.aggregate([
-      { $match: { isActive: { $ne: false } } },
-      {
-        $group: {
-          _id: "$status",
-          count: { $sum: 1 },
-          totalSalary: { $sum: { $ifNull: ["$salary", 0] } }
-        }
-      }
-    ]).toArray();
-    
+    // Farm Employees - aggregate from farmEmployees collection
     const farmEmployeesStats = await farmEmployees.aggregate([
       { $match: { isActive: { $ne: false } } },
       {
@@ -28336,28 +28935,11 @@ app.get("/api/dashboard/summary", async (req, res) => {
         }
       }
     ]).toArray();
-
-    // Merge stats from both collections, deduplicate by status
-    const statusMap = new Map();
-    employeesStats.forEach(stat => {
-      const existing = statusMap.get(stat._id) || { count: 0, totalSalary: 0 };
-      statusMap.set(stat._id, {
-        count: existing.count + stat.count,
-        totalSalary: existing.totalSalary + stat.totalSalary
-      });
-    });
-    farmEmployeesStats.forEach(stat => {
-      const existing = statusMap.get(stat._id) || { count: 0, totalSalary: 0 };
-      statusMap.set(stat._id, {
-        count: existing.count + stat.count,
-        totalSalary: existing.totalSalary + stat.totalSalary
-      });
-    });
     
-    const farmEmployeeStats = Array.from(statusMap.entries()).map(([status, data]) => ({
-      _id: status,
-      count: data.count,
-      totalSalary: data.totalSalary
+    const farmEmployeeStats = farmEmployeesStats.map(stat => ({
+      _id: stat._id,
+      count: stat.count,
+      totalSalary: stat.totalSalary
     }));
 
     let totalFarmEmployees = 0;
