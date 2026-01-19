@@ -25885,8 +25885,11 @@ app.post("/api/exchanges", async (req, res) => {
       currencyName,
       exchangeRate,
       quantity,
-      amount_bdt
-    } = req.body;
+      amount_bdt,
+      customerType,
+      selectedDilarId,
+      dilarId
+    } = req.body || {};
 
     // Validation
     if (!date || !fullName || !mobileNumber || !type || !currencyCode || !currencyName || !exchangeRate || !quantity) {
@@ -25938,6 +25941,43 @@ app.post("/api/exchanges", async (req, res) => {
     // Calculate amount if not provided
     const calculatedAmount = rate * qty;
 
+    // Handle dilar reference if customerType is 'dilar'
+    let dilarReference = null;
+    const finalDilarId = selectedDilarId || dilarId;
+    
+    if (customerType === 'dilar' && finalDilarId) {
+      // Try to find dilar by ID or contactNo
+      let dilar = null;
+      try {
+        const dilarFilters = [];
+        
+        // Try ObjectId if valid
+        if (ObjectId.isValid(finalDilarId)) {
+          dilarFilters.push({ _id: new ObjectId(finalDilarId) });
+        }
+        
+        // Try contactNo
+        dilarFilters.push({ contactNo: String(finalDilarId).trim() });
+        
+        dilar = await dilars.findOne({
+          $or: dilarFilters,
+          isActive: { $ne: false }
+        });
+        
+        if (dilar) {
+          dilarReference = {
+            dilarId: dilar._id,
+            ownerName: dilar.ownerName || '',
+            contactNo: dilar.contactNo || '',
+            tradeLocation: dilar.tradeLocation || ''
+          };
+        }
+      } catch (dilarError) {
+        console.warn('Failed to fetch dilar reference:', dilarError.message);
+        // Continue without dilar reference if lookup fails
+      }
+    }
+
     // Create exchange document
     const exchangeData = {
       date,
@@ -25950,6 +25990,9 @@ app.post("/api/exchanges", async (req, res) => {
       exchangeRate: rate,
       quantity: qty,
       amount_bdt: amount_bdt || calculatedAmount,
+      customerType: customerType || 'normal',
+      dilarId: dilarReference ? dilarReference.dilarId : null,
+      dilarReference: dilarReference,
       isActive: true,
       createdAt: new Date(),
       updatedAt: new Date()
@@ -25968,7 +26011,8 @@ app.post("/api/exchanges", async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: 'Failed to create exchange'
+      message: 'Failed to create exchange',
+      details: error.message
     });
   }
 });
@@ -25983,11 +26027,13 @@ app.get("/api/exchanges", async (req, res) => {
       currencyCode,
       dateFrom,
       dateTo,
-      search
-    } = req.query;
+      search,
+      dilarId,
+      customerType
+    } = req.query || {};
 
-    const pageNum = parseInt(page);
-    const limitNum = parseInt(limit);
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
     const skip = (pageNum - 1) * limitNum;
 
     // Build query
@@ -25998,33 +26044,102 @@ app.get("/api/exchanges", async (req, res) => {
     }
 
     if (currencyCode) {
-      query.currencyCode = currencyCode;
+      query.currencyCode = String(currencyCode).trim();
     }
 
     if (dateFrom || dateTo) {
       query.date = {};
-      if (dateFrom) query.date.$gte = dateFrom;
-      if (dateTo) query.date.$lte = dateTo;
+      if (dateFrom) query.date.$gte = String(dateFrom).trim();
+      if (dateTo) query.date.$lte = String(dateTo).trim();
+    }
+
+    // Filter by customer type
+    if (customerType) {
+      query.customerType = String(customerType).trim();
+    }
+
+    // Filter by dilar ID
+    if (dilarId) {
+      const dilarIdStr = String(dilarId).trim();
+      const dilarFilters = [];
+      
+      // Try ObjectId if valid
+      if (ObjectId.isValid(dilarIdStr)) {
+        dilarFilters.push({ dilarId: new ObjectId(dilarIdStr) });
+        dilarFilters.push({ 'dilarReference.dilarId': new ObjectId(dilarIdStr) });
+      }
+      
+      // Also try by contactNo
+      try {
+        const dilar = await dilars.findOne({
+          $or: [
+            { contactNo: dilarIdStr },
+            ...(ObjectId.isValid(dilarIdStr) ? [{ _id: new ObjectId(dilarIdStr) }] : [])
+          ],
+          isActive: { $ne: false }
+        });
+        
+        if (dilar) {
+          dilarFilters.push({ dilarId: dilar._id });
+          dilarFilters.push({ 'dilarReference.dilarId': dilar._id });
+          dilarFilters.push({ mobileNumber: dilar.contactNo });
+        }
+      } catch (dilarError) {
+        // Ignore dilar lookup errors
+      }
+      
+      if (dilarFilters.length > 0) {
+        query.$or = query.$or || [];
+        query.$or = [...(query.$or || []), ...dilarFilters];
+      }
     }
 
     if (search) {
-      query.$or = [
-        { fullName: { $regex: search, $options: 'i' } },
-        { mobileNumber: { $regex: search, $options: 'i' } },
-        { nid: { $regex: search, $options: 'i' } }
+      const searchTerm = String(search).trim();
+      // Escape special regex characters
+      const escapedSearchTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const searchConditions = [
+        { fullName: { $regex: escapedSearchTerm, $options: 'i' } },
+        { mobileNumber: { $regex: escapedSearchTerm, $options: 'i' } },
+        { nid: { $regex: escapedSearchTerm, $options: 'i' } }
       ];
+      
+      if (query.$or) {
+        // Combine with existing $or conditions using $and
+        query.$and = [
+          { $or: query.$or },
+          { $or: searchConditions }
+        ];
+        delete query.$or;
+      } else {
+        query.$or = searchConditions;
+      }
     }
 
-    // Get total count
-    const total = await exchanges.countDocuments(query);
+    // Get total count and exchanges in parallel
+    let total = 0;
+    let exchangesList = [];
 
-    // Get exchanges
-    const exchangesList = await exchanges
-      .find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNum)
-      .toArray();
+    try {
+      [total, exchangesList] = await Promise.all([
+        exchanges.countDocuments(query),
+        exchanges
+          .find(query)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limitNum)
+          .toArray()
+      ]);
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      total = 0;
+      exchangesList = [];
+    }
+
+    // Ensure exchangesList is an array
+    if (!Array.isArray(exchangesList)) {
+      exchangesList = [];
+    }
 
     res.json({
       success: true,
@@ -26032,8 +26147,8 @@ app.get("/api/exchanges", async (req, res) => {
       pagination: {
         page: pageNum,
         limit: limitNum,
-        total,
-        pages: Math.ceil(total / limitNum)
+        total: total || 0,
+        pages: Math.ceil((total || 0) / limitNum) || 0
       }
     });
 
@@ -26042,7 +26157,8 @@ app.get("/api/exchanges", async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: 'Failed to fetch exchanges'
+      message: 'Failed to fetch exchanges',
+      details: error.message || "Unknown error occurred"
     });
   }
 });
@@ -27111,6 +27227,143 @@ app.delete("/api/dilars/:id", async (req, res) => {
       success: false,
       error: 'Internal server error',
       message: 'Failed to delete dilar',
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
+// GET: Get exchanges by dilar ID (for dilar profile)
+app.get("/api/dilars/:id/exchanges", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      page = 1,
+      limit = 10,
+      type,
+      currencyCode,
+      dateFrom,
+      dateTo
+    } = req.query || {};
+
+    // Validate id parameter
+    if (!id || !String(id).trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid ID',
+        message: 'Dilar ID is required'
+      });
+    }
+
+    // Build query filters for dilar
+    const dilarFilters = [
+      { contactNo: String(id).trim() }
+    ];
+    
+    try {
+      if (ObjectId.isValid(id)) {
+        dilarFilters.unshift({ _id: new ObjectId(id) });
+      }
+    } catch (objectIdError) {
+      console.warn("ObjectId conversion warning:", objectIdError.message);
+    }
+
+    // Check if dilar exists
+    let dilar = null;
+    try {
+      dilar = await dilars.findOne({
+        $or: dilarFilters,
+        isActive: { $ne: false }
+      });
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      return res.status(500).json({
+        success: false,
+        error: "Database error",
+        message: "Failed to query dilar",
+        details: queryError.message
+      });
+    }
+
+    if (!dilar) {
+      return res.status(404).json({
+        success: false,
+        error: 'Not found',
+        message: 'Dilar not found'
+      });
+    }
+
+    // Build exchange query
+    const exchangeQuery = {
+      isActive: { $ne: false },
+      $or: [
+        { dilarId: dilar._id },
+        { 'dilarReference.dilarId': dilar._id },
+        { mobileNumber: dilar.contactNo }
+      ]
+    };
+
+    // Additional filters
+    if (type && ['Buy', 'Sell'].includes(type)) {
+      exchangeQuery.type = type;
+    }
+
+    if (currencyCode) {
+      exchangeQuery.currencyCode = String(currencyCode).trim();
+    }
+
+    if (dateFrom || dateTo) {
+      exchangeQuery.date = {};
+      if (dateFrom) exchangeQuery.date.$gte = String(dateFrom).trim();
+      if (dateTo) exchangeQuery.date.$lte = String(dateTo).trim();
+    }
+
+    // Pagination
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Get total count and exchanges in parallel
+    let total = 0;
+    let exchangesList = [];
+
+    try {
+      [total, exchangesList] = await Promise.all([
+        exchanges.countDocuments(exchangeQuery),
+        exchanges
+          .find(exchangeQuery)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limitNum)
+          .toArray()
+      ]);
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      total = 0;
+      exchangesList = [];
+    }
+
+    // Ensure exchangesList is an array
+    if (!Array.isArray(exchangesList)) {
+      exchangesList = [];
+    }
+
+    res.json({
+      success: true,
+      data: exchangesList,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total: total || 0,
+        pages: Math.ceil((total || 0) / limitNum) || 0
+      }
+    });
+
+  } catch (error) {
+    console.error('Get dilar exchanges error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: 'Failed to fetch dilar exchanges',
       details: error.message || "Unknown error occurred"
     });
   }
