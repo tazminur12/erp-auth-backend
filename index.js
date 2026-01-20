@@ -8444,6 +8444,429 @@ app.get("/vendors", async (req, res) => {
   }
 });
 
+// ✅ GET: Vendor Dashboard - MUST be before /vendors/:id route to avoid route conflict
+// This specific route must come before parameterized routes
+app.get("/vendors/dashboard", async (req, res) => {
+  try {
+    const { startDate, endDate, branchId } = req.query;
+
+    // Date filters
+    let dateFilter = {};
+    if (startDate || endDate) {
+      dateFilter.createdAt = {};
+      if (startDate) {
+        dateFilter.createdAt.$gte = new Date(startDate);
+      }
+      if (endDate) {
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        dateFilter.createdAt.$lte = end;
+      }
+    }
+
+    // Base filter for active vendors
+    const activeFilter = { isActive: { $ne: false } };
+
+    // Today's date range
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
+
+    // This month
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+
+    // Last month
+    const lastMonthStart = new Date(monthStart);
+    lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
+    const lastMonthEnd = new Date(monthStart);
+    lastMonthEnd.setDate(0);
+    lastMonthEnd.setHours(23, 59, 59, 999);
+
+    // Parallel queries for better performance
+    const [
+      totalVendors,
+      activeVendors,
+      inactiveVendors,
+      todayVendors,
+      thisMonthVendors,
+      lastMonthVendors,
+      vendorsWithNID,
+      vendorsWithPassport,
+      vendorsByLocation,
+      topVendorsByDue,
+      recentVendors,
+      vendorBillsSummary,
+      billsByType,
+      billsByStatus,
+      recentBills,
+      bankAccountsSummary,
+      vendorFinancials
+    ] = await Promise.all([
+      // Vendor counts
+      vendors.countDocuments(activeFilter),
+      vendors.countDocuments({ isActive: true }),
+      vendors.countDocuments({ isActive: false }),
+      vendors.countDocuments({
+        ...activeFilter,
+        createdAt: { $gte: todayStart, $lte: todayEnd }
+      }),
+      vendors.countDocuments({
+        ...activeFilter,
+        createdAt: { $gte: monthStart }
+      }),
+      vendors.countDocuments({
+        ...activeFilter,
+        createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd }
+      }),
+
+      // Document stats
+      vendors.countDocuments({
+        ...activeFilter,
+        nid: { $exists: true, $ne: "", $ne: null }
+      }),
+      vendors.countDocuments({
+        ...activeFilter,
+        passport: { $exists: true, $ne: "", $ne: null }
+      }),
+
+      // Vendors by location
+      vendors.aggregate([
+        { $match: activeFilter },
+        { $group: { _id: "$tradeLocation", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 10 }
+      ]).toArray(),
+
+      // Top vendors by due amount
+      vendors.aggregate([
+        { $match: activeFilter },
+        { $sort: { totalDue: -1 } },
+        { $limit: 10 },
+        {
+          $project: {
+            _id: 1,
+            vendorId: 1,
+            tradeName: 1,
+            tradeLocation: 1,
+            ownerName: 1,
+            contactNo: 1,
+            totalDue: { $ifNull: ["$totalDue", 0] },
+            hajDue: { $ifNull: ["$hajDue", 0] },
+            umrahDue: { $ifNull: ["$umrahDue", 0] },
+            totalPaid: { $ifNull: ["$totalPaid", 0] }
+          }
+        }
+      ]).toArray(),
+
+      // Recent vendors
+      vendors.find(activeFilter)
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .toArray(),
+
+      // Vendor bills summary - Calculate from bills
+      vendorBills.aggregate([
+        { $match: { isActive: { $ne: false }, ...(startDate || endDate ? { billDate: dateFilter.createdAt || {} } : {}) } },
+        {
+          $group: {
+            _id: null,
+            totalBills: { $sum: 1 },
+            totalAmount: {
+              $sum: {
+                $ifNull: ["$totalAmount", { $ifNull: ["$amount", 0] }]
+              }
+            },
+            totalPaidFromBills: {
+              $sum: {
+                $ifNull: [
+                  "$paidAmount",
+                  {
+                    $cond: [
+                      {
+                        $in: [
+                          { $toLower: { $ifNull: ["$paymentStatus", ""] } },
+                          ["paid", "completed", "settled"]
+                        ]
+                      },
+                      {
+                        $ifNull: ["$totalAmount", { $ifNull: ["$amount", 0] }]
+                      },
+                      0
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]).toArray(),
+
+      // Bills by type
+      vendorBills.aggregate([
+        { $match: { isActive: { $ne: false }, ...(startDate || endDate ? { billDate: dateFilter.createdAt || {} } : {}) } },
+        {
+          $group: {
+            _id: "$billType",
+            count: { $sum: 1 },
+            totalAmount: {
+              $sum: {
+                $ifNull: ["$totalAmount", { $ifNull: ["$amount", 0] }]
+              }
+            }
+          }
+        },
+        { $sort: { totalAmount: -1 } }
+      ]).toArray(),
+
+      // Bills by status
+      vendorBills.aggregate([
+        { $match: { isActive: { $ne: false }, ...(startDate || endDate ? { billDate: dateFilter.createdAt || {} } : {}) } },
+        {
+          $group: {
+            _id: "$paymentStatus",
+            count: { $sum: 1 },
+            totalAmount: {
+              $sum: {
+                $ifNull: ["$totalAmount", { $ifNull: ["$amount", 0] }]
+              }
+            }
+          }
+        },
+        { $sort: { count: -1 } }
+      ]).toArray(),
+
+      // Recent bills
+      vendorBills.find({ isActive: { $ne: false } })
+        .sort({ createdAt: -1 })
+        .limit(10)
+        .toArray(),
+
+      // Bank accounts summary
+      vendorBankAccounts.aggregate([
+        { $match: { isDeleted: { $ne: true } } },
+        {
+          $group: {
+            _id: null,
+            totalAccounts: { $sum: 1 },
+            activeAccounts: {
+              $sum: {
+                $cond: [{ $eq: ["$status", "Active"] }, 1, 0]
+              }
+            },
+            totalBalance: {
+              $sum: { $ifNull: ["$currentBalance", 0] }
+            }
+          }
+        }
+      ]).toArray(),
+
+      // Overall vendor financials
+      vendors.aggregate([
+        { $match: activeFilter },
+        {
+          $group: {
+            _id: null,
+            totalDue: { $sum: { $ifNull: ["$totalDue", 0] } },
+            hajDue: { $sum: { $ifNull: ["$hajDue", 0] } },
+            umrahDue: { $sum: { $ifNull: ["$umrahDue", 0] } },
+            totalPaid: { $sum: { $ifNull: ["$totalPaid", 0] } },
+            vendorCount: { $sum: 1 }
+          }
+        }
+      ]).toArray()
+    ]);
+
+    // Process bills summary
+    const billsData = vendorBillsSummary[0] || {
+      totalBills: 0,
+      totalAmount: 0,
+      totalPaidFromBills: 0
+    };
+
+    // Process vendor financials - Use vendors.totalPaid as it's the source of truth (updated from transactions)
+    const financialsData = vendorFinancials[0] || {
+      totalDue: 0,
+      hajDue: 0,
+      umrahDue: 0,
+      totalPaid: 0,
+      vendorCount: 0
+    };
+
+    // Calculate total paid from transactions directly (most accurate)
+    // For vendors: DEBIT = vendor pays us (due decreases), CREDIT = we pay vendor (due increases)
+    // So we need DEBIT transactions to calculate total paid
+    const vendorTransactions = await transactions.aggregate([
+      {
+        $match: {
+          partyType: 'vendor',
+          isActive: { $ne: false },
+          transactionType: 'debit' // Debit = vendor pays us (payment received)
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalPaidFromTransactions: {
+            $sum: { $ifNull: ["$amount", 0] }
+          }
+        }
+      }
+    ]).toArray();
+
+    const transactionsPaidData = vendorTransactions[0] || { totalPaidFromTransactions: 0 };
+    
+    // Use transactions data if vendors.totalPaid is 0 or missing, otherwise use vendors.totalPaid
+    const vendorsTotalPaid = Number(financialsData.totalPaid || 0);
+    const transactionsTotalPaid = Number(transactionsPaidData.totalPaidFromTransactions || 0);
+    
+    // Prefer vendors.totalPaid if it exists and is greater than 0, otherwise use transactions
+    const actualTotalPaid = vendorsTotalPaid > 0 ? vendorsTotalPaid : transactionsTotalPaid;
+    const totalDue = Math.max(0, (billsData.totalAmount || 0) - actualTotalPaid);
+
+    // Process bank accounts summary
+    const bankData = bankAccountsSummary[0] || {
+      totalAccounts: 0,
+      activeAccounts: 0,
+      totalBalance: 0
+    };
+
+    // Calculate growth rate
+    const monthlyGrowthRate = lastMonthVendors > 0
+      ? ((thisMonthVendors - lastMonthVendors) / lastMonthVendors * 100)
+      : thisMonthVendors > 0 ? 100 : 0;
+
+    // Format top vendors
+    const formattedTopVendors = topVendorsByDue.map(v => ({
+      _id: String(v._id),
+      vendorId: v.vendorId || String(v._id),
+      tradeName: v.tradeName || '',
+      tradeLocation: v.tradeLocation || '',
+      ownerName: v.ownerName || '',
+      contactNo: v.contactNo || '',
+      totalDue: Number(v.totalDue || 0),
+      hajDue: Number(v.hajDue || 0),
+      umrahDue: Number(v.umrahDue || 0),
+      totalPaid: Number(v.totalPaid || 0)
+    }));
+
+    // Format recent vendors
+    const formattedRecentVendors = recentVendors.map(v => ({
+      _id: String(v._id),
+      vendorId: v.vendorId || String(v._id),
+      tradeName: v.tradeName || '',
+      tradeLocation: v.tradeLocation || '',
+      ownerName: v.ownerName || '',
+      contactNo: v.contactNo || '',
+      createdAt: v.createdAt
+    }));
+
+    // Format recent bills
+    const formattedRecentBills = recentBills.map(b => ({
+      _id: String(b._id),
+      billNumber: b.billNumber || '',
+      vendorId: b.vendorId || '',
+      vendorName: b.vendorName || '',
+      billType: b.billType || '',
+      totalAmount: Number(b.totalAmount || b.amount || 0),
+      paidAmount: Number(b.paidAmount || 0),
+      paymentStatus: b.paymentStatus || 'pending',
+      billDate: b.billDate || b.createdAt,
+      createdAt: b.createdAt
+    }));
+
+    // Format bills by type
+    const formattedBillsByType = billsByType.map(b => ({
+      type: b._id || 'Unknown',
+      count: b.count || 0,
+      totalAmount: Number(b.totalAmount || 0)
+    }));
+
+    // Format bills by status
+    const formattedBillsByStatus = billsByStatus.map(b => ({
+      status: b._id || 'Unknown',
+      count: b.count || 0,
+      totalAmount: Number(b.totalAmount || 0)
+    }));
+
+    // Format vendors by location
+    const formattedVendorsByLocation = vendorsByLocation.map(l => ({
+      location: l._id || 'Unknown',
+      count: l.count || 0
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        // Vendor Statistics
+        statistics: {
+          totalVendors: totalVendors || 0,
+          activeVendors: activeVendors || 0,
+          inactiveVendors: inactiveVendors || 0,
+          todayVendors: todayVendors || 0,
+          thisMonthVendors: thisMonthVendors || 0,
+          lastMonthVendors: lastMonthVendors || 0,
+          monthlyGrowthRate: Math.round(monthlyGrowthRate * 100) / 100,
+          vendorsWithNID: vendorsWithNID || 0,
+          vendorsWithPassport: vendorsWithPassport || 0
+        },
+
+        // Financial Overview
+        financials: {
+          totalDue: Number(financialsData.totalDue || 0),
+          hajDue: Number(financialsData.hajDue || 0),
+          umrahDue: Number(financialsData.umrahDue || 0),
+          totalPaid: Number(financialsData.totalPaid || 0),
+          vendorCount: financialsData.vendorCount || 0
+        },
+
+        // Bills Summary
+        bills: {
+          totalBills: billsData.totalBills || 0,
+          totalAmount: Number((billsData.totalAmount || 0).toFixed(2)),
+          totalPaid: Number(actualTotalPaid.toFixed(2)), // Use vendors.totalPaid (source of truth)
+          totalDue: Number(totalDue.toFixed(2)),
+          byType: formattedBillsByType,
+          byStatus: formattedBillsByStatus
+        },
+
+        // Bank Accounts Summary
+        bankAccounts: {
+          totalAccounts: bankData.totalAccounts || 0,
+          activeAccounts: bankData.activeAccounts || 0,
+          totalBalance: Number((bankData.totalBalance || 0).toFixed(2))
+        },
+
+        // Top Vendors
+        topVendors: {
+          byDue: formattedTopVendors
+        },
+
+        // Recent Activity
+        recentActivity: {
+          vendors: formattedRecentVendors,
+          bills: formattedRecentBills
+        },
+
+        // Distribution
+        distribution: {
+          byLocation: formattedVendorsByLocation
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Vendor dashboard error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to fetch vendor dashboard data",
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
 
 // ✅ GET: Single vendor by ID
 app.get("/vendors/:id", async (req, res) => {
@@ -9101,225 +9524,6 @@ app.delete("/vendors/:vendorId/bank-accounts/:accountId", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Internal server error while deleting vendor bank account"
-    });
-  }
-});
-
-// ✅ GET: Vendor statistics overview
-app.get("/vendors/stats/overview", async (req, res) => {
-  try {
-    // Base filter for active vendors
-    const activeFilter = { isActive: { $ne: false } };
-
-    // Total vendors
-    const totalVendors = await vendors.countDocuments(activeFilter);
-
-    // Today's date range
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
-
-    const todayCount = await vendors.countDocuments({
-      ...activeFilter,
-      createdAt: { $gte: todayStart, $lte: todayEnd }
-    });
-
-    // This month
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    monthStart.setHours(0, 0, 0, 0);
-
-    const thisMonthCount = await vendors.countDocuments({
-      ...activeFilter,
-      createdAt: { $gte: monthStart }
-    });
-
-    // With NID / Passport
-    const withNID = await vendors.countDocuments({
-      ...activeFilter,
-      nid: { $exists: true, $ne: "", $ne: null }
-    });
-
-    const withPassport = await vendors.countDocuments({
-      ...activeFilter,
-      passport: { $exists: true, $ne: "", $ne: null }
-    });
-
-    // By tradeLocation
-    const byLocation = await vendors.aggregate([
-      { $match: activeFilter },
-      { $group: { _id: "$tradeLocation", count: { $sum: 1 } } },
-      { $sort: { count: -1 } }
-    ]).toArray();
-
-    res.json({
-      success: true,
-      stats: {
-        total: totalVendors,
-        today: todayCount,
-        thisMonth: thisMonthCount,
-        withNID,
-        withPassport,
-        byLocation
-      }
-    });
-  } catch (error) {
-    console.error("Error fetching vendor statistics:", error);
-    res.status(500).json({
-      success: false,
-      error: true,
-      message: "Internal server error while fetching vendor statistics"
-    });
-  }
-});
-
-// ✅ GET: Vendor statistics data (detailed analytics)
-app.get("/vendors/stats/data", async (req, res) => {
-  try {
-    const { period = 'month', location } = req.query;
-
-    let dateFilter = {};
-    const now = new Date();
-
-    // Set date range based on period
-    switch (period) {
-      case 'week':
-        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        dateFilter = { $gte: weekAgo };
-        break;
-      case 'month':
-        const monthAgo = new Date(now.getFullYear(), now.getMonth(), 1);
-        dateFilter = { $gte: monthAgo };
-        break;
-      case 'quarter':
-        const quarterStart = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
-        dateFilter = { $gte: quarterStart };
-        break;
-      case 'year':
-        const yearStart = new Date(now.getFullYear(), 0, 1);
-        dateFilter = { $gte: yearStart };
-        break;
-      default:
-        dateFilter = { $gte: new Date(now.getFullYear(), now.getMonth(), 1) };
-    }
-
-    // Base match filter
-    let matchFilter = { isActive: true, createdAt: dateFilter };
-
-    // Add location filter if specified
-    if (location) {
-      matchFilter.tradeLocation = { $regex: location, $options: 'i' };
-    }
-
-    // Vendor registration trends over time
-    const registrationTrends = await vendors.aggregate([
-      { $match: matchFilter },
-      {
-        $group: {
-          _id: {
-            year: { $year: "$createdAt" },
-            month: { $month: "$createdAt" },
-            day: period === 'week' ? { $dayOfMonth: "$createdAt" } : null
-          },
-          count: { $sum: 1 }
-        }
-      },
-      { $sort: { "_id.year": 1, "_id.month": 1, "_id.day": 1 } }
-    ]).toArray();
-
-    // Vendors by location (top locations)
-    const vendorsByLocation = await vendors.aggregate([
-      { $match: matchFilter },
-      { $group: { _id: "$tradeLocation", count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 10 }
-    ]).toArray();
-
-    // Vendor demographics (with/without documents)
-    const documentStats = await vendors.aggregate([
-      { $match: matchFilter },
-      {
-        $group: {
-          _id: null,
-          withNID: {
-            $sum: { $cond: [{ $and: [{ $ne: ["$nid", ""] }, { $ne: ["$nid", null] }] }, 1, 0] }
-          },
-          withPassport: {
-            $sum: { $cond: [{ $and: [{ $ne: ["$passport", ""] }, { $ne: ["$passport", null] }] }, 1, 0] }
-          },
-          withoutDocuments: {
-            $sum: {
-              $cond: [
-                {
-                  $and: [
-                    { $or: [{ $eq: ["$nid", ""] }, { $eq: ["$nid", null] }] },
-                    { $or: [{ $eq: ["$passport", ""] }, { $eq: ["$passport", null] }] }
-                  ]
-                },
-                1, 0
-              ]
-            }
-          },
-          total: { $sum: 1 }
-        }
-      }
-    ]).toArray();
-
-    // Recent vendor activity (last 30 days)
-    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-    const recentVendors = await vendors.find({
-      isActive: true,
-      createdAt: { $gte: thirtyDaysAgo }
-    }).sort({ createdAt: -1 }).limit(10).toArray();
-
-    // Vendor growth rate
-    const currentPeriod = await vendors.countDocuments(matchFilter);
-
-    let previousPeriodFilter = {};
-    const currentDate = new Date();
-    switch (period) {
-      case 'week':
-        const twoWeeksAgo = new Date(currentDate.getTime() - 14 * 24 * 60 * 60 * 1000);
-        const oneWeekAgo = new Date(currentDate.getTime() - 7 * 24 * 60 * 60 * 1000);
-        previousPeriodFilter = { isActive: true, createdAt: { $gte: twoWeeksAgo, $lt: oneWeekAgo } };
-        break;
-      case 'month':
-        const lastMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
-        const currentMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
-        previousPeriodFilter = { isActive: true, createdAt: { $gte: lastMonth, $lt: currentMonth } };
-        break;
-      default:
-        previousPeriodFilter = { isActive: true, createdAt: { $gte: new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1), $lt: new Date(currentDate.getFullYear(), currentDate.getMonth(), 1) } };
-    }
-
-    const previousPeriod = await vendors.countDocuments(previousPeriodFilter);
-    const growthRate = previousPeriod > 0 ? ((currentPeriod - previousPeriod) / previousPeriod * 100) : 0;
-
-    res.json({
-      success: true,
-      data: {
-        period,
-        totalVendors: currentPeriod,
-        growthRate: Math.round(growthRate * 100) / 100,
-        registrationTrends,
-        vendorsByLocation,
-        documentStats: documentStats[0] || { withNID: 0, withPassport: 0, withoutDocuments: 0, total: 0 },
-        recentVendors,
-        summary: {
-          period,
-          total: currentPeriod,
-          previousPeriod,
-          growthRate: Math.round(growthRate * 100) / 100,
-          topLocation: vendorsByLocation[0] || null
-        }
-      }
-    });
-  } catch (error) {
-    console.error("Error fetching vendor statistics data:", error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while fetching vendor statistics data",
     });
   }
 });
@@ -10017,865 +10221,6 @@ app.delete("/vendors/bills/:id", async (req, res) => {
     res.status(500).json({
       error: true,
       message: "Internal server error while deleting vendor bill"
-    });
-  }
-});
-
-
-// ✅ GET: Vendor Analytics (Enhanced)
-app.get("/vendors/analytics", async (req, res) => {
-  try {
-    // Total vendors
-    const totalVendors = await vendors.countDocuments({ isActive: { $ne: false } });
-    
-    // Active vendors
-    const activeVendors = await vendors.countDocuments({ isActive: true });
-    
-    // Inactive vendors
-    const inactiveVendors = await vendors.countDocuments({ isActive: false });
-    
-    // New this month
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    monthStart.setHours(0, 0, 0, 0);
-    const newThisMonth = await vendors.countDocuments({
-      isActive: { $ne: false },
-      createdAt: { $gte: monthStart }
-    });
-    
-    // Top locations
-    const topLocations = await vendors.aggregate([
-      { $match: { isActive: { $ne: false } } },
-      { $group: { _id: "$tradeLocation", count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 10 }
-    ]).toArray();
-
-    res.json({
-      success: true,
-      totalVendors,
-      activeVendors,
-      inactiveVendors,
-      newThisMonth,
-      topLocations: topLocations.map(loc => ({
-        location: loc._id || 'Unknown',
-        count: loc.count
-      }))
-    });
-  } catch (error) {
-    console.error("Vendor analytics error:", error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while fetching vendor analytics",
-    });
-  }
-});
-
-// ✅ GET: Order Analytics (Enhanced)
-app.get("/orders/analytics", async (req, res) => {
-  try {
-    const { branchId } = req.query;
-    let filter = { isActive: true };
-    if (branchId) filter.branchId = branchId;
-
-    // Date ranges
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
-    
-    const weekAgo = new Date();
-    weekAgo.setDate(weekAgo.getDate() - 7);
-    weekAgo.setHours(0, 0, 0, 0);
-    
-    const monthStart = new Date();
-    monthStart.setDate(1);
-    monthStart.setHours(0, 0, 0, 0);
-    
-    const lastMonthStart = new Date(monthStart);
-    lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
-    
-    const lastMonthEnd = new Date(monthStart);
-    lastMonthEnd.setDate(0);
-    lastMonthEnd.setHours(23, 59, 59, 999);
-
-    // Order status counts
-    const statusCounts = await orders.aggregate([
-      { $match: filter },
-      {
-        $group: {
-          _id: "$status",
-          count: { $sum: 1 }
-        }
-      }
-    ]).toArray();
-
-    const statusMap = {};
-    statusCounts.forEach(item => {
-      statusMap[item._id] = item.count;
-    });
-
-    const completedOrders = statusMap['completed'] || statusMap['confirmed'] || 0;
-    const pendingOrders = statusMap['pending'] || 0;
-    const cancelledOrders = statusMap['cancelled'] || 0;
-    const processingOrders = statusMap['processing'] || statusMap['in_progress'] || 0;
-
-    // Revenue calculations
-    const revenueData = await orders.aggregate([
-      { $match: { ...filter, status: { $in: ['completed', 'confirmed'] } } },
-      {
-        $group: {
-          _id: null,
-          totalRevenue: { $sum: { $ifNull: ["$amount", 0] } },
-          monthlyRevenue: {
-            $sum: {
-              $cond: [
-                { $gte: ["$createdAt", monthStart] },
-                { $ifNull: ["$amount", 0] },
-                0
-              ]
-            }
-          },
-          orderCount: { $sum: 1 },
-          monthlyOrderCount: {
-            $sum: {
-              $cond: [
-                { $gte: ["$createdAt", monthStart] },
-                1,
-                0
-              ]
-            }
-          }
-        }
-      }
-    ]).toArray();
-
-    const revenue = revenueData[0] || {};
-    const totalRevenue = revenue.totalRevenue || 0;
-    const monthlyRevenue = revenue.monthlyRevenue || 0;
-    const averageOrderValue = revenue.orderCount > 0 ? totalRevenue / revenue.orderCount : 0;
-
-    // Today's orders
-    const todayOrdersData = await orders.countDocuments({
-      ...filter,
-      createdAt: { $gte: today, $lte: todayEnd }
-    });
-
-    // Last week's orders (for comparison)
-    const lastWeekOrders = await orders.countDocuments({
-      ...filter,
-      createdAt: { $gte: weekAgo, $lt: today }
-    });
-    const todayOrdersChange = lastWeekOrders > 0 ? ((todayOrdersData - lastWeekOrders) / lastWeekOrders) * 100 : 0;
-
-    // This week's orders
-    const weeklyOrders = await orders.countDocuments({
-      ...filter,
-      createdAt: { $gte: weekAgo }
-    });
-
-    // Last week's orders (for comparison)
-    const lastWeekStart = new Date(weekAgo);
-    lastWeekStart.setDate(lastWeekStart.getDate() - 7);
-    const lastWeekTotal = await orders.countDocuments({
-      ...filter,
-      createdAt: { $gte: lastWeekStart, $lt: weekAgo }
-    });
-    const weeklyOrdersChange = lastWeekTotal > 0 ? ((weeklyOrders - lastWeekTotal) / lastWeekTotal) * 100 : 0;
-
-    // This month's orders
-    const monthlyOrders = await orders.countDocuments({
-      ...filter,
-      createdAt: { $gte: monthStart }
-    });
-
-    // Last month's orders (for comparison)
-    const lastMonthOrders = await orders.countDocuments({
-      ...filter,
-      createdAt: { $gte: lastMonthStart, $lte: lastMonthEnd }
-    });
-    const monthlyOrdersChange = lastMonthOrders > 0 ? ((monthlyOrders - lastMonthOrders) / lastMonthOrders) * 100 : 0;
-
-    res.json({
-      success: true,
-      completedOrders,
-      pendingOrders,
-      cancelledOrders,
-      processingOrders,
-      totalRevenue,
-      monthlyRevenue,
-      averageOrderValue,
-      todayOrders: todayOrdersData,
-      todayOrdersChange,
-      weeklyOrders,
-      weeklyOrdersChange,
-      monthlyOrders,
-      monthlyOrdersChange
-    });
-  } catch (error) {
-    console.error("Order analytics error:", error);
-    res.status(500).json({
-      error: true,
-      message: "Internal server error while fetching order analytics",
-    });
-  }
-});
-
-
-// Helper: Generate unique Invoice ID
-const generateInvoiceId = async (db) => {
-  const counterCollection = db.collection("counters");
-  
-  // Create counter key for invoice
-  const counterKey = `invoice`;
-  
-  // Find or create counter
-  let counter = await counterCollection.findOne({ counterKey });
-  
-  if (!counter) {
-    // Create new counter starting from 0
-    await counterCollection.insertOne({ counterKey, sequence: 0 });
-    counter = { sequence: 0 };
-  }
-  
-  // Increment sequence
-  const newSequence = counter.sequence + 1;
-  
-  // Update counter
-  await counterCollection.updateOne(
-    { counterKey },
-    { $set: { sequence: newSequence } }
-  );
-  
-  // Format: INV + 00001 (e.g., INV00001)
-  const serial = String(newSequence).padStart(5, '0');
-  
-  return `INV${serial}`;
-};
-
-// ==================== INVOICE ROUTES ====================
-
-// ✅ POST: Create new invoice
-app.post("/api/invoices", async (req, res) => {
-  let session = null;
-  
-  try {
-    const {
-      date,
-      customerId,
-      customer,
-      customerPhone,
-      serviceId,
-      bookingId,
-      vendorId,
-      vendorName,
-      
-      // Common billing fields
-      bill,
-      commission,
-      discount,
-      paid,
-      dueCommitmentDate,
-      
-      // Air Ticket specific fields
-      baseFare,
-      tax,
-      sellerDetails,
-      gdsPnr,
-      airlinePnr,
-      ticketNo,
-      passengerType,
-      airlineName,
-      
-      // Flight Details
-      flightType,
-      origin,
-      destination,
-      flightDate,
-      originOutbound,
-      destinationOutbound,
-      outboundFlightDate,
-      originInbound,
-      destinationInbound,
-      inboundFlightDate,
-      
-      // Multi City segments
-      originSegment1,
-      destinationSegment1,
-      flightDateSegment1,
-      originSegment2,
-      destinationSegment2,
-      flightDateSegment2,
-      
-      // Customer Fare fields
-      customerBaseFare,
-      customerTax,
-      customerCommission,
-      ait,
-      serviceCharge,
-      
-      // Vendor Fare fields
-      vendorBaseFare,
-      vendorTax,
-      vendorCommission,
-      vendorAit,
-      vendorServiceCharge,
-      
-      // Additional fields
-      branchId,
-      createdBy,
-      notes
-    } = req.body;
-
-    // Validation
-    if (!customerId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Customer ID is required'
-      });
-    }
-
-    if (!serviceId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Service ID is required'
-      });
-    }
-
-    // Validate customer exists
-    const customerDoc = await customers.findOne({
-      $or: [
-        { customerId: customerId },
-        { _id: ObjectId.isValid(customerId) ? new ObjectId(customerId) : null }
-      ],
-      isActive: { $ne: false }
-    });
-
-    if (!customerDoc) {
-      return res.status(404).json({
-        success: false,
-        message: 'Customer not found'
-      });
-    }
-
-    // Validate vendor if provided
-    let vendorDoc = null;
-    if (vendorId) {
-      vendorDoc = await vendors.findOne({
-        $or: [
-          { _id: ObjectId.isValid(vendorId) ? new ObjectId(vendorId) : null },
-          { id: vendorId }
-        ],
-        isActive: { $ne: false }
-      });
-
-      if (!vendorDoc) {
-        return res.status(404).json({
-          success: false,
-          message: 'Vendor not found'
-        });
-      }
-    }
-
-    // Start transaction session
-    session = client.startSession();
-    session.startTransaction();
-
-    // Generate invoice ID
-    const invoiceId = await generateInvoiceId(db);
-
-    // Calculate totals
-    // For Air Ticket: bill = baseFare + tax
-    let calculatedBill = 0;
-    if (baseFare !== undefined || tax !== undefined) {
-      const bf = Number(baseFare) || 0;
-      const tx = Number(tax) || 0;
-      calculatedBill = bf + tx;
-    } else {
-      calculatedBill = Number(bill) || 0;
-    }
-
-    const numericCommission = Number(commission) || 0;
-    const numericDiscount = Number(discount) || 0;
-    const total = Math.max(0, calculatedBill + numericCommission - numericDiscount);
-    const numericPaid = Number(paid) || 0;
-    const due = Math.max(0, total - numericPaid);
-
-    // Calculate customer total fare
-    const custBaseFare = Number(customerBaseFare) || 0;
-    const custTax = Number(customerTax) || 0;
-    const custCommission = Number(customerCommission) || 0;
-    const custAit = Number(ait) || 0;
-    const custServiceCharge = Number(serviceCharge) || 0;
-    const customerSubtotal = custBaseFare + custTax - custCommission;
-    const customerTotalFare = Math.max(0, customerSubtotal + custAit + custServiceCharge);
-
-    // Calculate vendor total fare
-    const vendBaseFare = Number(vendorBaseFare) || 0;
-    const vendTax = Number(vendorTax) || 0;
-    const vendCommission = Number(vendorCommission) || 0;
-    const vendAit = Number(vendorAit) || 0;
-    const vendServiceCharge = Number(vendorServiceCharge) || 0;
-    const vendorSubtotal = vendBaseFare + vendTax - vendCommission;
-    const vendorTotalFare = Math.max(0, vendorSubtotal + vendAit + vendServiceCharge);
-
-    // Build flight details object
-    const flightDetails = {
-      flightType: flightType || 'oneway',
-      oneway: flightType === 'oneway' ? {
-        origin: origin || '',
-        destination: destination || '',
-        flightDate: flightDate || ''
-      } : null,
-      roundTrip: flightType === 'round' ? {
-        outbound: {
-          origin: originOutbound || '',
-          destination: destinationOutbound || '',
-          flightDate: outboundFlightDate || ''
-        },
-        inbound: {
-          origin: originInbound || '',
-          destination: destinationInbound || '',
-          flightDate: inboundFlightDate || ''
-        }
-      } : null,
-      multiCity: flightType === 'multicity' ? {
-        segment1: {
-          origin: originSegment1 || '',
-          destination: destinationSegment1 || '',
-          flightDate: flightDateSegment1 || ''
-        },
-        segment2: {
-          origin: originSegment2 || '',
-          destination: destinationSegment2 || '',
-          flightDate: flightDateSegment2 || ''
-        }
-      } : null
-    };
-
-    // Create invoice document
-    const invoiceData = {
-      invoiceId,
-      date: date || new Date().toISOString().split('T')[0],
-      
-      // Customer information
-      customerId: customerDoc.customerId || customerId,
-      customerName: customer || customerDoc.name || '',
-      customerPhone: customerPhone || customerDoc.mobile || '',
-      customer: {
-        id: customerDoc._id?.toString() || customerId,
-        customerId: customerDoc.customerId,
-        name: customerDoc.name,
-        mobile: customerDoc.mobile,
-        email: customerDoc.email || null
-      },
-      
-      // Service information
-      serviceId: serviceId,
-      serviceType: serviceId, // Can be mapped to service name if needed
-      
-      // Booking information
-      bookingId: bookingId || null,
-      
-      // Air Ticket specific fields
-      airlineName: airlineName || null,
-      gdsPnr: gdsPnr || null,
-      airlinePnr: airlinePnr || null,
-      ticketNo: ticketNo || null,
-      passengerType: passengerType || 'adult',
-      sellerDetails: sellerDetails || null,
-      
-      // Flight details
-      flightDetails: flightDetails,
-      
-      // Vendor information (if provided)
-      vendor: vendorDoc ? {
-        id: vendorDoc._id?.toString() || vendorId,
-        vendorId: vendorDoc.id || vendorId,
-        tradeName: vendorDoc.tradeName || vendorName || '',
-        ownerName: vendorDoc.ownerName || '',
-        contactNo: vendorDoc.contactNo || ''
-      } : null,
-      
-      // Billing information
-      bill: calculatedBill,
-      baseFare: baseFare ? Number(baseFare) : null,
-      tax: tax ? Number(tax) : null,
-      commission: numericCommission,
-      discount: numericDiscount,
-      total: total,
-      paid: numericPaid,
-      due: due,
-      dueCommitmentDate: dueCommitmentDate || null,
-      
-      // Customer Fare breakdown
-      customerFare: {
-        baseFare: custBaseFare,
-        tax: custTax,
-        commission: custCommission,
-        ait: custAit,
-        serviceCharge: custServiceCharge,
-        subtotal: customerSubtotal,
-        total: customerTotalFare
-      },
-      
-      // Vendor Fare breakdown
-      vendorFare: vendorDoc ? {
-        baseFare: vendBaseFare,
-        tax: vendTax,
-        commission: vendCommission,
-        ait: vendAit,
-        serviceCharge: vendServiceCharge,
-        subtotal: vendorSubtotal,
-        total: vendorTotalFare
-      } : null,
-      
-      // Profit calculation (if vendor fare exists)
-      profit: vendorDoc ? (customerTotalFare - vendorTotalFare) : null,
-      
-      // Additional fields
-      branchId: branchId || 'main',
-      createdBy: createdBy || 'SYSTEM',
-      notes: notes || '',
-      status: due > 0 ? 'pending' : 'paid',
-      isActive: true,
-      createdAt: new Date(),
-      updatedAt: new Date()
-    };
-
-    // Insert invoice
-    const invoiceResult = await invoices.insertOne(invoiceData, { session });
-
-    // Update customer's total amount and due if needed
-    const customerTotalAmount = (customerDoc.totalAmount || 0) + total;
-    const customerPaidAmount = (customerDoc.paidAmount || 0) + numericPaid;
-    const customerDue = customerTotalAmount - customerPaidAmount;
-
-    await customers.updateOne(
-      { _id: customerDoc._id },
-      {
-        $set: {
-          totalAmount: customerTotalAmount,
-          paidAmount: customerPaidAmount,
-          updatedAt: new Date()
-        }
-      },
-      { session }
-    );
-
-    // Commit transaction
-    await session.commitTransaction();
-
-    // Fetch created invoice
-    const createdInvoice = await invoices.findOne({ _id: invoiceResult.insertedId });
-
-    res.status(201).json({
-      success: true,
-      message: 'Invoice created successfully',
-      invoice: createdInvoice
-    });
-
-  } catch (error) {
-    // Rollback on error
-    if (session && session.inTransaction()) {
-      await session.abortTransaction();
-    }
-    
-    console.error('Create invoice error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create invoice',
-      error: error.message
-    });
-  } finally {
-    // End session
-    if (session) {
-      session.endSession();
-    }
-  }
-});
-
-// ✅ GET: Get all invoices with filters and pagination
-app.get("/api/invoices", async (req, res) => {
-  try {
-    const {
-      customerId,
-      serviceId,
-      status,
-      fromDate,
-      toDate,
-      page = 1,
-      limit = 20,
-      q
-    } = req.query || {};
-
-    const pageNum = Math.max(parseInt(page) || 1, 1);
-    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
-    const skip = (pageNum - 1) * limitNum;
-
-    // Build query
-    const query = { isActive: { $ne: false } };
-
-    if (customerId) {
-      query.$or = [
-        { customerId: customerId },
-        { 'customer.id': customerId },
-        { 'customer.customerId': customerId }
-      ];
-    }
-
-    if (serviceId) {
-      query.serviceId = serviceId;
-    }
-
-    if (status) {
-      query.status = status;
-    }
-
-    if (fromDate || toDate) {
-      query.date = {};
-      if (fromDate) query.date.$gte = fromDate;
-      if (toDate) query.date.$lte = toDate;
-    }
-
-    if (q) {
-      const searchTerm = String(q).trim();
-      const searchConditions = [
-        { invoiceId: { $regex: searchTerm, $options: 'i' } },
-        { bookingId: { $regex: searchTerm, $options: 'i' } },
-        { customerName: { $regex: searchTerm, $options: 'i' } },
-        { customerPhone: { $regex: searchTerm, $options: 'i' } },
-        { airlinePnr: { $regex: searchTerm, $options: 'i' } },
-        { gdsPnr: { $regex: searchTerm, $options: 'i' } },
-        { ticketNo: { $regex: searchTerm, $options: 'i' } }
-      ];
-      
-      // If customerId filter exists, combine with AND
-      if (query.$or) {
-        query.$and = [
-          { $or: query.$or },
-          { $or: searchConditions }
-        ];
-        delete query.$or;
-      } else {
-        query.$or = searchConditions;
-      }
-    }
-
-    // Get total count
-    const total = await invoices.countDocuments(query);
-
-    // Get invoices
-    const invoicesList = await invoices
-      .find(query)
-      .sort({ createdAt: -1, date: -1 })
-      .skip(skip)
-      .limit(limitNum)
-      .toArray();
-
-    res.json({
-      success: true,
-      data: invoicesList,
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
-        total,
-        pages: Math.ceil(total / limitNum)
-      }
-    });
-
-  } catch (error) {
-    console.error('Get invoices error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch invoices',
-      error: error.message
-    });
-  }
-});
-
-// ✅ GET: Get single invoice by ID
-app.get("/api/invoices/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const query = {
-      $or: [
-        { invoiceId: id },
-        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
-      ],
-      isActive: { $ne: false }
-    };
-
-    const invoice = await invoices.findOne(query);
-
-    if (!invoice) {
-      return res.status(404).json({
-        success: false,
-        message: 'Invoice not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      invoice
-    });
-
-  } catch (error) {
-    console.error('Get invoice error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch invoice',
-      error: error.message
-    });
-  }
-});
-
-// ✅ PUT: Update invoice by ID
-app.put("/api/invoices/:id", async (req, res) => {
-  let session = null;
-  
-  try {
-    const { id } = req.params;
-    const updateData = req.body;
-
-    // Find invoice
-    const query = {
-      $or: [
-        { invoiceId: id },
-        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
-      ],
-      isActive: { $ne: false }
-    };
-
-    const existingInvoice = await invoices.findOne(query);
-
-    if (!existingInvoice) {
-      return res.status(404).json({
-        success: false,
-        message: 'Invoice not found'
-      });
-    }
-
-    // Start transaction
-    session = client.startSession();
-    session.startTransaction();
-
-    // Build update object (only update provided fields)
-    const updateFields = {
-      updatedAt: new Date()
-    };
-
-    // Update allowed fields
-    const allowedFields = [
-      'date', 'bookingId', 'airlineName', 'gdsPnr', 'airlinePnr', 
-      'ticketNo', 'passengerType', 'flightDetails', 'bill', 'baseFare', 
-      'tax', 'commission', 'discount', 'paid', 'dueCommitmentDate',
-      'customerFare', 'vendorFare', 'notes', 'status'
-    ];
-
-    for (const field of allowedFields) {
-      if (updateData[field] !== undefined) {
-        updateFields[field] = updateData[field];
-      }
-    }
-
-    // Recalculate totals if billing fields changed
-    if (updateData.bill !== undefined || updateData.commission !== undefined || 
-        updateData.discount !== undefined || updateData.paid !== undefined) {
-      const bill = updateData.bill !== undefined ? Number(updateData.bill) : (existingInvoice.bill || 0);
-      const commission = updateData.commission !== undefined ? Number(updateData.commission) : (existingInvoice.commission || 0);
-      const discount = updateData.discount !== undefined ? Number(updateData.discount) : (existingInvoice.discount || 0);
-      const paid = updateData.paid !== undefined ? Number(updateData.paid) : (existingInvoice.paid || 0);
-      
-      updateFields.total = Math.max(0, bill + commission - discount);
-      updateFields.due = Math.max(0, updateFields.total - paid);
-      updateFields.status = updateFields.due > 0 ? 'pending' : 'paid';
-    }
-
-    // Update invoice
-    await invoices.updateOne(
-      { _id: existingInvoice._id },
-      { $set: updateFields },
-      { session }
-    );
-
-    // Commit transaction
-    await session.commitTransaction();
-
-    // Fetch updated invoice
-    const updatedInvoice = await invoices.findOne({ _id: existingInvoice._id });
-
-    res.json({
-      success: true,
-      message: 'Invoice updated successfully',
-      invoice: updatedInvoice
-    });
-
-  } catch (error) {
-    // Rollback on error
-    if (session && session.inTransaction()) {
-      await session.abortTransaction();
-    }
-    
-    console.error('Update invoice error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update invoice',
-      error: error.message
-    });
-  } finally {
-    // End session
-    if (session) {
-      session.endSession();
-    }
-  }
-});
-
-// ✅ DELETE: Delete invoice by ID (soft delete)
-app.delete("/api/invoices/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const query = {
-      $or: [
-        { invoiceId: id },
-        { _id: ObjectId.isValid(id) ? new ObjectId(id) : null }
-      ],
-      isActive: { $ne: false }
-    };
-
-    const invoice = await invoices.findOne(query);
-
-    if (!invoice) {
-      return res.status(404).json({
-        success: false,
-        message: 'Invoice not found'
-      });
-    }
-
-    // Soft delete
-    await invoices.updateOne(
-      { _id: invoice._id },
-      {
-        $set: {
-          isActive: false,
-          updatedAt: new Date()
-        }
-      }
-    );
-
-    res.json({
-      success: true,
-      message: 'Invoice deleted successfully'
-    });
-
-  } catch (error) {
-    console.error('Delete invoice error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete invoice',
-      error: error.message
     });
   }
 });
@@ -29358,6 +28703,67 @@ app.get("/api/hotels", async (req, res) => {
   }
 });
 
+// ✅ GET: Get contracts by hotel ID - MUST be before /api/hotels/:id route
+app.get("/api/hotels/:hotelId/contracts", async (req, res) => {
+  try {
+    const { hotelId } = req.params;
+
+    if (!hotelId || !ObjectId.isValid(hotelId)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid hotel ID",
+        message: "Hotel ID is required and must be valid"
+      });
+    }
+
+    // Search with both ObjectId and string to handle both cases
+    const contracts = await hotelContracts
+      .find({
+        $or: [
+          { hotelId: new ObjectId(hotelId), isActive: true },
+          { hotelId: hotelId, isActive: true }
+        ]
+      })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    const formattedContracts = contracts.map(contract => ({
+      _id: String(contract._id),
+      id: String(contract._id),
+      hotelId: contract.hotelId ? String(contract.hotelId) : null,
+      contractType: contract.contractType || '',
+      nusukAgencyId: contract.nusukAgencyId ? String(contract.nusukAgencyId) : '',
+      requestNumber: contract.requestNumber || '',
+      hotelName: contract.hotelName || '',
+      contractNumber: contract.contractNumber || '',
+      contractStart: contract.contractStart,
+      contractEnd: contract.contractEnd,
+      hajjiCount: Number(contract.hajjiCount) || 0,
+      nusukPayment: Number(contract.nusukPayment) || 0,
+      cashPayment: Number(contract.cashPayment) || 0,
+      otherBills: Number(contract.otherBills) || 0,
+      totalBill: Number(contract.totalBill) || 0,
+      perPersonAmount: Number(contract.perPersonAmount) || 0,
+      createdAt: contract.createdAt,
+      updatedAt: contract.updatedAt
+    }));
+
+    res.json({
+      success: true,
+      data: formattedContracts
+    });
+
+  } catch (error) {
+    console.error("❌ Get hotel contracts error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to fetch hotel contracts",
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
 // ✅ GET: Get single hotel by ID
 app.get("/api/hotels/:id", async (req, res) => {
   try {
@@ -29642,7 +29048,7 @@ app.post("/api/hotels/contracts", async (req, res) => {
     const perPersonAmount = parseFloat(hajjiCount) > 0 ? (totalBill / parseFloat(hajjiCount)) : 0;
 
     const newContract = {
-      hotelId: hotelId || null,
+      hotelId: hotelId && ObjectId.isValid(hotelId) ? new ObjectId(hotelId) : null,
       contractType: contractType.trim(),
       nusukAgencyId: ObjectId.isValid(nusukAgencyId) ? new ObjectId(nusukAgencyId) : nusukAgencyId,
       requestNumber: requestNumber.trim(),
@@ -29877,6 +29283,9 @@ app.put("/api/hotels/contracts/:id", async (req, res) => {
     };
 
     if (updateData.contractType) updateFields.contractType = String(updateData.contractType).trim();
+    if (updateData.hotelId !== undefined) {
+      updateFields.hotelId = updateData.hotelId && ObjectId.isValid(updateData.hotelId) ? new ObjectId(updateData.hotelId) : null;
+    }
     if (updateData.nusukAgencyId && ObjectId.isValid(updateData.nusukAgencyId)) {
       updateFields.nusukAgencyId = new ObjectId(updateData.nusukAgencyId);
     }
@@ -30015,64 +29424,6 @@ app.delete("/api/hotels/contracts/:id", async (req, res) => {
       success: false,
       error: "Internal server error",
       message: "Failed to delete hotel contract",
-      details: error.message || "Unknown error occurred"
-    });
-  }
-});
-
-// ✅ GET: Get contracts by hotel ID
-app.get("/api/hotels/:hotelId/contracts", async (req, res) => {
-  try {
-    const { hotelId } = req.params;
-
-    if (!hotelId || !ObjectId.isValid(hotelId)) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid hotel ID",
-        message: "Hotel ID is required and must be valid"
-      });
-    }
-
-    const contracts = await hotelContracts
-      .find({
-        hotelId: new ObjectId(hotelId),
-        isActive: true
-      })
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    const formattedContracts = contracts.map(contract => ({
-      _id: String(contract._id),
-      id: String(contract._id),
-      hotelId: contract.hotelId ? String(contract.hotelId) : null,
-      contractType: contract.contractType || '',
-      nusukAgencyId: contract.nusukAgencyId ? String(contract.nusukAgencyId) : '',
-      requestNumber: contract.requestNumber || '',
-      hotelName: contract.hotelName || '',
-      contractNumber: contract.contractNumber || '',
-      contractStart: contract.contractStart,
-      contractEnd: contract.contractEnd,
-      hajjiCount: Number(contract.hajjiCount) || 0,
-      nusukPayment: Number(contract.nusukPayment) || 0,
-      cashPayment: Number(contract.cashPayment) || 0,
-      otherBills: Number(contract.otherBills) || 0,
-      totalBill: Number(contract.totalBill) || 0,
-      perPersonAmount: Number(contract.perPersonAmount) || 0,
-      createdAt: contract.createdAt,
-      updatedAt: contract.updatedAt
-    }));
-
-    res.json({
-      success: true,
-      data: formattedContracts
-    });
-
-  } catch (error) {
-    console.error("❌ Get hotel contracts error:", error);
-    res.status(500).json({
-      success: false,
-      error: "Internal server error",
-      message: "Failed to fetch hotel contracts",
       details: error.message || "Unknown error occurred"
     });
   }
