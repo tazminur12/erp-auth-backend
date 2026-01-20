@@ -1424,7 +1424,9 @@ async function initializeDatabase() {
         airCustomers.createIndex({ customerId: 1 }, { unique: true, name: "airCustomers_customerId_unique" }),
         // Air Tickets indexes
         tickets.createIndex({ ticketId: 1 }, { unique: true, name: "airTickets_ticketId_unique" }),
-        tickets.createIndex({ bookingId: 1 }, { name: "airTickets_bookingId" }),
+        // Create sparse unique index on bookingId - only indexes non-null values
+        // This allows multiple documents with null bookingId without duplicate key errors
+        tickets.createIndex({ bookingId: 1 }, { name: "airTickets_bookingId", unique: true, sparse: true }),
         airCustomers.createIndex({ mobile: 1 }, { name: "airCustomers_mobile" }),
         airCustomers.createIndex({ email: 1 }, { sparse: true, name: "airCustomers_email" }),
         airCustomers.createIndex({ passportNumber: 1 }, { sparse: true, name: "airCustomers_passportNumber" }),
@@ -1564,7 +1566,7 @@ app.get("/", (req, res) => {
             <h1>🚀 ERP Dashboard API</h1>
             <div class="status">✅ API সফলভাবে চলছে!</div>
             
-            <a href="https://erp-dashboard1.netlify.app" class="dashboard-link" target="_blank">
+            <a href="https://erp-dashboard-umber.vercel.app" class="dashboard-link" target="_blank">
                 📊 ড্যাশবোর্ডে যান
             </a>
             
@@ -15632,6 +15634,33 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
       }
     }
 
+    // Validate segmentCount (mandatory)
+    if (ticketData.segmentCount === undefined || ticketData.segmentCount === null || ticketData.segmentCount === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Segment count is required'
+      });
+    }
+
+    const segmentCount = parseInt(ticketData.segmentCount);
+    if (isNaN(segmentCount) || segmentCount < 1) {
+      return res.status(400).json({
+        success: false,
+        message: 'Segment count must be a positive integer (at least 1)'
+      });
+    }
+
+    // For multicity trips, validate segmentCount matches segments array length
+    if (ticketData.tripType === 'multicity') {
+      const segmentsLength = ticketData.segments ? ticketData.segments.length : 0;
+      if (segmentCount !== segmentsLength) {
+        return res.status(400).json({
+          success: false,
+          message: `Segment count (${segmentCount}) must match the number of segments (${segmentsLength}) for multicity trips`
+        });
+      }
+    }
+
     // Verify customer exists in airCustomers collection
     const customer = await airCustomers.findOne({
       $or: [
@@ -15681,7 +15710,16 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
       tripType: ticketData.tripType || 'oneway',
       flightType: ticketData.flightType || 'domestic',
       date: new Date(ticketData.date),
-      bookingId: ticketData.bookingId || '', // Optional manual booking ID
+      // Generate unique bookingId if not provided or empty to avoid unique index conflict
+      // Use ticketId as base to ensure uniqueness - never allow empty string
+      bookingId: (() => {
+        const providedBookingId = ticketData.bookingId ? String(ticketData.bookingId).trim() : '';
+        if (providedBookingId && providedBookingId !== '') {
+          return providedBookingId;
+        }
+        // Generate unique bookingId: ticketId + timestamp + random string
+        return `${ticketId}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      })(),
       gdsPnr: ticketData.gdsPnr || '',
       airlinePnr: ticketData.airlinePnr || '',
       airline: ticketData.airline,
@@ -15739,7 +15777,9 @@ app.post("/api/air-ticketing/tickets", async (req, res) => {
       profit: parseFloat(ticketData.profit) || 0,
 
       // Additional information
-      segmentCount: parseInt(ticketData.segmentCount) || (ticketData.tripType === 'multicity' ? (ticketData.segments?.length || 0) : 1),
+      segmentCount: ticketData.segmentCount !== undefined 
+        ? Math.max(1, parseInt(ticketData.segmentCount) || 1)
+        : (ticketData.tripType === 'multicity' ? Math.max(1, ticketData.segments?.length || 1) : 1),
       flownSegment: ticketData.flownSegment || false,
 
       // Metadata
@@ -16345,7 +16385,21 @@ app.put("/api/air-ticketing/tickets/:id", async (req, res) => {
     if (updateData.tripType !== undefined) updateDoc.tripType = updateData.tripType;
     if (updateData.flightType !== undefined) updateDoc.flightType = updateData.flightType;
     if (updateData.date !== undefined) updateDoc.date = new Date(updateData.date);
-    if (updateData.bookingId !== undefined) updateDoc.bookingId = updateData.bookingId || ''; // Optional booking ID
+    // Handle bookingId update - generate unique value if empty to avoid unique index conflict
+    if (updateData.bookingId !== undefined) {
+      if (updateData.bookingId && String(updateData.bookingId).trim()) {
+        updateDoc.bookingId = String(updateData.bookingId).trim();
+      } else {
+        // Generate unique bookingId if trying to set to empty
+        // Use existing ticketId or generate new one
+        const existingTicket = await tickets.findOne({ _id: new ObjectId(id) });
+        if (existingTicket && existingTicket.ticketId) {
+          updateDoc.bookingId = `${existingTicket.ticketId}_${Date.now()}`;
+        } else {
+          updateDoc.bookingId = `BOOK_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        }
+      }
+    }
     if (updateData.gdsPnr !== undefined) updateDoc.gdsPnr = updateData.gdsPnr;
     if (updateData.airlinePnr !== undefined) updateDoc.airlinePnr = updateData.airlinePnr;
     if (updateData.airline !== undefined) updateDoc.airline = updateData.airline;
