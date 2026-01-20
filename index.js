@@ -24940,7 +24940,8 @@ app.post("/api/farmEmployees", async (req, res) => {
       status = "active",
       notes,
       paidAmount = 0,
-      totalDue = 0
+      totalDue = 0,
+      image = ""
     } = req.body;
 
     // Validate required fields
@@ -24979,6 +24980,7 @@ app.post("/api/farmEmployees", async (req, res) => {
       notes: notes || "",
       paidAmount: parseFloat(paidAmount) || 0,
       totalDue: parseFloat(totalDue) || 0,
+      image: image || "",
       isActive: true,
       createdAt: new Date(),
       updatedAt: new Date()
@@ -25123,6 +25125,7 @@ app.get("/api/farmEmployees", async (req, res) => {
       notes: emp.notes || '',
       paidAmount: Number(emp.paidAmount) || 0,
       totalDue: Number(emp.totalDue) || 0,
+      image: emp.image || '',
       createdAt: emp.createdAt,
       updatedAt: emp.updatedAt
     }));
@@ -25217,6 +25220,7 @@ app.get("/api/farmEmployees/:id", async (req, res) => {
       notes: employee.notes || '',
       paidAmount: Number(employee.paidAmount) || 0,
       totalDue: Number(employee.totalDue) || 0,
+      image: employee.image || '',
       createdAt: employee.createdAt,
       updatedAt: employee.updatedAt
     };
@@ -25345,6 +25349,9 @@ app.put("/api/farmEmployees/:id", async (req, res) => {
     if (updateFields.totalDue !== undefined) {
       updateFields.totalDue = parseFloat(updateFields.totalDue) || 0;
     }
+    if (updateFields.image !== undefined) {
+      updateFields.image = String(updateFields.image || '').trim();
+    }
 
     // Build update query filters (same as find query)
     const updateOrFilters = [];
@@ -25417,6 +25424,7 @@ app.put("/api/farmEmployees/:id", async (req, res) => {
       notes: updatedEmployee.notes || '',
       paidAmount: Number(updatedEmployee.paidAmount) || 0,
       totalDue: Number(updatedEmployee.totalDue) || 0,
+      image: updatedEmployee.image || '',
       createdAt: updatedEmployee.createdAt,
       updatedAt: updatedEmployee.updatedAt
     } : null;
