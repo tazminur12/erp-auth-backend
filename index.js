@@ -1282,7 +1282,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, visaProcessingServices, ticketChecks, oldTicketReissues, otherServices, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, dilars, airlines, tickets, notifications, licenses, vendorBankAccounts;
+let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, visaProcessingServices, ticketChecks, oldTicketReissues, otherServices, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, dilars, airlines, tickets, notifications, licenses, vendorBankAccounts, hotels, hotelContracts;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -1349,6 +1349,9 @@ async function initializeDatabase() {
     tickets = db.collection("airTickets");
     // Licenses
     licenses = db.collection("licenses");
+    // Hotels
+    hotels = db.collection("hotels");
+    hotelContracts = db.collection("hotelContracts");
   
 
 
@@ -29169,6 +29172,908 @@ app.get("/api/dashboard/summary", async (req, res) => {
       message: errorMessage,
       details: process.env.NODE_ENV === 'development' ? error.message : 'An error occurred while processing your request',
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// ==================== HOTEL MANAGEMENT CRUD ROUTES ====================
+
+// ✅ POST: Create new hotel
+app.post("/api/hotels", async (req, res) => {
+  try {
+    const {
+      area,
+      hotelName,
+      tasrihNumber,
+      tasnifNumber,
+      address,
+      distanceFromHaram,
+      email,
+      mobileNumber
+    } = req.body;
+
+    // Validate required fields
+    if (!area || !hotelName) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing required fields",
+        message: "Area and hotel name are required"
+      });
+    }
+
+    // Check if hotel name already exists (case-insensitive)
+    const existingHotel = await hotels.findOne({
+      hotelName: { $regex: new RegExp(`^${hotelName.trim()}$`, 'i') },
+      isActive: true
+    });
+
+    if (existingHotel) {
+      return res.status(409).json({
+        success: false,
+        error: "Hotel already exists",
+        message: "A hotel with this name already exists"
+      });
+    }
+
+    const newHotel = {
+      area: area.trim(),
+      hotelName: hotelName.trim(),
+      tasrihNumber: tasrihNumber ? tasrihNumber.trim() : "",
+      tasnifNumber: tasnifNumber ? tasnifNumber.trim() : "",
+      address: address ? address.trim() : "",
+      distanceFromHaram: distanceFromHaram ? String(distanceFromHaram).trim() : "",
+      email: email ? email.toLowerCase().trim() : "",
+      mobileNumber: mobileNumber ? mobileNumber.trim() : "",
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await hotels.insertOne(newHotel);
+
+    res.status(201).json({
+      success: true,
+      message: "Hotel created successfully",
+      data: {
+        _id: result.insertedId,
+        id: String(result.insertedId),
+        ...newHotel
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Create hotel error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to create hotel",
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
+// ✅ GET: Get all hotels with filters
+app.get("/api/hotels", async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 1000,
+      search,
+      area
+    } = req.query || {};
+
+    // Build filter object
+    const filter = { isActive: true };
+
+    // Build $or conditions array for search
+    const searchConditions = [];
+
+    // Search filter - use regex for flexible search
+    if (search && String(search).trim()) {
+      const searchTerm = String(search).trim();
+      const escapedSearchTerm = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      
+      searchConditions.push(
+        { hotelName: { $regex: escapedSearchTerm, $options: 'i' } },
+        { area: { $regex: escapedSearchTerm, $options: 'i' } },
+        { tasrihNumber: { $regex: escapedSearchTerm, $options: 'i' } },
+        { tasnifNumber: { $regex: escapedSearchTerm, $options: 'i' } },
+        { address: { $regex: escapedSearchTerm, $options: 'i' } },
+        { distanceFromHaram: { $regex: escapedSearchTerm, $options: 'i' } },
+        { mobileNumber: { $regex: escapedSearchTerm, $options: 'i' } },
+        { email: { $regex: escapedSearchTerm, $options: 'i' } }
+      );
+    }
+
+    // Area filter
+    if (area && String(area).trim()) {
+      filter.area = String(area).trim();
+    }
+
+    // Add search conditions to filter
+    if (searchConditions.length > 0) {
+      filter.$or = searchConditions;
+    }
+
+    // Calculate pagination
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 1000);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Fetch hotels
+    let hotelsList = [];
+    let total = 0;
+
+    try {
+      [hotelsList, total] = await Promise.all([
+        hotels
+          .find(filter)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limitNum)
+          .toArray(),
+        hotels.countDocuments(filter)
+      ]);
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      hotelsList = [];
+      total = 0;
+    }
+
+    // Format hotels data
+    const formattedHotels = hotelsList.map(hotel => ({
+      _id: String(hotel._id),
+      id: String(hotel._id),
+      area: hotel.area || '',
+      hotelName: hotel.hotelName || '',
+      tasrihNumber: hotel.tasrihNumber || '',
+      tasnifNumber: hotel.tasnifNumber || '',
+      address: hotel.address || '',
+      distanceFromHaram: hotel.distanceFromHaram || '',
+      email: hotel.email || '',
+      mobileNumber: hotel.mobileNumber || '',
+      createdAt: hotel.createdAt,
+      updatedAt: hotel.updatedAt
+    }));
+
+    res.json({
+      success: true,
+      data: formattedHotels,
+      pagination: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(total / limitNum) || 0,
+        totalItems: total || 0,
+        itemsPerPage: limitNum
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Get hotels error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to fetch hotels",
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
+// ✅ GET: Get single hotel by ID
+app.get("/api/hotels/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id || !ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid ID",
+        message: "Hotel ID is required and must be valid"
+      });
+    }
+
+    const hotel = await hotels.findOne({
+      _id: new ObjectId(id),
+      isActive: true
+    });
+
+    if (!hotel) {
+      return res.status(404).json({
+        success: false,
+        error: "Hotel not found",
+        message: "No hotel found with the provided ID"
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        _id: String(hotel._id),
+        id: String(hotel._id),
+        area: hotel.area || '',
+        hotelName: hotel.hotelName || '',
+        tasrihNumber: hotel.tasrihNumber || '',
+        tasnifNumber: hotel.tasnifNumber || '',
+        address: hotel.address || '',
+        distanceFromHaram: hotel.distanceFromHaram || '',
+        email: hotel.email || '',
+        mobileNumber: hotel.mobileNumber || '',
+        createdAt: hotel.createdAt,
+        updatedAt: hotel.updatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Get hotel error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to fetch hotel",
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
+// ✅ PUT: Update hotel
+app.put("/api/hotels/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body || {};
+
+    if (!id || !ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid ID",
+        message: "Hotel ID is required and must be valid"
+      });
+    }
+
+    // Remove fields that shouldn't be updated directly
+    delete updateData._id;
+    delete updateData.id;
+    delete updateData.createdAt;
+
+    // Check if hotel exists
+    const existingHotel = await hotels.findOne({
+      _id: new ObjectId(id),
+      isActive: true
+    });
+
+    if (!existingHotel) {
+      return res.status(404).json({
+        success: false,
+        error: "Hotel not found",
+        message: "No hotel found with the provided ID"
+      });
+    }
+
+    // Check if hotel name is being updated and if it already exists
+    if (updateData.hotelName && updateData.hotelName.trim() !== existingHotel.hotelName) {
+      const nameExists = await hotels.findOne({
+        hotelName: { $regex: new RegExp(`^${updateData.hotelName.trim()}$`, 'i') },
+        isActive: true,
+        _id: { $ne: existingHotel._id }
+      });
+
+      if (nameExists) {
+        return res.status(409).json({
+          success: false,
+          error: "Hotel name already exists",
+          message: "A hotel with this name already exists"
+        });
+      }
+    }
+
+    // Prepare update fields
+    const updateFields = {
+      updatedAt: new Date()
+    };
+
+    // Clean up the data
+    if (updateData.area) updateFields.area = String(updateData.area).trim();
+    if (updateData.hotelName) updateFields.hotelName = String(updateData.hotelName).trim();
+    if (updateData.tasrihNumber !== undefined) updateFields.tasrihNumber = String(updateData.tasrihNumber || '').trim();
+    if (updateData.tasnifNumber !== undefined) updateFields.tasnifNumber = String(updateData.tasnifNumber || '').trim();
+    if (updateData.address !== undefined) updateFields.address = String(updateData.address || '').trim();
+    if (updateData.distanceFromHaram !== undefined) updateFields.distanceFromHaram = String(updateData.distanceFromHaram || '').trim();
+    if (updateData.email !== undefined) updateFields.email = updateData.email ? String(updateData.email).toLowerCase().trim() : '';
+    if (updateData.mobileNumber !== undefined) updateFields.mobileNumber = String(updateData.mobileNumber || '').trim();
+
+    const result = await hotels.updateOne(
+      { _id: new ObjectId(id), isActive: true },
+      { $set: updateFields }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "Hotel not found",
+        message: "No hotel found with the provided ID"
+      });
+    }
+
+    // Get updated hotel
+    const updatedHotel = await hotels.findOne({
+      _id: new ObjectId(id),
+      isActive: true
+    });
+
+    res.json({
+      success: true,
+      message: "Hotel updated successfully",
+      data: {
+        _id: String(updatedHotel._id),
+        id: String(updatedHotel._id),
+        area: updatedHotel.area || '',
+        hotelName: updatedHotel.hotelName || '',
+        tasrihNumber: updatedHotel.tasrihNumber || '',
+        tasnifNumber: updatedHotel.tasnifNumber || '',
+        address: updatedHotel.address || '',
+        distanceFromHaram: updatedHotel.distanceFromHaram || '',
+        email: updatedHotel.email || '',
+        mobileNumber: updatedHotel.mobileNumber || '',
+        createdAt: updatedHotel.createdAt,
+        updatedAt: updatedHotel.updatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Update hotel error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to update hotel",
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
+// ✅ DELETE: Delete hotel (soft delete)
+app.delete("/api/hotels/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id || !ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid ID",
+        message: "Hotel ID is required and must be valid"
+      });
+    }
+
+    const existingHotel = await hotels.findOne({
+      _id: new ObjectId(id),
+      isActive: true
+    });
+
+    if (!existingHotel) {
+      return res.status(404).json({
+        success: false,
+        error: "Hotel not found",
+        message: "No hotel found with the provided ID"
+      });
+    }
+
+    // Soft delete
+    const result = await hotels.updateOne(
+      { _id: new ObjectId(id), isActive: true },
+      {
+        $set: {
+          isActive: false,
+          deletedAt: new Date(),
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "Hotel not found",
+        message: "No hotel found with the provided ID"
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Hotel deleted successfully"
+    });
+
+  } catch (error) {
+    console.error("❌ Delete hotel error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to delete hotel",
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
+// ==================== HOTEL CONTRACTS CRUD ROUTES ====================
+
+// ✅ POST: Create hotel contract
+app.post("/api/hotels/contracts", async (req, res) => {
+  try {
+    const {
+      hotelId,
+      contractType,
+      nusukAgencyId,
+      requestNumber,
+      hotelName,
+      contractNumber,
+      contractStart,
+      contractEnd,
+      hajjiCount,
+      nusukPayment,
+      cashPayment,
+      otherBills
+    } = req.body;
+
+    // Validate required fields
+    if (!contractType || !nusukAgencyId || !requestNumber || !hotelName || !contractNumber || !contractStart || !contractEnd || !hajjiCount) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing required fields",
+        message: "Contract type, Nusuk agency, request number, hotel name, contract number, contract dates, and hajji count are required"
+      });
+    }
+
+    // Validate dates
+    const startDate = new Date(contractStart);
+    const endDate = new Date(contractEnd);
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid dates",
+        message: "Contract start and end dates must be valid"
+      });
+    }
+
+    if (endDate < startDate) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid date range",
+        message: "Contract end date must be after start date"
+      });
+    }
+
+    // Calculate total bill
+    const totalBill = (parseFloat(nusukPayment || 0) + parseFloat(cashPayment || 0) + parseFloat(otherBills || 0));
+    const perPersonAmount = parseFloat(hajjiCount) > 0 ? (totalBill / parseFloat(hajjiCount)) : 0;
+
+    const newContract = {
+      hotelId: hotelId || null,
+      contractType: contractType.trim(),
+      nusukAgencyId: ObjectId.isValid(nusukAgencyId) ? new ObjectId(nusukAgencyId) : nusukAgencyId,
+      requestNumber: requestNumber.trim(),
+      hotelName: hotelName.trim(),
+      contractNumber: contractNumber.trim(),
+      contractStart: startDate,
+      contractEnd: endDate,
+      hajjiCount: parseFloat(hajjiCount) || 0,
+      nusukPayment: parseFloat(nusukPayment || 0),
+      cashPayment: parseFloat(cashPayment || 0),
+      otherBills: parseFloat(otherBills || 0),
+      totalBill: totalBill,
+      perPersonAmount: perPersonAmount,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await hotelContracts.insertOne(newContract);
+
+    // Fetch created contract with populated license data if needed
+    const createdContract = await hotelContracts.findOne({ _id: result.insertedId });
+
+    res.status(201).json({
+      success: true,
+      message: "Hotel contract created successfully",
+      data: {
+        _id: result.insertedId,
+        id: String(result.insertedId),
+        ...createdContract,
+        nusukAgencyId: String(createdContract.nusukAgencyId)
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Create hotel contract error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to create hotel contract",
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
+// ✅ GET: Get all hotel contracts with filters
+app.get("/api/hotels/contracts", async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 1000,
+      hotelId,
+      contractType,
+      nusukAgencyId
+    } = req.query || {};
+
+    const filter = { isActive: true };
+
+    if (hotelId && ObjectId.isValid(hotelId)) {
+      filter.hotelId = new ObjectId(hotelId);
+    }
+
+    if (contractType && String(contractType).trim()) {
+      filter.contractType = String(contractType).trim();
+    }
+
+    if (nusukAgencyId && ObjectId.isValid(nusukAgencyId)) {
+      filter.nusukAgencyId = new ObjectId(nusukAgencyId);
+    }
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 1000);
+    const skip = (pageNum - 1) * limitNum;
+
+    let contractsList = [];
+    let total = 0;
+
+    try {
+      [contractsList, total] = await Promise.all([
+        hotelContracts
+          .find(filter)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limitNum)
+          .toArray(),
+        hotelContracts.countDocuments(filter)
+      ]);
+    } catch (queryError) {
+      console.error("❌ Database query error:", queryError);
+      contractsList = [];
+      total = 0;
+    }
+
+    // Format contracts data
+    const formattedContracts = contractsList.map(contract => ({
+      _id: String(contract._id),
+      id: String(contract._id),
+      hotelId: contract.hotelId ? String(contract.hotelId) : null,
+      contractType: contract.contractType || '',
+      nusukAgencyId: contract.nusukAgencyId ? String(contract.nusukAgencyId) : '',
+      requestNumber: contract.requestNumber || '',
+      hotelName: contract.hotelName || '',
+      contractNumber: contract.contractNumber || '',
+      contractStart: contract.contractStart,
+      contractEnd: contract.contractEnd,
+      hajjiCount: Number(contract.hajjiCount) || 0,
+      nusukPayment: Number(contract.nusukPayment) || 0,
+      cashPayment: Number(contract.cashPayment) || 0,
+      otherBills: Number(contract.otherBills) || 0,
+      totalBill: Number(contract.totalBill) || 0,
+      perPersonAmount: Number(contract.perPersonAmount) || 0,
+      createdAt: contract.createdAt,
+      updatedAt: contract.updatedAt
+    }));
+
+    res.json({
+      success: true,
+      data: formattedContracts,
+      pagination: {
+        currentPage: pageNum,
+        totalPages: Math.ceil(total / limitNum) || 0,
+        totalItems: total || 0,
+        itemsPerPage: limitNum
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Get hotel contracts error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to fetch hotel contracts",
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
+// ✅ GET: Get single hotel contract by ID
+app.get("/api/hotels/contracts/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id || !ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid ID",
+        message: "Contract ID is required and must be valid"
+      });
+    }
+
+    const contract = await hotelContracts.findOne({
+      _id: new ObjectId(id),
+      isActive: true
+    });
+
+    if (!contract) {
+      return res.status(404).json({
+        success: false,
+        error: "Contract not found",
+        message: "No contract found with the provided ID"
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        _id: String(contract._id),
+        id: String(contract._id),
+        hotelId: contract.hotelId ? String(contract.hotelId) : null,
+        contractType: contract.contractType || '',
+        nusukAgencyId: contract.nusukAgencyId ? String(contract.nusukAgencyId) : '',
+        requestNumber: contract.requestNumber || '',
+        hotelName: contract.hotelName || '',
+        contractNumber: contract.contractNumber || '',
+        contractStart: contract.contractStart,
+        contractEnd: contract.contractEnd,
+        hajjiCount: Number(contract.hajjiCount) || 0,
+        nusukPayment: Number(contract.nusukPayment) || 0,
+        cashPayment: Number(contract.cashPayment) || 0,
+        otherBills: Number(contract.otherBills) || 0,
+        totalBill: Number(contract.totalBill) || 0,
+        perPersonAmount: Number(contract.perPersonAmount) || 0,
+        createdAt: contract.createdAt,
+        updatedAt: contract.updatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Get hotel contract error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to fetch hotel contract",
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
+// ✅ PUT: Update hotel contract
+app.put("/api/hotels/contracts/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body || {};
+
+    if (!id || !ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid ID",
+        message: "Contract ID is required and must be valid"
+      });
+    }
+
+    delete updateData._id;
+    delete updateData.id;
+    delete updateData.createdAt;
+
+    const existingContract = await hotelContracts.findOne({
+      _id: new ObjectId(id),
+      isActive: true
+    });
+
+    if (!existingContract) {
+      return res.status(404).json({
+        success: false,
+        error: "Contract not found",
+        message: "No contract found with the provided ID"
+      });
+    }
+
+    const updateFields = {
+      updatedAt: new Date()
+    };
+
+    if (updateData.contractType) updateFields.contractType = String(updateData.contractType).trim();
+    if (updateData.nusukAgencyId && ObjectId.isValid(updateData.nusukAgencyId)) {
+      updateFields.nusukAgencyId = new ObjectId(updateData.nusukAgencyId);
+    }
+    if (updateData.requestNumber) updateFields.requestNumber = String(updateData.requestNumber).trim();
+    if (updateData.hotelName) updateFields.hotelName = String(updateData.hotelName).trim();
+    if (updateData.contractNumber) updateFields.contractNumber = String(updateData.contractNumber).trim();
+    if (updateData.contractStart) {
+      const startDate = new Date(updateData.contractStart);
+      if (!isNaN(startDate.getTime())) updateFields.contractStart = startDate;
+    }
+    if (updateData.contractEnd) {
+      const endDate = new Date(updateData.contractEnd);
+      if (!isNaN(endDate.getTime())) updateFields.contractEnd = endDate;
+    }
+    if (updateData.hajjiCount !== undefined) updateFields.hajjiCount = parseFloat(updateData.hajjiCount) || 0;
+    if (updateData.nusukPayment !== undefined) updateFields.nusukPayment = parseFloat(updateData.nusukPayment) || 0;
+    if (updateData.cashPayment !== undefined) updateFields.cashPayment = parseFloat(updateData.cashPayment) || 0;
+    if (updateData.otherBills !== undefined) updateFields.otherBills = parseFloat(updateData.otherBills) || 0;
+
+    // Recalculate total bill and per person amount
+    const nusukPayment = updateFields.nusukPayment !== undefined ? updateFields.nusukPayment : existingContract.nusukPayment;
+    const cashPayment = updateFields.cashPayment !== undefined ? updateFields.cashPayment : existingContract.cashPayment;
+    const otherBills = updateFields.otherBills !== undefined ? updateFields.otherBills : existingContract.otherBills;
+    const hajjiCount = updateFields.hajjiCount !== undefined ? updateFields.hajjiCount : existingContract.hajjiCount;
+
+    updateFields.totalBill = nusukPayment + cashPayment + otherBills;
+    updateFields.perPersonAmount = hajjiCount > 0 ? (updateFields.totalBill / hajjiCount) : 0;
+
+    const result = await hotelContracts.updateOne(
+      { _id: new ObjectId(id), isActive: true },
+      { $set: updateFields }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "Contract not found",
+        message: "No contract found with the provided ID"
+      });
+    }
+
+    const updatedContract = await hotelContracts.findOne({
+      _id: new ObjectId(id),
+      isActive: true
+    });
+
+    res.json({
+      success: true,
+      message: "Hotel contract updated successfully",
+      data: {
+        _id: String(updatedContract._id),
+        id: String(updatedContract._id),
+        hotelId: updatedContract.hotelId ? String(updatedContract.hotelId) : null,
+        contractType: updatedContract.contractType || '',
+        nusukAgencyId: updatedContract.nusukAgencyId ? String(updatedContract.nusukAgencyId) : '',
+        requestNumber: updatedContract.requestNumber || '',
+        hotelName: updatedContract.hotelName || '',
+        contractNumber: updatedContract.contractNumber || '',
+        contractStart: updatedContract.contractStart,
+        contractEnd: updatedContract.contractEnd,
+        hajjiCount: Number(updatedContract.hajjiCount) || 0,
+        nusukPayment: Number(updatedContract.nusukPayment) || 0,
+        cashPayment: Number(updatedContract.cashPayment) || 0,
+        otherBills: Number(updatedContract.otherBills) || 0,
+        totalBill: Number(updatedContract.totalBill) || 0,
+        perPersonAmount: Number(updatedContract.perPersonAmount) || 0,
+        createdAt: updatedContract.createdAt,
+        updatedAt: updatedContract.updatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Update hotel contract error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to update hotel contract",
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
+// ✅ DELETE: Delete hotel contract (soft delete)
+app.delete("/api/hotels/contracts/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id || !ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid ID",
+        message: "Contract ID is required and must be valid"
+      });
+    }
+
+    const existingContract = await hotelContracts.findOne({
+      _id: new ObjectId(id),
+      isActive: true
+    });
+
+    if (!existingContract) {
+      return res.status(404).json({
+        success: false,
+        error: "Contract not found",
+        message: "No contract found with the provided ID"
+      });
+    }
+
+    const result = await hotelContracts.updateOne(
+      { _id: new ObjectId(id), isActive: true },
+      {
+        $set: {
+          isActive: false,
+          deletedAt: new Date(),
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        error: "Contract not found",
+        message: "No contract found with the provided ID"
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Hotel contract deleted successfully"
+    });
+
+  } catch (error) {
+    console.error("❌ Delete hotel contract error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to delete hotel contract",
+      details: error.message || "Unknown error occurred"
+    });
+  }
+});
+
+// ✅ GET: Get contracts by hotel ID
+app.get("/api/hotels/:hotelId/contracts", async (req, res) => {
+  try {
+    const { hotelId } = req.params;
+
+    if (!hotelId || !ObjectId.isValid(hotelId)) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid hotel ID",
+        message: "Hotel ID is required and must be valid"
+      });
+    }
+
+    const contracts = await hotelContracts
+      .find({
+        hotelId: new ObjectId(hotelId),
+        isActive: true
+      })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    const formattedContracts = contracts.map(contract => ({
+      _id: String(contract._id),
+      id: String(contract._id),
+      hotelId: contract.hotelId ? String(contract.hotelId) : null,
+      contractType: contract.contractType || '',
+      nusukAgencyId: contract.nusukAgencyId ? String(contract.nusukAgencyId) : '',
+      requestNumber: contract.requestNumber || '',
+      hotelName: contract.hotelName || '',
+      contractNumber: contract.contractNumber || '',
+      contractStart: contract.contractStart,
+      contractEnd: contract.contractEnd,
+      hajjiCount: Number(contract.hajjiCount) || 0,
+      nusukPayment: Number(contract.nusukPayment) || 0,
+      cashPayment: Number(contract.cashPayment) || 0,
+      otherBills: Number(contract.otherBills) || 0,
+      totalBill: Number(contract.totalBill) || 0,
+      perPersonAmount: Number(contract.perPersonAmount) || 0,
+      createdAt: contract.createdAt,
+      updatedAt: contract.updatedAt
+    }));
+
+    res.json({
+      success: true,
+      data: formattedContracts
+    });
+
+  } catch (error) {
+    console.error("❌ Get hotel contracts error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Internal server error",
+      message: "Failed to fetch hotel contracts",
+      details: error.message || "Unknown error occurred"
     });
   }
 });
