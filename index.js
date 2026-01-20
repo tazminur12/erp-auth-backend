@@ -1282,7 +1282,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, visaProcessingServices, ticketChecks, oldTicketReissues, otherServices, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, dilars, airlines, tickets, notifications, licenses, vendorBankAccounts, hotels, hotelContracts, iataAirlinesCapping;
+let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, visaProcessingServices, ticketChecks, oldTicketReissues, otherServices, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, dilars, airlines, tickets, notifications, licenses, vendorBankAccounts, hotels, hotelContracts, iataAirlinesCapping, othersInvestments;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -1354,6 +1354,8 @@ async function initializeDatabase() {
     hotelContracts = db.collection("hotelContracts");
     // IATA & Airlines Capping Investments
     iataAirlinesCapping = db.collection("iataAirlinesCapping");
+    // Others Investments
+    othersInvestments = db.collection("othersInvestments");
   
 
 
@@ -30061,6 +30063,591 @@ app.delete("/api/investments/iata-airlines-capping/:id", async (req, res) => {
 
   } catch (error) {
     console.error('❌ Delete IATA & Airlines Capping investment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete investment',
+      error: error.message
+    });
+  }
+});
+
+// ==================== OTHERS INVESTMENTS CRUD ====================
+
+// ✅ POST: Create new Others Investment
+app.post("/api/investments/others-invest", async (req, res) => {
+  try {
+    const {
+      investmentName,
+      investmentType,
+      investmentAmount,
+      returnAmount,
+      investmentDate,
+      maturityDate,
+      interestRate,
+      status,
+      description,
+      notes,
+      logo
+    } = req.body;
+
+    // Validate required fields
+    if (!investmentName || !investmentName.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Investment name is required'
+      });
+    }
+
+    if (!investmentType || !investmentType.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Investment type is required'
+      });
+    }
+
+    // Validate investment type
+    const validTypes = ['Stock', 'Real Estate', 'Mutual Fund', 'Fixed Deposit', 'Bond', 'Cryptocurrency', 'Other'];
+    if (!validTypes.includes(investmentType)) {
+      return res.status(400).json({
+        success: false,
+        message: `Investment type must be one of: ${validTypes.join(', ')}`
+      });
+    }
+
+    if (!investmentAmount || parseFloat(investmentAmount) <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Investment amount is required and must be greater than 0'
+      });
+    }
+
+    // Validate returnAmount if provided
+    if (returnAmount !== undefined && returnAmount !== null && returnAmount !== '') {
+      const returnAmountNum = parseFloat(returnAmount);
+      if (isNaN(returnAmountNum) || returnAmountNum < 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Return amount must be 0 or greater'
+        });
+      }
+    }
+
+    if (!investmentDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Investment date is required'
+      });
+    }
+
+    if (!maturityDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maturity date is required'
+      });
+    }
+
+    // Validate date logic
+    const invDate = new Date(investmentDate);
+    const matDate = new Date(maturityDate);
+    
+    if (isNaN(invDate.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid investment date format'
+      });
+    }
+
+    if (isNaN(matDate.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid maturity date format'
+      });
+    }
+
+    if (matDate <= invDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maturity date must be after investment date'
+      });
+    }
+
+    if (interestRate === undefined || interestRate === null || interestRate === '') {
+      return res.status(400).json({
+        success: false,
+        message: 'Interest rate is required'
+      });
+    }
+
+    const interestRateNum = parseFloat(interestRate);
+    if (isNaN(interestRateNum) || interestRateNum < 0 || interestRateNum > 100) {
+      return res.status(400).json({
+        success: false,
+        message: 'Interest rate must be between 0 and 100'
+      });
+    }
+
+    if (!status || !['active', 'matured', 'closed'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Status is required and must be "active", "matured", or "closed"'
+      });
+    }
+
+    // Create investment document
+    const investment = {
+      investmentName: investmentName.trim(),
+      investmentType: investmentType.trim(),
+      investmentAmount: parseFloat(investmentAmount),
+      returnAmount: returnAmount !== undefined && returnAmount !== null && returnAmount !== '' 
+        ? parseFloat(returnAmount) 
+        : 0,
+      investmentDate: invDate,
+      maturityDate: matDate,
+      interestRate: interestRateNum,
+      status: status,
+      description: description ? String(description).trim() : '',
+      notes: notes ? String(notes).trim() : '',
+      logo: logo ? String(logo).trim() : '',
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await othersInvestments.insertOne(investment);
+
+    res.status(201).json({
+      success: true,
+      message: 'Others investment created successfully',
+      data: {
+        _id: String(result.insertedId),
+        id: String(result.insertedId),
+        ...investment
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Create Others Investment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create investment',
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get all Others Investments with filters and pagination
+app.get("/api/investments/others-invest", async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      q, // search query
+      investmentType,
+      status,
+      dateFrom,
+      dateTo,
+      maturityDateFrom,
+      maturityDateTo
+    } = req.query || {};
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build query
+    const query = {
+      isActive: { $ne: false }
+    };
+
+    // Search filter
+    if (q) {
+      const searchTerm = String(q).trim();
+      query.$or = [
+        { investmentName: { $regex: searchTerm, $options: 'i' } },
+        { description: { $regex: searchTerm, $options: 'i' } },
+        { notes: { $regex: searchTerm, $options: 'i' } }
+      ];
+    }
+
+    // Other filters
+    if (investmentType) {
+      query.investmentType = investmentType;
+    }
+    if (status) {
+      query.status = status;
+    }
+    if (dateFrom || dateTo) {
+      query.investmentDate = {};
+      if (dateFrom) {
+        query.investmentDate.$gte = new Date(dateFrom);
+      }
+      if (dateTo) {
+        const toDate = new Date(dateTo);
+        toDate.setHours(23, 59, 59, 999);
+        query.investmentDate.$lte = toDate;
+      }
+    }
+    if (maturityDateFrom || maturityDateTo) {
+      query.maturityDate = {};
+      if (maturityDateFrom) {
+        query.maturityDate.$gte = new Date(maturityDateFrom);
+      }
+      if (maturityDateTo) {
+        const toDate = new Date(maturityDateTo);
+        toDate.setHours(23, 59, 59, 999);
+        query.maturityDate.$lte = toDate;
+      }
+    }
+
+    // Get total count
+    const total = await othersInvestments.countDocuments(query);
+
+    // Get investments
+    const investments = await othersInvestments
+      .find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .toArray();
+
+    // Format response
+    const formattedInvestments = investments.map(inv => ({
+      _id: String(inv._id),
+      id: String(inv._id),
+      investmentName: inv.investmentName || '',
+      investmentType: inv.investmentType || '',
+      investmentAmount: Number(inv.investmentAmount) || 0,
+      returnAmount: Number(inv.returnAmount) || 0,
+      investmentDate: inv.investmentDate,
+      maturityDate: inv.maturityDate,
+      interestRate: Number(inv.interestRate) || 0,
+      status: inv.status || 'active',
+      description: inv.description || '',
+      notes: inv.notes || '',
+      logo: inv.logo || '',
+      createdAt: inv.createdAt,
+      updatedAt: inv.updatedAt
+    }));
+
+    res.json({
+      success: true,
+      data: formattedInvestments,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get Others Investments error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch investments',
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get single Others Investment by ID
+app.get("/api/investments/others-invest/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id || !ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid investment ID'
+      });
+    }
+
+    const investment = await othersInvestments.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!investment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Investment not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        _id: String(investment._id),
+        id: String(investment._id),
+        investmentName: investment.investmentName || '',
+        investmentType: investment.investmentType || '',
+        investmentAmount: Number(investment.investmentAmount) || 0,
+        returnAmount: Number(investment.returnAmount) || 0,
+        investmentDate: investment.investmentDate,
+        maturityDate: investment.maturityDate,
+        interestRate: Number(investment.interestRate) || 0,
+        status: investment.status || 'active',
+        description: investment.description || '',
+        notes: investment.notes || '',
+        logo: investment.logo || '',
+        createdAt: investment.createdAt,
+        updatedAt: investment.updatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get Others Investment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch investment',
+      error: error.message
+    });
+  }
+});
+
+// ✅ PUT: Update Others Investment by ID
+app.put("/api/investments/others-invest/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    if (!id || !ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid investment ID'
+      });
+    }
+
+    const existingInvestment = await othersInvestments.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!existingInvestment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Investment not found'
+      });
+    }
+
+    // Prepare update document
+    const updateDoc = {
+      updatedAt: new Date()
+    };
+
+    // Update fields if provided
+    if (updateData.investmentName !== undefined) {
+      if (!updateData.investmentName || !updateData.investmentName.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Investment name cannot be empty'
+        });
+      }
+      updateDoc.investmentName = updateData.investmentName.trim();
+    }
+
+    if (updateData.investmentType !== undefined) {
+      const validTypes = ['Stock', 'Real Estate', 'Mutual Fund', 'Fixed Deposit', 'Bond', 'Cryptocurrency', 'Other'];
+      if (!validTypes.includes(updateData.investmentType)) {
+        return res.status(400).json({
+          success: false,
+          message: `Investment type must be one of: ${validTypes.join(', ')}`
+        });
+      }
+      updateDoc.investmentType = updateData.investmentType.trim();
+    }
+
+    if (updateData.investmentAmount !== undefined) {
+      const amount = parseFloat(updateData.investmentAmount);
+      if (isNaN(amount) || amount <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Investment amount must be a positive number'
+        });
+      }
+      updateDoc.investmentAmount = amount;
+    }
+
+    if (updateData.returnAmount !== undefined) {
+      if (updateData.returnAmount === null || updateData.returnAmount === '') {
+        updateDoc.returnAmount = 0;
+      } else {
+        const returnAmountNum = parseFloat(updateData.returnAmount);
+        if (isNaN(returnAmountNum) || returnAmountNum < 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'Return amount must be 0 or greater'
+          });
+        }
+        updateDoc.returnAmount = returnAmountNum;
+      }
+    }
+
+    if (updateData.investmentDate !== undefined) {
+      const invDate = new Date(updateData.investmentDate);
+      if (isNaN(invDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid investment date format'
+        });
+      }
+      updateDoc.investmentDate = invDate;
+    }
+
+    if (updateData.maturityDate !== undefined) {
+      const matDate = new Date(updateData.maturityDate);
+      if (isNaN(matDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid maturity date format'
+        });
+      }
+      updateDoc.maturityDate = matDate;
+    }
+
+    // Validate date logic if dates are being updated
+    const finalInvDate = updateDoc.investmentDate || existingInvestment.investmentDate;
+    const finalMatDate = updateDoc.maturityDate || existingInvestment.maturityDate;
+    
+    if (finalMatDate <= finalInvDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maturity date must be after investment date'
+      });
+    }
+
+    if (updateData.interestRate !== undefined) {
+      const interestRateNum = parseFloat(updateData.interestRate);
+      if (isNaN(interestRateNum) || interestRateNum < 0 || interestRateNum > 100) {
+        return res.status(400).json({
+          success: false,
+          message: 'Interest rate must be between 0 and 100'
+        });
+      }
+      updateDoc.interestRate = interestRateNum;
+    }
+
+    if (updateData.status !== undefined) {
+      if (!['active', 'matured', 'closed'].includes(updateData.status)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Status must be "active", "matured", or "closed"'
+        });
+      }
+      updateDoc.status = updateData.status;
+    }
+
+    if (updateData.description !== undefined) {
+      updateDoc.description = String(updateData.description || '').trim();
+    }
+
+    if (updateData.notes !== undefined) {
+      updateDoc.notes = String(updateData.notes || '').trim();
+    }
+
+    if (updateData.logo !== undefined) {
+      updateDoc.logo = String(updateData.logo || '').trim();
+    }
+
+    // Update investment
+    const result = await othersInvestments.updateOne(
+      { _id: new ObjectId(id), isActive: { $ne: false } },
+      { $set: updateDoc }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Investment not found'
+      });
+    }
+
+    const updatedInvestment = await othersInvestments.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    res.json({
+      success: true,
+      message: 'Investment updated successfully',
+      data: {
+        _id: String(updatedInvestment._id),
+        id: String(updatedInvestment._id),
+        investmentName: updatedInvestment.investmentName || '',
+        investmentType: updatedInvestment.investmentType || '',
+        investmentAmount: Number(updatedInvestment.investmentAmount) || 0,
+        returnAmount: Number(updatedInvestment.returnAmount) || 0,
+        investmentDate: updatedInvestment.investmentDate,
+        maturityDate: updatedInvestment.maturityDate,
+        interestRate: Number(updatedInvestment.interestRate) || 0,
+        status: updatedInvestment.status || 'active',
+        description: updatedInvestment.description || '',
+        notes: updatedInvestment.notes || '',
+        logo: updatedInvestment.logo || '',
+        createdAt: updatedInvestment.createdAt,
+        updatedAt: updatedInvestment.updatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Update Others Investment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update investment',
+      error: error.message
+    });
+  }
+});
+
+// ✅ DELETE: Delete Others Investment by ID (soft delete)
+app.delete("/api/investments/others-invest/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id || !ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid investment ID'
+      });
+    }
+
+    const existingInvestment = await othersInvestments.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!existingInvestment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Investment not found'
+      });
+    }
+
+    const result = await othersInvestments.updateOne(
+      { _id: new ObjectId(id), isActive: { $ne: false } },
+      {
+        $set: {
+          isActive: false,
+          deletedAt: new Date(),
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Investment not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Investment deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Delete Others Investment error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to delete investment',
