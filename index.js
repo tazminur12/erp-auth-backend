@@ -24967,7 +24967,13 @@ app.post("/api/farmEmployees", async (req, res) => {
       });
     }
 
+    // Generate a temporary unique ID to satisfy unique index constraint
+    // We'll update it to _id after insertion
+    const tempId = new ObjectId().toString();
+    
+    // Prepare employee data with temporary id to avoid unique index conflict
     const newEmployee = {
+      id: tempId, // Temporary unique ID to satisfy index constraint
       name: name.trim(),
       position: position.trim(),
       phone: phone.trim(),
@@ -24986,15 +24992,40 @@ app.post("/api/farmEmployees", async (req, res) => {
       updatedAt: new Date()
     };
 
+    // Insert document
     const result = await farmEmployees.insertOne(newEmployee);
+    
+    // Update id field to match _id (as string) for consistency
+    const idValue = String(result.insertedId);
+    await farmEmployees.updateOne(
+      { _id: result.insertedId },
+      { $set: { id: idValue } }
+    );
+
+    // Fetch the updated document
+    const createdEmployee = await farmEmployees.findOne({ _id: result.insertedId });
 
     res.status(201).json({
       success: true,
       message: "Farm employee created successfully",
       data: {
-        id: result.insertedId,
-        ...newEmployee,
-        _id: String(result.insertedId)
+        id: idValue,
+        _id: idValue,
+        name: createdEmployee.name || '',
+        position: createdEmployee.position || '',
+        phone: createdEmployee.phone || '',
+        email: createdEmployee.email || '',
+        address: createdEmployee.address || '',
+        joinDate: createdEmployee.joinDate || '',
+        salary: Number(createdEmployee.salary) || 0,
+        workHours: Number(createdEmployee.workHours) || 0,
+        status: createdEmployee.status || 'active',
+        notes: createdEmployee.notes || '',
+        paidAmount: Number(createdEmployee.paidAmount) || 0,
+        totalDue: Number(createdEmployee.totalDue) || 0,
+        image: createdEmployee.image || '',
+        createdAt: createdEmployee.createdAt,
+        updatedAt: createdEmployee.updatedAt
       }
     });
 
