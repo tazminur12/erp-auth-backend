@@ -27028,7 +27028,10 @@ app.get("/api/exchanges/reserves", async (req, res) => {
           totalBought: 0,
           totalSold: 0,
           totalPurchaseCost: 0,
-          totalSaleRevenue: 0
+          totalSaleRevenue: 0,
+          lastBuyRate: 0,
+          lastSellRate: 0,
+          adjustmentAmount: 0
         };
       }
 
@@ -27046,6 +27049,8 @@ app.get("/api/exchanges/reserves", async (req, res) => {
         });
         currency.totalBought += qty;
         currency.totalPurchaseCost += amount;
+        // Track last buy rate
+        currency.lastBuyRate = rate;
       } else if (type === 'Sell') {
         // Remove from inventory using FIFO (remove from beginning)
         let remainingQty = qty;
@@ -27070,6 +27075,11 @@ app.get("/api/exchanges/reserves", async (req, res) => {
 
         currency.totalSold += qty;
         currency.totalSaleRevenue += amount;
+        // Track last sell rate
+        currency.lastSellRate = rate;
+      } else if (type === 'Adjustment') {
+        // Handle adjustment transactions (if they exist)
+        currency.adjustmentAmount += qty;
       }
     }
 
@@ -27085,31 +27095,35 @@ app.get("/api/exchanges/reserves", async (req, res) => {
         weightedAveragePurchasePrice = reserveCost / reserve;
       }
 
-      // Calculate current reserve value
-      const currentReserveValue = reserve * weightedAveragePurchasePrice;
+      // Calculate current reserve value (including adjustments)
+      const adjustedReserve = reserve + (currency.adjustmentAmount || 0);
+      const currentReserveValue = adjustedReserve * weightedAveragePurchasePrice;
 
       return {
         currencyCode: currency.currencyCode,
         currencyName: currency.currencyName,
         totalBought: currency.totalBought,
         totalSold: currency.totalSold,
-        reserve: reserve,
+        adjustmentAmount: currency.adjustmentAmount || 0,
+        adjustment: currency.adjustmentAmount || 0, // Alias for compatibility
+        reserve: adjustedReserve,
         weightedAveragePurchasePrice: weightedAveragePurchasePrice,
         currentReserveValue: currentReserveValue,
         totalPurchaseCost: currency.totalPurchaseCost,
-        totalSaleRevenue: currency.totalSaleRevenue
+        totalSaleRevenue: currency.totalSaleRevenue,
+        lastBuyRate: currency.lastBuyRate || 0,
+        lastSellRate: currency.lastSellRate || 0
       };
     });
 
-    // Filter out currencies with zero reserves
-    const activeReserves = reservesArray.filter(c => c.reserve > 0);
-
+    // Return all reserves (including zero reserves for complete view)
+    // Frontend can filter if needed
     res.json({
       success: true,
-      data: activeReserves,
+      data: reservesArray,
       summary: {
-        totalCurrencies: activeReserves.length,
-        totalReserveValue: activeReserves.reduce((sum, c) => sum + c.currentReserveValue, 0)
+        totalCurrencies: reservesArray.length,
+        totalReserveValue: reservesArray.reduce((sum, c) => sum + (c.currentReserveValue || 0), 0)
       }
     });
 
