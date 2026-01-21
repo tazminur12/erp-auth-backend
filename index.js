@@ -1282,7 +1282,7 @@ const initializeDefaultBranches = async (db, branches, counters) => {
 };
 
 // Global variables for database collections
-let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, visaProcessingServices, ticketChecks, oldTicketReissues, otherServices, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, dilars, airlines, tickets, notifications, licenses, vendorBankAccounts, hotels, hotelContracts, iataAirlinesCapping, othersInvestments;
+let db, users, branches, counters, customerTypes, airCustomers, otherCustomers, passportServices, manpowerServices, visaProcessingServices, ticketChecks, oldTicketReissues, otherServices, services, vendors, orders, bankAccounts, categories, operatingExpenseCategories, personalExpenseCategories, personalExpenseTransactions, agents, hrManagement, haji, umrah, agentPackages, packages, transactions, invoices, accounts, vendorBills, loans, cattle, milkProductions, feedTypes, feedStocks, feedUsages, healthRecords, vaccinations, vetVisits, breedings, calvings, farmEmployees, attendanceRecords, farmExpenses, farmIncomes, exchanges, dilars, airlines, tickets, notifications, licenses, vendorBankAccounts, hotels, hotelContracts, iataAirlinesCapping, othersInvestments, familyMembers;
 
 // Initialize database connection
 async function initializeDatabase() {
@@ -1356,6 +1356,8 @@ async function initializeDatabase() {
     iataAirlinesCapping = db.collection("iataAirlinesCapping");
     // Others Investments
     othersInvestments = db.collection("othersInvestments");
+    // Family Members
+    familyMembers = db.collection("familyMembers");
   
 
 
@@ -30852,6 +30854,380 @@ app.delete("/api/investments/others-invest/:id", async (req, res) => {
     });
   }
 });
+
+
+// ==================== FAMILY MEMBERS CRUD ====================
+
+// ✅ POST: Create new family member
+app.post("/api/personal/family-members", async (req, res) => {
+  try {
+    const {
+      picture,
+      name,
+      fatherName,
+      motherName,
+      relationship,
+      mobileNumber
+    } = req.body;
+
+    // Validate required fields
+    if (!name || !name.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Name is required'
+      });
+    }
+
+    if (!relationship || !relationship.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Relationship is required'
+      });
+    }
+
+    // Validate relationship enum
+    const validRelationships = ['স্ত্রী', 'ছেলে', 'মেয়ে', 'ছেলের বৌ', 'জামাই', 'নাতি', 'নাতনি', 'অন্যান্য'];
+    if (!validRelationships.includes(relationship)) {
+      return res.status(400).json({
+        success: false,
+        message: `Relationship must be one of: ${validRelationships.join(', ')}`
+      });
+    }
+
+    // Create family member document
+    const familyMember = {
+      picture: picture ? String(picture).trim() : '',
+      name: name.trim(),
+      fatherName: fatherName ? String(fatherName).trim() : '',
+      motherName: motherName ? String(motherName).trim() : '',
+      relationship: relationship.trim(),
+      mobileNumber: mobileNumber ? String(mobileNumber).trim() : '',
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await familyMembers.insertOne(familyMember);
+
+    res.status(201).json({
+      success: true,
+      message: 'Family member created successfully',
+      data: {
+        _id: String(result.insertedId),
+        id: String(result.insertedId),
+        ...familyMember
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Create family member error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create family member',
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get all family members with filters and pagination
+app.get("/api/personal/family-members", async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 50,
+      q,
+      relationship
+    } = req.query || {};
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 200);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build query
+    const query = {
+      isActive: { $ne: false }
+    };
+
+    // Search filter
+    if (q) {
+      const searchTerm = String(q).trim();
+      query.$or = [
+        { name: { $regex: searchTerm, $options: 'i' } },
+        { fatherName: { $regex: searchTerm, $options: 'i' } },
+        { motherName: { $regex: searchTerm, $options: 'i' } },
+        { mobileNumber: { $regex: searchTerm, $options: 'i' } }
+      ];
+    }
+
+    // Filter by relationship
+    if (relationship) {
+      query.relationship = String(relationship);
+    }
+
+    const total = await familyMembers.countDocuments(query);
+
+    // Get family members
+    const members = await familyMembers
+      .find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNum)
+      .toArray();
+
+    // Format response
+    const formattedMembers = members.map(member => ({
+      _id: String(member._id),
+      id: String(member._id),
+      picture: member.picture || '',
+      name: member.name || '',
+      fatherName: member.fatherName || '',
+      motherName: member.motherName || '',
+      relationship: member.relationship || '',
+      mobileNumber: member.mobileNumber || '',
+      createdAt: member.createdAt,
+      updatedAt: member.updatedAt
+    }));
+
+    res.json({
+      success: true,
+      data: formattedMembers,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get family members error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch family members',
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get single family member by ID
+app.get("/api/personal/family-members/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id || !ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid family member ID'
+      });
+    }
+
+    const member = await familyMembers.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!member) {
+      return res.status(404).json({
+        success: false,
+        message: 'Family member not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        _id: String(member._id),
+        id: String(member._id),
+        picture: member.picture || '',
+        name: member.name || '',
+        fatherName: member.fatherName || '',
+        motherName: member.motherName || '',
+        relationship: member.relationship || '',
+        mobileNumber: member.mobileNumber || '',
+        createdAt: member.createdAt,
+        updatedAt: member.updatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get family member error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch family member',
+      error: error.message
+    });
+  }
+});
+
+// ✅ PUT: Update family member by ID
+app.put("/api/personal/family-members/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    if (!id || !ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid family member ID'
+      });
+    }
+
+    const existingMember = await familyMembers.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!existingMember) {
+      return res.status(404).json({
+        success: false,
+        message: 'Family member not found'
+      });
+    }
+
+    // Prepare update document
+    const updateDoc = {
+      updatedAt: new Date()
+    };
+
+    // Update fields if provided
+    if (updateData.name !== undefined) {
+      if (!updateData.name || !updateData.name.trim()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Name cannot be empty'
+        });
+      }
+      updateDoc.name = updateData.name.trim();
+    }
+
+    if (updateData.relationship !== undefined) {
+      const validRelationships = ['স্ত্রী', 'ছেলে', 'মেয়ে', 'ছেলের বৌ', 'জামাই', 'নাতি', 'নাতনি', 'অন্যান্য'];
+      if (!validRelationships.includes(updateData.relationship)) {
+        return res.status(400).json({
+          success: false,
+          message: `Relationship must be one of: ${validRelationships.join(', ')}`
+        });
+      }
+      updateDoc.relationship = updateData.relationship.trim();
+    }
+
+    if (updateData.picture !== undefined) {
+      updateDoc.picture = updateData.picture ? String(updateData.picture).trim() : '';
+    }
+
+    if (updateData.fatherName !== undefined) {
+      updateDoc.fatherName = updateData.fatherName ? String(updateData.fatherName).trim() : '';
+    }
+
+    if (updateData.motherName !== undefined) {
+      updateDoc.motherName = updateData.motherName ? String(updateData.motherName).trim() : '';
+    }
+
+    if (updateData.mobileNumber !== undefined) {
+      updateDoc.mobileNumber = updateData.mobileNumber ? String(updateData.mobileNumber).trim() : '';
+    }
+
+    // Update family member
+    const result = await familyMembers.updateOne(
+      { _id: new ObjectId(id), isActive: { $ne: false } },
+      { $set: updateDoc }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Family member not found'
+      });
+    }
+
+    const updatedMember = await familyMembers.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    res.json({
+      success: true,
+      message: 'Family member updated successfully',
+      data: {
+        _id: String(updatedMember._id),
+        id: String(updatedMember._id),
+        picture: updatedMember.picture || '',
+        name: updatedMember.name || '',
+        fatherName: updatedMember.fatherName || '',
+        motherName: updatedMember.motherName || '',
+        relationship: updatedMember.relationship || '',
+        mobileNumber: updatedMember.mobileNumber || '',
+        createdAt: updatedMember.createdAt,
+        updatedAt: updatedMember.updatedAt
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Update family member error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update family member',
+      error: error.message
+    });
+  }
+});
+
+// ✅ DELETE: Delete family member by ID (soft delete)
+app.delete("/api/personal/family-members/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id || !ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid family member ID'
+      });
+    }
+
+    const existingMember = await familyMembers.findOne({
+      _id: new ObjectId(id),
+      isActive: { $ne: false }
+    });
+
+    if (!existingMember) {
+      return res.status(404).json({
+        success: false,
+        message: 'Family member not found'
+      });
+    }
+
+    const result = await familyMembers.updateOne(
+      { _id: new ObjectId(id), isActive: { $ne: false } },
+      {
+        $set: {
+          isActive: false,
+          updatedAt: new Date()
+        }
+      }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Family member not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Family member deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Delete family member error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete family member',
+      error: error.message
+    });
+  }
+});
+
 
 // Error handling middleware
 app.use((err, req, res, next) => {
