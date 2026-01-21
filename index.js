@@ -30870,38 +30870,42 @@ app.post("/api/personal/family-members", async (req, res) => {
       mobileNumber
     } = req.body;
 
+    // Debug log
+    console.log('Family Member POST Request:', {
+      picture: picture ? 'provided' : 'not provided',
+      name: name ? 'provided' : 'not provided',
+      relationship: relationship ? 'provided' : 'not provided',
+      fatherName: fatherName ? 'provided' : 'not provided',
+      motherName: motherName ? 'provided' : 'not provided',
+      mobileNumber: mobileNumber ? 'provided' : 'not provided'
+    });
+
     // Validate required fields
-    if (!name || !name.trim()) {
+    if (!name || !String(name).trim()) {
       return res.status(400).json({
         success: false,
         message: 'Name is required'
       });
     }
 
-    if (!relationship || !relationship.trim()) {
+    if (!relationship || !String(relationship).trim()) {
       return res.status(400).json({
         success: false,
         message: 'Relationship is required'
       });
     }
 
-    // Validate relationship enum
-    const validRelationships = ['স্ত্রী', 'ছেলে', 'মেয়ে', 'ছেলের বৌ', 'জামাই', 'নাতি', 'নাতনি', 'অন্যান্য'];
-    if (!validRelationships.includes(relationship)) {
-      return res.status(400).json({
-        success: false,
-        message: `Relationship must be one of: ${validRelationships.join(', ')}`
-      });
-    }
+    // Trim relationship (no enum validation - frontend controls dropdown options)
+    const relationshipTrimmed = String(relationship).trim();
 
     // Create family member document
     const familyMember = {
-      picture: picture ? String(picture).trim() : '',
-      name: name.trim(),
-      fatherName: fatherName ? String(fatherName).trim() : '',
-      motherName: motherName ? String(motherName).trim() : '',
-      relationship: relationship.trim(),
-      mobileNumber: mobileNumber ? String(mobileNumber).trim() : '',
+      picture: (picture && String(picture).trim()) ? String(picture).trim() : '',
+      name: String(name).trim(),
+      fatherName: (fatherName && String(fatherName).trim()) ? String(fatherName).trim() : '',
+      motherName: (motherName && String(motherName).trim()) ? String(motherName).trim() : '',
+      relationship: relationshipTrimmed,
+      mobileNumber: (mobileNumber && String(mobileNumber).trim()) ? String(mobileNumber).trim() : '',
       isActive: true,
       createdAt: new Date(),
       updatedAt: new Date()
@@ -30991,6 +30995,7 @@ app.get("/api/personal/family-members", async (req, res) => {
     res.json({
       success: true,
       data: formattedMembers,
+      members: formattedMembers, // Also include as 'members' for frontend compatibility
       pagination: {
         page: pageNum,
         limit: limitNum,
@@ -31101,14 +31106,13 @@ app.put("/api/personal/family-members/:id", async (req, res) => {
     }
 
     if (updateData.relationship !== undefined) {
-      const validRelationships = ['স্ত্রী', 'ছেলে', 'মেয়ে', 'ছেলের বৌ', 'জামাই', 'নাতি', 'নাতনি', 'অন্যান্য'];
-      if (!validRelationships.includes(updateData.relationship)) {
+      if (!updateData.relationship || !String(updateData.relationship).trim()) {
         return res.status(400).json({
           success: false,
-          message: `Relationship must be one of: ${validRelationships.join(', ')}`
+          message: 'Relationship cannot be empty'
         });
       }
-      updateDoc.relationship = updateData.relationship.trim();
+      updateDoc.relationship = String(updateData.relationship).trim();
     }
 
     if (updateData.picture !== undefined) {
