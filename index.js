@@ -8111,7 +8111,9 @@ app.post("/api/personal-expenses/categories", async (req, res) => {
       icon: String(icon || "DollarSign"),
       description: String(description || "").trim(),
       type: validType, // 'regular' or 'irregular'
-      createdAt: new Date().toISOString()
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
     };
 
     const result = await personalExpenseCategories.insertOne(doc);
@@ -8126,13 +8128,41 @@ app.post("/api/personal-expenses/categories", async (req, res) => {
   }
 });
 
-// GET all personal expense categories
+// GET all personal expense categories with filtering
 app.get("/api/personal-expenses/categories", async (req, res) => {
   try {
     if (dbConnectionError) {
       return res.status(500).json({ error: true, message: "Database not initialized" });
     }
-    const list = await personalExpenseCategories.find({}).sort({ name: 1 }).toArray();
+
+    const { type, frequency, q } = req.query || {};
+    
+    // Build query filter
+    const query = {};
+    
+    // Filter by type (regular or irregular)
+    if (type && (type === 'regular' || type === 'irregular')) {
+      query.type = type;
+    }
+    
+    // Filter by frequency (monthly or annual) - stored in description
+    if (frequency && (frequency === 'monthly' || frequency === 'annual')) {
+      const frequencyText = frequency === 'annual' ? 'বাৎসরিক' : 'মাসিক';
+      query.description = { $regex: frequencyText, $options: 'i' };
+    }
+    
+    // Search filter
+    if (q && String(q).trim()) {
+      const searchTerm = String(q).trim();
+      query.$or = [
+        { name: { $regex: searchTerm, $options: 'i' } },
+        { description: { $regex: searchTerm, $options: 'i' } }
+      ];
+    }
+
+    // Only get active categories
+    query.isActive = { $ne: false };
+    const list = await personalExpenseCategories.find(query).sort({ name: 1 }).toArray();
 
     // Compute live totals from main transactions collection
     const idStrings = list.map((c) => String(c._id));
@@ -8163,7 +8193,7 @@ app.get("/api/personal-expenses/categories/:id", async (req, res) => {
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({ error: true, message: "Invalid category id" });
     }
-    const doc = await personalExpenseCategories.findOne({ _id: new ObjectId(id) });
+    const doc = await personalExpenseCategories.findOne({ _id: new ObjectId(id), isActive: { $ne: false } });
     if (!doc) return res.status(404).json({ error: true, message: "Category not found" });
 
     // Live aggregate for this category
@@ -8181,18 +8211,115 @@ app.get("/api/personal-expenses/categories/:id", async (req, res) => {
   }
 });
 
-// DELETE personal expense category by id
-app.delete("/api/personal-expenses/categories/:id", async (req, res) => {
+// PUT: Update personal expense category
+app.put("/api/personal-expenses/categories/:id", async (req, res) => {
   try {
     const { id } = req.params;
     if (!ObjectId.isValid(id)) {
       return res.status(400).json({ error: true, message: "Invalid category id" });
     }
-    const result = await personalExpenseCategories.deleteOne({ _id: new ObjectId(id) });
-    if (result.deletedCount === 0) {
+
+    const { name, icon, description, type } = req.body || {};
+    const updateDoc = {};
+
+    // Update name if provided
+    if (name !== undefined) {
+      const nameTrimmed = String(name).trim();
+      if (!nameTrimmed) {
+        return res.status(400).json({ error: true, message: "Name cannot be empty" });
+      }
+      // Check for duplicate name (case-insensitive, excluding current category)
+      const existing = await personalExpenseCategories.findOne({
+        _id: { $ne: new ObjectId(id) },
+        name: nameTrimmed
+      }, { collation: { locale: "en", strength: 2 } });
+      if (existing) {
+        return res.status(409).json({ error: true, message: "A category with this name already exists" });
+      }
+      updateDoc.name = nameTrimmed;
+    }
+
+    // Update icon if provided
+    if (icon !== undefined) {
+      updateDoc.icon = String(icon || "DollarSign");
+    }
+
+    // Update description if provided
+    if (description !== undefined) {
+      updateDoc.description = String(description || "").trim();
+    }
+
+    // Update type if provided
+    if (type !== undefined) {
+      const validType = type === "regular" || type === "irregular" ? type : "regular";
+      updateDoc.type = validType;
+    }
+
+    // Add updatedAt
+    updateDoc.updatedAt = new Date();
+
+    const result = await personalExpenseCategories.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: updateDoc },
+      { returnDocument: "after" }
+    );
+
+    if (!result || !result.value) {
       return res.status(404).json({ error: true, message: "Category not found" });
     }
-    return res.json({ success: true });
+
+    // Get updated totals
+    const sum = await transactions.aggregate([
+      { $match: { scope: "personal-expense", type: "expense", categoryId: String(result.value._id) } },
+      { $group: { _id: "$categoryId", total: { $sum: "$amount" }, last: { $max: "$date" } } }
+    ]).toArray();
+    const agg = sum && sum[0] ? { total: Number(sum[0].total || 0), last: sum[0].last || null } : { total: Number(result.value.totalAmount || 0), last: result.value.lastUpdated || null };
+
+    const normalized = normalizePersonalCategory(result.value);
+    return res.json({ ...normalized, totalAmount: agg.total, lastUpdated: agg.last });
+  } catch (err) {
+    console.error("PUT /api/personal-expenses/categories/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to update category" });
+  }
+});
+
+// DELETE personal expense category by id or name (soft delete)
+app.delete("/api/personal-expenses/categories/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name } = req.query || {};
+
+    let query = {};
+    
+    // Support deletion by ID or name
+    if (ObjectId.isValid(id)) {
+      query._id = new ObjectId(id);
+    } else if (name) {
+      // If id is not valid ObjectId, try to use name from query
+      query.name = String(name).trim();
+    } else {
+      // Try to use id as name if it's not a valid ObjectId
+      query.name = String(id).trim();
+    }
+
+    // Check if category exists
+    const category = await personalExpenseCategories.findOne(query);
+    if (!category) {
+      return res.status(404).json({ error: true, message: "Category not found" });
+    }
+
+    // Soft delete by setting isActive to false
+    const deleteQuery = category._id ? { _id: category._id } : { name: category.name };
+    const result = await personalExpenseCategories.updateOne(
+      deleteQuery,
+      { $set: { isActive: false, updatedAt: new Date() } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: true, message: "Category not found" });
+    }
+
+    return res.json({ success: true, message: "Category deleted successfully" });
   } catch (err) {
     console.error("DELETE /api/personal-expenses/categories/:id error:", err);
     return res.status(500).json({ error: true, message: "Failed to delete category" });
