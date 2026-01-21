@@ -10467,11 +10467,42 @@ app.post("/api/transactions", async (req, res) => {
           amount_bdt: moneyExchangeInfo.amount_bdt || moneyExchangeInfo.amount || null
         };
       }
+    } else if (finalPartyType === 'investment') {
+      // Handle investment party type - search in both collections
+      const investmentCondition = isValidObjectId
+        ? { _id: new ObjectId(searchPartyId), isActive: { $ne: false } }
+        : { _id: searchPartyId, isActive: { $ne: false } };
+      
+      // Try IATA & Airlines Capping first
+      party = await iataAirlinesCapping.findOne(investmentCondition);
+      if (party) {
+        party._isIataInvestment = true;
+        party.name = party.airlineName || 'Investment';
+      } else {
+        // Try Others Investments
+        party = await othersInvestments.findOne(investmentCondition);
+        if (party) {
+          party._isOthersInvestment = true;
+          party.name = party.investmentName || 'Investment';
+        }
+      }
+      
+      // If party not found but investmentInfo is provided, create virtual party
+      if (!party && req.body?.investmentInfo) {
+        const invInfo = req.body.investmentInfo;
+        party = {
+          _id: invInfo.id ? (ObjectId.isValid(invInfo.id) ? new ObjectId(invInfo.id) : invInfo.id) : null,
+          name: invInfo.name || 'Investment',
+          investmentCategory: invInfo.category || null,
+          investmentType: invInfo.type || null,
+          amount: invInfo.amount || null
+        };
+      }
     }
 
     // Allow transactions even if party is not found in database
     // Party information will be stored as provided
-    if (!party && partyType && partyType !== 'other' && finalPartyType !== 'money-exchange' && finalPartyType !== 'money_exchange') {
+    if (!party && partyType && partyType !== 'other' && finalPartyType !== 'money-exchange' && finalPartyType !== 'money_exchange' && finalPartyType !== 'investment') {
       console.warn(`Party not found in database: ${finalPartyType} with ID ${searchPartyId}`);
       // Don't return error, allow transaction to proceed
     }
@@ -10681,6 +10712,14 @@ app.post("/api/transactions", async (req, res) => {
           exchangeRate: moneyExchangeInfo.exchangeRate || party?.exchangeRate || null,
           quantity: moneyExchangeInfo.quantity || party?.quantity || null,
           amount_bdt: moneyExchangeInfo.amount_bdt || moneyExchangeInfo.amount || party?.amount_bdt || null
+        } : null,
+        // Store investment information if available
+        investmentInfo: finalPartyType === 'investment' && (req.body?.investmentInfo || party) ? {
+          id: req.body?.investmentInfo?.id || party?._id?.toString() || null,
+          name: req.body?.investmentInfo?.name || party?.name || party?.airlineName || party?.investmentName || null,
+          category: req.body?.investmentInfo?.category || party?.investmentCategory || null,
+          type: req.body?.investmentInfo?.type || party?.investmentType || null,
+          amount: req.body?.investmentInfo?.amount || party?.cappingAmount || party?.investmentAmount || null
         } : null,
         amount: numericAmount,
         charge: chargeAmount,
@@ -11259,7 +11298,89 @@ app.post("/api/transactions", async (req, res) => {
         }
       }
 
-      // 8.10 If invoiceId is provided, update invoice status to 'paid' (only status update, no amount change)
+      // 8.10 If party is an investment, update investment financial amounts
+      if (finalPartyType === 'investment' && party && party._id) {
+        try {
+          const investmentId = ObjectId.isValid(party._id) ? party._id : new ObjectId(party._id);
+          const isIataInvestment = party._isIataInvestment === true;
+          const investmentCollection = isIataInvestment ? iataAirlinesCapping : othersInvestments;
+
+          // Investment transaction logic:
+          // Credit = we received money (returns/profit received) - increase returnAmount
+          // Debit = we paid out money (returning investment) - decrease returnAmount
+          
+          if (transactionType === 'credit') {
+            // Credit: Returns received, increase returnAmount
+            const investmentUpdate = { 
+              $set: { updatedAt: new Date() },
+              $inc: {}
+            };
+
+            if (isIataInvestment) {
+              // IATA investments: Add returnAmount field if it doesn't exist (supports existing investments)
+              investmentUpdate.$inc.returnAmount = (investmentUpdate.$inc.returnAmount || 0) + numericAmount;
+            } else {
+              // Others investments: increment returnAmount
+              investmentUpdate.$inc.returnAmount = (investmentUpdate.$inc.returnAmount || 0) + numericAmount;
+            }
+
+            await investmentCollection.updateOne(
+              { _id: investmentId, isActive: { $ne: false } },
+              investmentUpdate,
+              { session }
+            );
+
+            // Clamp values to ensure they're not negative
+            const updatedInvestment = await investmentCollection.findOne({ _id: investmentId }, { session });
+            const clampUpdate = {};
+            if ((updatedInvestment.returnAmount || 0) < 0) clampUpdate.returnAmount = 0;
+            
+            if (Object.keys(clampUpdate).length) {
+              clampUpdate.updatedAt = new Date();
+              await investmentCollection.updateOne(
+                { _id: investmentId },
+                { $set: clampUpdate },
+                { session }
+              );
+            }
+          } else if (transactionType === 'debit') {
+            // Debit: Paid out money, decrease returnAmount
+            const investmentUpdate = { 
+              $set: { updatedAt: new Date() },
+              $inc: {}
+            };
+
+            investmentUpdate.$inc.returnAmount = (investmentUpdate.$inc.returnAmount || 0) - numericAmount;
+
+            await investmentCollection.updateOne(
+              { _id: investmentId, isActive: { $ne: false } },
+              investmentUpdate,
+              { session }
+            );
+
+            // Clamp values
+            const updatedInvestment = await investmentCollection.findOne({ _id: investmentId }, { session });
+            const clampUpdate = {};
+            if ((updatedInvestment.returnAmount || 0) < 0) clampUpdate.returnAmount = 0;
+            
+            if (Object.keys(clampUpdate).length) {
+              clampUpdate.updatedAt = new Date();
+              await investmentCollection.updateOne(
+                { _id: investmentId },
+                { $set: clampUpdate },
+                { session }
+              );
+            }
+          }
+
+          console.log(`Investment balance updated: ${party._id}, transactionType: ${transactionType}, amount: ${numericAmount}, isIataInvestment: ${isIataInvestment}`);
+        } catch (investmentUpdateErr) {
+          console.warn('Failed to update investment from transaction:', investmentUpdateErr?.message);
+          // Don't fail the transaction if investment update fails
+        }
+      }
+
+      // 8.11 If invoiceId is provided, update invoice status to 'paid' (only status update, no amount change)
       let updatedInvoice = null;
       if (invoiceId) {
         try {
@@ -11295,7 +11416,7 @@ app.post("/api/transactions", async (req, res) => {
         }
       }
 
-      // 8.11 If linked to an agent package, recalculate payment summary
+      // 8.12 If linked to an agent package, recalculate payment summary
       if (meta.packageId) {
         try {
           const packageIdStr = String(meta.packageId);
@@ -12020,7 +12141,63 @@ app.delete("/api/transactions/:id", async (req, res) => {
           }
         }
 
-        // 2.7 Employee (reverse employee financial updates)
+        // 2.7 Investment (reverse investment financial updates)
+        if (partyType === 'investment' && tx.partyId) {
+          try {
+            const investmentId = ObjectId.isValid(tx.partyId) ? new ObjectId(tx.partyId) : null;
+            if (investmentId) {
+              // Try IATA investments first
+              let investment = await iataAirlinesCapping.findOne({ _id: investmentId, isActive: { $ne: false } }, { session });
+              let isIataInvestment = !!investment;
+              let investmentCollection = investment ? iataAirlinesCapping : othersInvestments;
+
+              // If not found in IATA, try Others investments
+              if (!investment) {
+                investment = await othersInvestments.findOne({ _id: investmentId, isActive: { $ne: false } }, { session });
+                if (investment) {
+                  investmentCollection = othersInvestments;
+                }
+              }
+
+              if (investment && investment._id) {
+                // Reverse: Credit => decrease returnAmount, Debit => increase returnAmount
+                const returnAmountDelta = transactionType === 'credit' ? -numericAmount : numericAmount;
+                
+                const investmentUpdate = {
+                  $set: { updatedAt: new Date() },
+                  $inc: { returnAmount: returnAmountDelta }
+                };
+
+                await investmentCollection.updateOne(
+                  { _id: investment._id },
+                  investmentUpdate,
+                  { session }
+                );
+
+                // Clamp values
+                const updatedInvestment = await investmentCollection.findOne({ _id: investment._id }, { session });
+                const clampUpdate = {};
+                if ((updatedInvestment.returnAmount || 0) < 0) clampUpdate.returnAmount = 0;
+                
+                if (Object.keys(clampUpdate).length) {
+                  clampUpdate.updatedAt = new Date();
+                  await investmentCollection.updateOne(
+                    { _id: investment._id },
+                    { $set: clampUpdate },
+                    { session }
+                  );
+                }
+
+                console.log(`Investment balance reversed: ${tx.partyId}, transactionType: ${transactionType}, amount: ${numericAmount}`);
+              }
+            }
+          } catch (investmentReverseErr) {
+            console.warn('Failed to reverse investment update from transaction deletion:', investmentReverseErr?.message);
+            // Don't fail the transaction deletion if investment reversal fails
+          }
+        }
+
+        // 2.8 Employee (reverse employee financial updates)
         const isEmployeeTransactionDelete = tx.employeeReference || (tx.customerType === 'miraj-employee' || partyType === 'employee');
         
         if (isEmployeeTransactionDelete) {
@@ -12169,6 +12346,8 @@ app.delete("/api/transactions/:id", async (req, res) => {
           { session }
         );
       }
+
+      // 3.5 Reverse investment financial updates (handled in section 2.7 above)
 
       // 4. Unlink money exchange records
       if ((partyType === 'money-exchange' || partyType === 'money_exchange') && tx.transactionId) {
@@ -29627,6 +29806,7 @@ app.post("/api/investments/iata-airlines-capping", async (req, res) => {
     }
 
     // Create investment document
+    // Note: returnAmount will be automatically updated when transactions are made via NewTransaction
     const investment = {
       investmentType: investmentType.trim(),
       airlineName: airlineName.trim(),
@@ -29745,6 +29925,7 @@ app.get("/api/investments/iata-airlines-capping", async (req, res) => {
       investmentType: inv.investmentType || '',
       airlineName: inv.airlineName || '',
       cappingAmount: Number(inv.cappingAmount) || 0,
+      returnAmount: Number(inv.returnAmount) || 0, // Add returnAmount to response
       investmentDate: inv.investmentDate,
       maturityDate: inv.maturityDate,
       interestRate: Number(inv.interestRate) || 0,
@@ -29808,6 +29989,7 @@ app.get("/api/investments/iata-airlines-capping/:id", async (req, res) => {
         investmentType: investment.investmentType || '',
         airlineName: investment.airlineName || '',
         cappingAmount: Number(investment.cappingAmount) || 0,
+        returnAmount: Number(investment.returnAmount) || 0, // Add returnAmount to response
         investmentDate: investment.investmentDate,
         maturityDate: investment.maturityDate,
         interestRate: Number(investment.interestRate) || 0,
@@ -29958,6 +30140,17 @@ app.put("/api/investments/iata-airlines-capping/:id", async (req, res) => {
       updateDoc.status = updateData.status;
     }
 
+    if (updateData.returnAmount !== undefined) {
+      const returnAmountNum = parseFloat(updateData.returnAmount);
+      if (isNaN(returnAmountNum) || returnAmountNum < 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Return amount must be 0 or greater'
+        });
+      }
+      updateDoc.returnAmount = returnAmountNum;
+    }
+
     if (updateData.notes !== undefined) {
       updateDoc.notes = String(updateData.notes || '').trim();
     }
@@ -29993,6 +30186,7 @@ app.put("/api/investments/iata-airlines-capping/:id", async (req, res) => {
         investmentType: updatedInvestment.investmentType || '',
         airlineName: updatedInvestment.airlineName || '',
         cappingAmount: Number(updatedInvestment.cappingAmount) || 0,
+        returnAmount: Number(updatedInvestment.returnAmount) || 0, // Add returnAmount to response
         investmentDate: updatedInvestment.investmentDate,
         maturityDate: updatedInvestment.maturityDate,
         interestRate: Number(updatedInvestment.interestRate) || 0,
@@ -30121,7 +30315,8 @@ app.post("/api/investments/others-invest", async (req, res) => {
       });
     }
 
-    // Validate returnAmount if provided
+    // Note: returnAmount is optional and will be automatically updated when transactions are made via NewTransaction
+    // If provided during creation, validate it
     if (returnAmount !== undefined && returnAmount !== null && returnAmount !== '') {
       const returnAmountNum = parseFloat(returnAmount);
       if (isNaN(returnAmountNum) || returnAmountNum < 0) {
@@ -30194,13 +30389,15 @@ app.post("/api/investments/others-invest", async (req, res) => {
     }
 
     // Create investment document
+    // Note: returnAmount will be automatically updated when transactions are made via NewTransaction
     const investment = {
       investmentName: investmentName.trim(),
       investmentType: investmentType.trim(),
       investmentAmount: parseFloat(investmentAmount),
-      returnAmount: returnAmount !== undefined && returnAmount !== null && returnAmount !== '' 
-        ? parseFloat(returnAmount) 
-        : 0,
+      // returnAmount is optional - if provided, use it; otherwise it will be created/updated via transactions
+      ...(returnAmount !== undefined && returnAmount !== null && returnAmount !== '' 
+        ? { returnAmount: parseFloat(returnAmount) }
+        : {}),
       investmentDate: invDate,
       maturityDate: matDate,
       interestRate: interestRateNum,
