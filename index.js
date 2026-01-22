@@ -13161,55 +13161,86 @@ app.get("/api/transactions/personal-expense", async (req, res) => {
 app.post("/api/transactions/personal-expense", async (req, res) => {
   try {
     const { date, amount, categoryId, description = "", tags = [] } = req.body || {};
-
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const txDate = String(date || todayStr).slice(0, 10);
-    const numericAmount = Number(amount || 0);
-    if (!(numericAmount > 0)) {
-      return res.status(400).json({ error: true, message: "Amount must be greater than 0" });
+    
+    // Validation
+    if (!categoryId || !String(categoryId).trim()) {
+      return res.status(400).json({ 
+        error: true, 
+        message: "categoryId is required" 
+      });
     }
-    if (!categoryId || !ObjectId.isValid(String(categoryId))) {
-      return res.status(400).json({ error: true, message: "Valid categoryId is required" });
+    
+    if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
+      return res.status(400).json({ 
+        error: true, 
+        message: "Valid amount is required" 
+      });
     }
-
-    const cat = await personalExpenseCategories.findOne({ _id: new ObjectId(String(categoryId)) });
-    if (!cat) {
-      return res.status(404).json({ error: true, message: "Category not found" });
+    
+    // Validate category exists
+    if (!ObjectId.isValid(categoryId)) {
+      return res.status(400).json({ 
+        error: true, 
+        message: "Invalid categoryId" 
+      });
     }
-
-    const doc = {
-      scope: "personal-expense",
-      type: "expense",
-      date: txDate,
-      amount: numericAmount,
-      categoryId: String(categoryId),
-      categoryName: String(cat.name || ""),
-      description: String(description || ""),
-      tags: Array.isArray(tags) ? tags.map((t) => String(t)) : [],
-      createdAt: new Date().toISOString()
+    
+    const category = await personalExpenseCategories.findOne({ 
+      _id: new ObjectId(categoryId), 
+      isActive: { $ne: false } 
+    });
+    
+    if (!category) {
+      return res.status(404).json({ 
+        error: true, 
+        message: "Category not found" 
+      });
+    }
+    
+    // ✅ CRITICAL: Create transaction with correct fields for aggregation
+    const transactionDoc = {
+      // Required fields for aggregation query
+      scope: "personal-expense",        // ✅ MUST be "personal-expense"
+      type: "expense",                   // ✅ MUST be "expense"
+      categoryId: String(categoryId),     // ✅ MUST be string, matches aggregation
+      
+      // Transaction details
+      date: date ? String(date).slice(0, 10) : new Date().toISOString().slice(0, 10),
+      amount: Number(amount),
+      description: String(description || "").trim(),
+      tags: Array.isArray(tags) ? tags.map(t => String(t)).filter(Boolean) : [],
+      
+      // Metadata
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      
+      // Optional: Add user info if available
+      createdBy: req.user?.email || req.user?.id || null,
+      branchId: req.user?.branchId || null,
     };
-
-    // Effect: increase category totals
-    await personalExpenseCategories.updateOne(
-      { _id: new ObjectId(String(categoryId)) },
-      { $inc: { totalAmount: numericAmount }, $set: { lastUpdated: txDate } }
-    );
-
-    const result = await transactions.insertOne(doc);
+    
+    // Insert into transactions collection
+    const result = await transactions.insertOne(transactionDoc);
     const created = await transactions.findOne({ _id: result.insertedId });
+    
+    // Return normalized response
     return res.status(201).json({
+      _id: String(created._id),
       id: String(created._id),
       date: created.date,
-      amount: created.amount,
-      categoryId: created.categoryId,
-      categoryName: created.categoryName,
-      description: created.description,
-      tags: created.tags,
-      createdAt: created.createdAt
+      amount: Number(created.amount),
+      categoryId: String(created.categoryId),  // ✅ Include in response
+      categoryName: category.name || "",
+      description: String(created.description || ""),
+      tags: Array.isArray(created.tags) ? created.tags : [],
+      createdAt: created.createdAt,
     });
   } catch (err) {
     console.error("POST /api/transactions/personal-expense error:", err);
-    return res.status(500).json({ error: true, message: "Failed to create transaction" });
+    return res.status(500).json({ 
+      error: true, 
+      message: err.message || "Failed to create transaction" 
+    });
   }
 });
 
@@ -13217,33 +13248,97 @@ app.post("/api/transactions/personal-expense", async (req, res) => {
 app.delete("/api/transactions/personal-expense/:id", async (req, res) => {
   try {
     const { id } = req.params;
+    
     if (!ObjectId.isValid(id)) {
-      return res.status(400).json({ error: true, message: "Invalid transaction id" });
+      return res.status(400).json({ 
+        error: true, 
+        message: "Invalid transaction id" 
+      });
     }
-    const tx = await transactions.findOne({ _id: new ObjectId(id), scope: "personal-expense", type: "expense" });
-    if (!tx) {
-      return res.status(404).json({ error: true, message: "Transaction not found" });
+    
+    // Get transaction first to extract categoryId
+    const transaction = await transactions.findOne({ 
+      _id: new ObjectId(id),
+      scope: "personal-expense"  // Only delete personal-expense transactions
+    });
+    
+    if (!transaction) {
+      return res.status(404).json({ 
+        error: true, 
+        message: "Transaction not found" 
+      });
     }
-
-    const amount = Number(tx.amount || 0);
-    const categoryId = tx.categoryId ? String(tx.categoryId) : null;
-    const txDate = tx.date || new Date().toISOString().slice(0, 10);
-
-    if (categoryId && ObjectId.isValid(categoryId) && amount > 0) {
-      await personalExpenseCategories.updateOne(
-        { _id: new ObjectId(categoryId) },
-        { $inc: { totalAmount: -amount }, $set: { lastUpdated: txDate } }
-      );
-    }
-
-    const result = await transactions.deleteOne({ _id: new ObjectId(id) });
-    if (result.deletedCount === 0) {
-      return res.status(404).json({ error: true, message: "Transaction not found" });
-    }
-    return res.json({ success: true });
+    
+    const categoryId = transaction.categoryId;
+    
+    // Delete transaction
+    await transactions.deleteOne({ _id: new ObjectId(id) });
+    
+    // Return categoryId in response for frontend to invalidate cache
+    return res.json({ 
+      success: true, 
+      message: "Transaction deleted successfully",
+      categoryId: String(categoryId)  // ✅ Include in response
+    });
   } catch (err) {
     console.error("DELETE /api/transactions/personal-expense/:id error:", err);
-    return res.status(500).json({ error: true, message: "Failed to delete transaction" });
+    return res.status(500).json({ 
+      error: true, 
+      message: err.message || "Failed to delete transaction" 
+    });
+  }
+});
+
+// GET single transaction by id
+app.get("/api/transactions/personal-expense/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ 
+        error: true, 
+        message: "Invalid transaction id" 
+      });
+    }
+    
+    const transaction = await transactions.findOne({ 
+      _id: new ObjectId(id),
+      scope: "personal-expense"
+    });
+    
+    if (!transaction) {
+      return res.status(404).json({ 
+        error: true, 
+        message: "Transaction not found" 
+      });
+    }
+    
+    // Get category name if needed
+    let categoryName = "";
+    if (transaction.categoryId) {
+      const category = await personalExpenseCategories.findOne({ 
+        _id: new ObjectId(transaction.categoryId) 
+      });
+      categoryName = category?.name || "";
+    }
+    
+    return res.json({
+      _id: String(transaction._id),
+      id: String(transaction._id),
+      date: transaction.date,
+      amount: Number(transaction.amount),
+      categoryId: String(transaction.categoryId),
+      categoryName: categoryName,
+      description: String(transaction.description || ""),
+      tags: Array.isArray(transaction.tags) ? transaction.tags : [],
+      createdAt: transaction.createdAt,
+    });
+  } catch (err) {
+    console.error("GET /api/transactions/personal-expense/:id error:", err);
+    return res.status(500).json({ 
+      error: true, 
+      message: err.message || "Failed to get transaction" 
+    });
   }
 });
 
