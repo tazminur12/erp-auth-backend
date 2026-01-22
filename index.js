@@ -8235,8 +8235,8 @@ app.put("/api/personal-expenses/categories/:id", async (req, res) => {
         _id: { $ne: new ObjectId(id) },
         name: nameTrimmed
       }, { collation: { locale: "en", strength: 2 } });
-      if (existing) {
-        return res.status(409).json({ error: true, message: "A category with this name already exists" });
+    if (existing) {
+      return res.status(409).json({ error: true, message: "A category with this name already exists" });
       }
       updateDoc.name = nameTrimmed;
     }
@@ -8816,15 +8816,25 @@ app.get("/vendors/dashboard", async (req, res) => {
       ]).toArray()
     ]);
 
-    // Process bills summary
-    const billsData = vendorBillsSummary[0] || {
+    // Process bills summary - Ensure 0 if no bills exist
+    const billsData = (vendorBillsSummary && vendorBillsSummary.length > 0 && vendorBillsSummary[0]) ? {
+      totalBills: Number(vendorBillsSummary[0].totalBills || 0),
+      totalAmount: Number(vendorBillsSummary[0].totalAmount || 0),
+      totalPaidFromBills: Number(vendorBillsSummary[0].totalPaidFromBills || 0)
+    } : {
       totalBills: 0,
       totalAmount: 0,
       totalPaidFromBills: 0
     };
 
-    // Process vendor financials - Use vendors.totalPaid as it's the source of truth (updated from transactions)
-    const financialsData = vendorFinancials[0] || {
+    // Process vendor financials - Ensure 0 if no vendors exist
+    const financialsData = (vendorFinancials && vendorFinancials.length > 0 && vendorFinancials[0]) ? {
+      totalDue: Number(vendorFinancials[0].totalDue || 0),
+      hajDue: Number(vendorFinancials[0].hajDue || 0),
+      umrahDue: Number(vendorFinancials[0].umrahDue || 0),
+      totalPaid: Number(vendorFinancials[0].totalPaid || 0),
+      vendorCount: Number(vendorFinancials[0].vendorCount || 0)
+    } : {
       totalDue: 0,
       hajDue: 0,
       umrahDue: 0,
@@ -8853,18 +8863,26 @@ app.get("/vendors/dashboard", async (req, res) => {
       }
     ]).toArray();
 
-    const transactionsPaidData = vendorTransactions[0] || { totalPaidFromTransactions: 0 };
+    // Process transactions paid data - Ensure 0 if no transactions exist
+    const transactionsPaidData = (vendorTransactions && vendorTransactions.length > 0 && vendorTransactions[0]) ? {
+      totalPaidFromTransactions: Number(vendorTransactions[0].totalPaidFromTransactions || 0)
+    } : { totalPaidFromTransactions: 0 };
     
     // Use transactions data if vendors.totalPaid is 0 or missing, otherwise use vendors.totalPaid
     const vendorsTotalPaid = Number(financialsData.totalPaid || 0);
     const transactionsTotalPaid = Number(transactionsPaidData.totalPaidFromTransactions || 0);
     
     // Prefer vendors.totalPaid if it exists and is greater than 0, otherwise use transactions
-    const actualTotalPaid = vendorsTotalPaid > 0 ? vendorsTotalPaid : transactionsTotalPaid;
+    // But if no vendors exist, use 0
+    const actualTotalPaid = (financialsData.vendorCount > 0 && vendorsTotalPaid > 0) ? vendorsTotalPaid : (transactionsTotalPaid || 0);
     const totalDue = Math.max(0, (billsData.totalAmount || 0) - actualTotalPaid);
 
-    // Process bank accounts summary
-    const bankData = bankAccountsSummary[0] || {
+    // Process bank accounts summary - Ensure 0 if no accounts exist
+    const bankData = (bankAccountsSummary && bankAccountsSummary.length > 0 && bankAccountsSummary[0]) ? {
+      totalAccounts: Number(bankAccountsSummary[0].totalAccounts || 0),
+      activeAccounts: Number(bankAccountsSummary[0].activeAccounts || 0),
+      totalBalance: Number(bankAccountsSummary[0].totalBalance || 0)
+    } : {
       totalAccounts: 0,
       activeAccounts: 0,
       totalBalance: 0
@@ -8950,23 +8968,23 @@ app.get("/vendors/dashboard", async (req, res) => {
           vendorsWithPassport: vendorsWithPassport || 0
         },
 
-        // Financial Overview
+        // Financial Overview - Ensure 0 when no vendors exist
         financials: {
-          totalDue: Number(financialsData.totalDue || 0),
-          hajDue: Number(financialsData.hajDue || 0),
-          umrahDue: Number(financialsData.umrahDue || 0),
-          totalPaid: Number(financialsData.totalPaid || 0),
-          vendorCount: financialsData.vendorCount || 0
+          totalDue: (financialsData.vendorCount > 0) ? Number(financialsData.totalDue || 0) : 0,
+          hajDue: (financialsData.vendorCount > 0) ? Number(financialsData.hajDue || 0) : 0,
+          umrahDue: (financialsData.vendorCount > 0) ? Number(financialsData.umrahDue || 0) : 0,
+          totalPaid: (financialsData.vendorCount > 0) ? Number(financialsData.totalPaid || 0) : 0,
+          vendorCount: Number(financialsData.vendorCount || 0)
         },
 
-        // Bills Summary
+        // Bills Summary - Ensure 0 when no bills exist
         bills: {
-          totalBills: billsData.totalBills || 0,
+          totalBills: Number(billsData.totalBills || 0),
           totalAmount: Number((billsData.totalAmount || 0).toFixed(2)),
-          totalPaid: Number(actualTotalPaid.toFixed(2)), // Use vendors.totalPaid (source of truth)
-          totalDue: Number(totalDue.toFixed(2)),
-          byType: formattedBillsByType,
-          byStatus: formattedBillsByStatus
+          totalPaid: Number((actualTotalPaid || 0).toFixed(2)), // Use vendors.totalPaid (source of truth)
+          totalDue: Number((totalDue || 0).toFixed(2)),
+          byType: formattedBillsByType || [],
+          byStatus: formattedBillsByStatus || []
         },
 
         // Bank Accounts Summary
@@ -28709,7 +28727,7 @@ app.get("/api/dashboard/summary", async (req, res) => {
         }
       }
     ]).toArray();
-    
+
     const farmEmployeeStats = farmEmployeesStats.map(stat => ({
       _id: stat._id,
       count: stat.count,
