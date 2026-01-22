@@ -10431,8 +10431,13 @@ app.post("/api/transactions", async (req, res) => {
     }
     
     // Determine final party type defensively
-    // Handle customerType from frontend (e.g., 'money-exchange') and map to partyType
+    // Handle customerType from frontend (e.g., 'money-exchange', 'asset') and map to partyType
     let finalPartyType = String(partyType || req.body?.customerType || '').toLowerCase();
+    
+    // If customerType is 'asset', set partyType to 'asset'
+    if (req.body?.customerType === 'asset') {
+      finalPartyType = 'asset';
+    }
 
     // 1. Validation - আগে সব validate করুন
     console.log('Transaction Payload:', JSON.stringify(req.body, null, 2)); // Debug log
@@ -10647,11 +10652,44 @@ app.post("/api/transactions", async (req, res) => {
           amount: invInfo.amount || null
         };
       }
+    } else if (finalPartyType === 'asset') {
+      // Handle asset party type - validate asset exists and is active
+      const assetCondition = isValidObjectId
+        ? { _id: new ObjectId(searchPartyId), isActive: { $ne: false }, status: 'active' }
+        : { _id: searchPartyId, isActive: { $ne: false }, status: 'active' };
+      
+      party = await assets.findOne(assetCondition);
+      
+      // If asset not found or inactive, return error
+      if (!party) {
+        // Try to find if asset exists but is inactive
+        const inactiveAssetCondition = isValidObjectId
+          ? { _id: new ObjectId(searchPartyId), isActive: { $ne: false } }
+          : { _id: searchPartyId, isActive: { $ne: false } };
+        const inactiveAsset = await assets.findOne(inactiveAssetCondition);
+        
+        if (inactiveAsset) {
+          return res.status(400).json({
+            success: false,
+            message: "Asset is not active. Only active assets can be used in transactions.",
+            assetStatus: inactiveAsset.status || 'inactive'
+          });
+        } else {
+          return res.status(404).json({
+            success: false,
+            message: "Asset not found or invalid asset ID"
+          });
+        }
+      }
+      
+      // Set asset name for transaction
+      party.name = party.assetName || party.name || 'Asset';
     }
 
     // Allow transactions even if party is not found in database
     // Party information will be stored as provided
-    if (!party && partyType && partyType !== 'other' && finalPartyType !== 'money-exchange' && finalPartyType !== 'money_exchange' && finalPartyType !== 'investment') {
+    // Exception: asset transactions require valid active asset
+    if (!party && partyType && partyType !== 'other' && finalPartyType !== 'money-exchange' && finalPartyType !== 'money_exchange' && finalPartyType !== 'investment' && finalPartyType !== 'asset') {
       console.warn(`Party not found in database: ${finalPartyType} with ID ${searchPartyId}`);
       // Don't return error, allow transaction to proceed
     }
@@ -10869,6 +10907,14 @@ app.post("/api/transactions", async (req, res) => {
           category: req.body?.investmentInfo?.category || party?.investmentCategory || null,
           type: req.body?.investmentInfo?.type || party?.investmentType || null,
           amount: req.body?.investmentInfo?.amount || party?.cappingAmount || party?.investmentAmount || null
+        } : null,
+        // Store asset information if available
+        assetInfo: finalPartyType === 'asset' && party ? {
+          id: party?._id?.toString() || null,
+          name: party?.assetName || party?.name || null,
+          type: party?.assetType || null,
+          status: party?.status || null,
+          totalPaidAmount: party?.totalPaidAmount || 0
         } : null,
         amount: numericAmount,
         charge: chargeAmount,
@@ -11529,6 +11575,57 @@ app.post("/api/transactions", async (req, res) => {
         }
       }
 
+      // 8.10.1 If party is an asset, update asset totalPaidAmount
+      if (finalPartyType === 'asset' && party && party._id) {
+        try {
+          const assetId = ObjectId.isValid(party._id) ? party._id : new ObjectId(party._id);
+          
+          // Asset transaction logic:
+          // Debit = payment made for asset (purchase/expense) - increase totalPaidAmount
+          // Credit = refund/return received for asset - decrease totalPaidAmount
+          
+          const assetUpdate = { 
+            $set: { updatedAt: new Date() },
+            $inc: {}
+          };
+          
+          if (transactionType === 'debit') {
+            // Debit: Payment made for asset, increase totalPaidAmount
+            assetUpdate.$inc.totalPaidAmount = (assetUpdate.$inc.totalPaidAmount || 0) + numericAmount;
+          } else if (transactionType === 'credit') {
+            // Credit: Refund/return received, decrease totalPaidAmount
+            assetUpdate.$inc.totalPaidAmount = (assetUpdate.$inc.totalPaidAmount || 0) - numericAmount;
+          }
+          
+          await assets.updateOne(
+            { _id: assetId, isActive: { $ne: false } },
+            assetUpdate,
+            { session }
+          );
+          
+          // Clamp values to ensure totalPaidAmount doesn't go negative
+          const updatedAsset = await assets.findOne({ _id: assetId }, { session });
+          const clampUpdate = {};
+          if ((updatedAsset.totalPaidAmount || 0) < 0) {
+            clampUpdate.totalPaidAmount = 0;
+          }
+          
+          if (Object.keys(clampUpdate).length) {
+            clampUpdate.updatedAt = new Date();
+            await assets.updateOne(
+              { _id: assetId },
+              { $set: clampUpdate },
+              { session }
+            );
+          }
+          
+          console.log(`Asset balance updated: ${party._id}, transactionType: ${transactionType}, amount: ${numericAmount}`);
+        } catch (assetUpdateErr) {
+          console.warn('Failed to update asset from transaction:', assetUpdateErr?.message);
+          // Don't fail the transaction if asset update fails
+        }
+      }
+
       // 8.11 If invoiceId is provided, update invoice status to 'paid' (only status update, no amount change)
       let updatedInvoice = null;
       if (invoiceId) {
@@ -11631,6 +11728,17 @@ app.post("/api/transactions", async (req, res) => {
       // 9. Commit transaction
       await session.commitTransaction();
 
+      // Fetch updated asset if it was updated
+      let updatedAsset = null;
+      if (finalPartyType === 'asset' && party && party._id) {
+        try {
+          const assetId = ObjectId.isValid(party._id) ? party._id : new ObjectId(party._id);
+          updatedAsset = await assets.findOne({ _id: assetId });
+        } catch (e) {
+          console.warn('Failed to fetch updated asset:', e.message);
+        }
+      }
+
       res.json({
         success: true,
         transaction: { ...transactionData, _id: transactionResult.insertedId },
@@ -11638,7 +11746,8 @@ app.post("/api/transactions", async (req, res) => {
         customer: updatedCustomer || null,
         vendor: updatedVendor || null,
         employee: updatedEmployee || null,
-        invoice: updatedInvoice || null
+        invoice: updatedInvoice || null,
+        asset: updatedAsset || null
       });
 
     } catch (transactionError) {
@@ -12343,6 +12452,55 @@ app.delete("/api/transactions/:id", async (req, res) => {
           } catch (investmentReverseErr) {
             console.warn('Failed to reverse investment update from transaction deletion:', investmentReverseErr?.message);
             // Don't fail the transaction deletion if investment reversal fails
+          }
+        }
+
+        // 2.7.1 Asset (reverse asset totalPaidAmount updates)
+        if (partyType === 'asset' && tx.partyId) {
+          try {
+            const assetId = ObjectId.isValid(tx.partyId) ? new ObjectId(tx.partyId) : null;
+            if (assetId) {
+              const asset = await assets.findOne({ _id: assetId, isActive: { $ne: false } }, { session });
+
+              if (asset && asset._id) {
+                // Reverse: Debit => decrease totalPaidAmount, Credit => increase totalPaidAmount
+                // Creation: Debit => +totalPaidAmount, Credit => -totalPaidAmount
+                // Deletion: Debit => -totalPaidAmount, Credit => +totalPaidAmount
+                const totalPaidAmountDelta = transactionType === 'debit' ? -numericAmount : numericAmount;
+                
+                const assetUpdate = {
+                  $set: { updatedAt: new Date() },
+                  $inc: { totalPaidAmount: totalPaidAmountDelta }
+                };
+
+                await assets.updateOne(
+                  { _id: asset._id },
+                  assetUpdate,
+                  { session }
+                );
+
+                // Clamp values to ensure totalPaidAmount doesn't go negative
+                const updatedAsset = await assets.findOne({ _id: asset._id }, { session });
+                const clampUpdate = {};
+                if ((updatedAsset.totalPaidAmount || 0) < 0) {
+                  clampUpdate.totalPaidAmount = 0;
+                }
+                
+                if (Object.keys(clampUpdate).length) {
+                  clampUpdate.updatedAt = new Date();
+                  await assets.updateOne(
+                    { _id: asset._id },
+                    { $set: clampUpdate },
+                    { session }
+                  );
+                }
+
+                console.log(`Asset balance reversed: ${tx.partyId}, transactionType: ${transactionType}, amount: ${numericAmount}`);
+              }
+            }
+          } catch (assetReverseErr) {
+            console.warn('Failed to reverse asset update from transaction deletion:', assetReverseErr?.message);
+            // Don't fail the transaction deletion if asset reversal fails
           }
         }
 
