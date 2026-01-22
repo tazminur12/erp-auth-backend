@@ -8083,6 +8083,7 @@ const normalizePersonalCategory = (doc) => ({
   icon: doc.icon || "DollarSign",
   description: doc.description || "",
   type: doc.type || "regular", // 'regular' or 'irregular'
+  familyMemberId: doc.familyMemberId ? String(doc.familyMemberId) : null,
   totalAmount: Number(doc.totalAmount || 0),
   lastUpdated: doc.lastUpdated || null,
   createdAt: doc.createdAt || null
@@ -8328,8 +8329,363 @@ app.delete("/api/personal-expenses/categories/:id", async (req, res) => {
   }
 });
 
+// ==================== EXPENSE CATEGORIES (SEPARATE CRUD API) ====================
+// This is a separate CRUD API for expense categories, independent from personal-expenses/categories
 
+// CREATE expense category
+app.post("/api/expense-categories", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
 
+    const { name, icon = "DollarSign", description = "", type = "regular", familyMemberId = null } = req.body || {};
+    
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: true, message: "Name is required" });
+    }
+
+    // Validate type field
+    const validType = type === "regular" || type === "irregular" ? type : "regular";
+
+    // Validate familyMemberId if provided
+    if (familyMemberId) {
+      if (!ObjectId.isValid(familyMemberId)) {
+        return res.status(400).json({ error: true, message: "Invalid family member ID" });
+      }
+      const familyMember = await familyMembers.findOne({ 
+        _id: new ObjectId(familyMemberId), 
+        isActive: { $ne: false } 
+      });
+      if (!familyMember) {
+        return res.status(404).json({ error: true, message: "Family member not found" });
+      }
+    }
+
+    // Prevent duplicate name (case-insensitive)
+    const existing = await personalExpenseCategories.findOne(
+      { name: String(name).trim() },
+      { collation: { locale: "en", strength: 2 } }
+    );
+    if (existing) {
+      return res.status(409).json({ error: true, message: "A category with this name already exists" });
+    }
+
+    const doc = {
+      name: String(name).trim(),
+      icon: String(icon || "DollarSign"),
+      description: String(description || "").trim(),
+      type: validType, // 'regular' or 'irregular'
+      familyMemberId: familyMemberId && ObjectId.isValid(familyMemberId) ? new ObjectId(familyMemberId) : null,
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await personalExpenseCategories.insertOne(doc);
+    const created = await personalExpenseCategories.findOne({ _id: result.insertedId });
+    
+    // Populate family member info if exists
+    let familyMemberInfo = null;
+    if (created.familyMemberId) {
+      const member = await familyMembers.findOne({ _id: created.familyMemberId });
+      if (member) {
+        familyMemberInfo = {
+          id: String(member._id),
+          name: member.name || "",
+          relationship: member.relationship || "",
+          mobileNumber: member.mobileNumber || "",
+          picture: member.picture || null
+        };
+      }
+    }
+
+    const normalized = normalizePersonalCategory(created);
+    return res.status(201).json({ ...normalized, familyMember: familyMemberInfo });
+  } catch (err) {
+    console.error("POST /api/expense-categories error:", err);
+    if (err && err.code === 11000) {
+      return res.status(409).json({ error: true, message: "A category with this name already exists" });
+    }
+    return res.status(500).json({ error: true, message: "Failed to create category" });
+  }
+});
+
+// GET all expense categories with filtering
+app.get("/api/expense-categories", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+
+    const { type, frequency, q, familyMemberId } = req.query || {};
+    
+    // Build query filter
+    const query = {};
+    
+    // Filter by type (regular or irregular)
+    if (type && (type === 'regular' || type === 'irregular')) {
+      query.type = type;
+    }
+    
+    // Filter by family member
+    if (familyMemberId && ObjectId.isValid(familyMemberId)) {
+      query.familyMemberId = new ObjectId(familyMemberId);
+    }
+    
+    // Filter by frequency (monthly or annual) - stored in description
+    if (frequency && (frequency === 'monthly' || frequency === 'annual')) {
+      const frequencyText = frequency === 'annual' ? 'বাৎসরিক' : 'মাসিক';
+      query.description = { $regex: frequencyText, $options: 'i' };
+    }
+    
+    // Search filter
+    if (q && String(q).trim()) {
+      const searchTerm = String(q).trim();
+      query.$or = [
+        { name: { $regex: searchTerm, $options: 'i' } },
+        { description: { $regex: searchTerm, $options: 'i' } }
+      ];
+    }
+
+    // Only get active categories
+    query.isActive = { $ne: false };
+    const list = await personalExpenseCategories.find(query).sort({ name: 1 }).toArray();
+
+    // Get all family member IDs
+    const familyMemberIds = list
+      .filter(cat => cat.familyMemberId)
+      .map(cat => cat.familyMemberId);
+    
+    // Fetch family members in one query
+    const membersMap = {};
+    if (familyMemberIds.length > 0) {
+      const members = await familyMembers.find({ 
+        _id: { $in: familyMemberIds } 
+      }).toArray();
+      members.forEach(member => {
+        membersMap[String(member._id)] = {
+          id: String(member._id),
+          name: member.name || "",
+          relationship: member.relationship || "",
+          mobileNumber: member.mobileNumber || "",
+          picture: member.picture || null
+        };
+      });
+    }
+
+    // Compute live totals from main transactions collection
+    const idStrings = list.map((c) => String(c._id));
+    const sums = await transactions.aggregate([
+      { $match: { scope: "personal-expense", type: "expense", categoryId: { $in: idStrings } } },
+      { $group: { _id: "$categoryId", total: { $sum: "$amount" }, last: { $max: "$date" } } }
+    ]).toArray();
+    const aggMap = Object.fromEntries(sums.map((s) => [String(s._id), { total: Number(s.total || 0), last: s.last || null }]));
+
+    const withTotals = list.map((doc) => {
+      const key = String(doc._id);
+      const agg = aggMap[key] || { total: Number(doc.totalAmount || 0), last: doc.lastUpdated || null };
+      const normalized = normalizePersonalCategory(doc);
+      const familyMember = doc.familyMemberId ? membersMap[String(doc.familyMemberId)] : null;
+      return { ...normalized, totalAmount: agg.total, lastUpdated: agg.last, familyMember };
+    });
+
+    return res.json(withTotals);
+  } catch (err) {
+    console.error("GET /api/expense-categories error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load expense categories" });
+  }
+});
+
+// GET one expense category by id
+app.get("/api/expense-categories/:id", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+    
+    const doc = await personalExpenseCategories.findOne({ _id: new ObjectId(id), isActive: { $ne: false } });
+    if (!doc) return res.status(404).json({ error: true, message: "Category not found" });
+
+    // Get family member info if exists
+    let familyMemberInfo = null;
+    if (doc.familyMemberId) {
+      const member = await familyMembers.findOne({ _id: doc.familyMemberId });
+      if (member) {
+        familyMemberInfo = {
+          id: String(member._id),
+          name: member.name || "",
+          relationship: member.relationship || "",
+          mobileNumber: member.mobileNumber || "",
+          picture: member.picture || null
+        };
+      }
+    }
+
+    // Live aggregate for this category
+    const sum = await transactions.aggregate([
+      { $match: { scope: "personal-expense", type: "expense", categoryId: String(doc._id) } },
+      { $group: { _id: "$categoryId", total: { $sum: "$amount" }, last: { $max: "$date" } } }
+    ]).toArray();
+    const agg = sum && sum[0] ? { total: Number(sum[0].total || 0), last: sum[0].last || null } : { total: Number(doc.totalAmount || 0), last: doc.lastUpdated || null };
+
+    const normalized = normalizePersonalCategory(doc);
+    return res.json({ ...normalized, totalAmount: agg.total, lastUpdated: agg.last, familyMember: familyMemberInfo });
+  } catch (err) {
+    console.error("GET /api/expense-categories/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to load category" });
+  }
+});
+
+// PUT: Update expense category
+app.put("/api/expense-categories/:id", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+
+    const { name, icon, description, type, familyMemberId } = req.body || {};
+    const updateDoc = {};
+
+    // Update name if provided
+    if (name !== undefined) {
+      const nameTrimmed = String(name).trim();
+      if (!nameTrimmed) {
+        return res.status(400).json({ error: true, message: "Name cannot be empty" });
+      }
+      // Check for duplicate name (case-insensitive, excluding current category)
+      const existing = await personalExpenseCategories.findOne({
+        _id: { $ne: new ObjectId(id) },
+        name: nameTrimmed
+      }, { collation: { locale: "en", strength: 2 } });
+      if (existing) {
+        return res.status(409).json({ error: true, message: "A category with this name already exists" });
+      }
+      updateDoc.name = nameTrimmed;
+    }
+
+    // Update icon if provided
+    if (icon !== undefined) {
+      updateDoc.icon = String(icon || "DollarSign");
+    }
+
+    // Update description if provided
+    if (description !== undefined) {
+      updateDoc.description = String(description || "").trim();
+    }
+
+    // Update type if provided
+    if (type !== undefined) {
+      const validType = type === "regular" || type === "irregular" ? type : "regular";
+      updateDoc.type = validType;
+    }
+
+    // Update familyMemberId if provided
+    if (familyMemberId !== undefined) {
+      if (familyMemberId === null || familyMemberId === "") {
+        updateDoc.familyMemberId = null;
+      } else {
+        if (!ObjectId.isValid(familyMemberId)) {
+          return res.status(400).json({ error: true, message: "Invalid family member ID" });
+        }
+        const familyMember = await familyMembers.findOne({ 
+          _id: new ObjectId(familyMemberId), 
+          isActive: { $ne: false } 
+        });
+        if (!familyMember) {
+          return res.status(404).json({ error: true, message: "Family member not found" });
+        }
+        updateDoc.familyMemberId = new ObjectId(familyMemberId);
+      }
+    }
+
+    // Add updatedAt
+    updateDoc.updatedAt = new Date();
+
+    const result = await personalExpenseCategories.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      { $set: updateDoc },
+      { returnDocument: "after" }
+    );
+
+    if (!result || !result.value) {
+      return res.status(404).json({ error: true, message: "Category not found" });
+    }
+
+    // Get family member info if exists
+    let familyMemberInfo = null;
+    if (result.value.familyMemberId) {
+      const member = await familyMembers.findOne({ _id: result.value.familyMemberId });
+      if (member) {
+        familyMemberInfo = {
+          id: String(member._id),
+          name: member.name || "",
+          relationship: member.relationship || "",
+          mobileNumber: member.mobileNumber || "",
+          picture: member.picture || null
+        };
+      }
+    }
+
+    // Get updated totals
+    const sum = await transactions.aggregate([
+      { $match: { scope: "personal-expense", type: "expense", categoryId: String(result.value._id) } },
+      { $group: { _id: "$categoryId", total: { $sum: "$amount" }, last: { $max: "$date" } } }
+    ]).toArray();
+    const agg = sum && sum[0] ? { total: Number(sum[0].total || 0), last: sum[0].last || null } : { total: Number(result.value.totalAmount || 0), last: result.value.lastUpdated || null };
+
+    const normalized = normalizePersonalCategory(result.value);
+    return res.json({ ...normalized, totalAmount: agg.total, lastUpdated: agg.last, familyMember: familyMemberInfo });
+  } catch (err) {
+    console.error("PUT /api/expense-categories/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to update category" });
+  }
+});
+
+// DELETE expense category by id (soft delete)
+app.delete("/api/expense-categories/:id", async (req, res) => {
+  try {
+    if (dbConnectionError) {
+      return res.status(500).json({ error: true, message: "Database not initialized" });
+    }
+
+    const { id } = req.params;
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({ error: true, message: "Invalid category id" });
+    }
+
+    // Check if category exists
+    const category = await personalExpenseCategories.findOne({ _id: new ObjectId(id) });
+    if (!category) {
+      return res.status(404).json({ error: true, message: "Category not found" });
+    }
+
+    // Soft delete by setting isActive to false
+    const result = await personalExpenseCategories.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { isActive: false, updatedAt: new Date() } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: true, message: "Category not found" });
+    }
+
+    return res.json({ success: true, message: "Category deleted successfully" });
+  } catch (err) {
+    console.error("DELETE /api/expense-categories/:id error:", err);
+    return res.status(500).json({ error: true, message: "Failed to delete category" });
+  }
+});
 
 // ✅ GET: Transactions stats (aggregate by category/subcategory)
 // Example: /api/transactions/stats?groupBy=category,subcategory&fromDate=2025-01-01&toDate=2025-12-31
