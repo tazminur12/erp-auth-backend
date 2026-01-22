@@ -32562,6 +32562,595 @@ app.delete("/api/account/assets/:id", async (req, res) => {
   }
 });
 
+// ============================================
+// FAMILY ASSETS CRUD ENDPOINTS
+// ============================================
+
+// ✅ POST: Create family asset
+app.post("/api/personal/family-assets", async (req, res) => {
+  try {
+    const {
+      name,
+      type,
+      providerCompanyId,
+      providerCompanyName,
+      totalPaidAmount,
+      paymentType,
+      paymentDate,
+      purchaseDate,
+      status,
+      notes,
+      numberOfInstallments,
+      installmentAmount,
+      installmentStartDate,
+      installmentEndDate
+    } = req.body;
+
+    // Validate required fields
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'সম্পদের নাম আবশ্যক'
+      });
+    }
+
+    if (!type || !String(type).trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'সম্পদের ধরণ নির্বাচন করুন'
+      });
+    }
+
+    // Validate asset type enum
+    const validTypes = ['Office Equipment', 'Vehicle', 'Furniture', 'IT Equipment', 'Other'];
+    if (!validTypes.includes(type)) {
+      return res.status(400).json({
+        success: false,
+        message: `সম্পদের ধরণ অবশ্যই হতে হবে: ${validTypes.join(', ')}`
+      });
+    }
+
+    if (!totalPaidAmount || isNaN(parseFloat(totalPaidAmount)) || parseFloat(totalPaidAmount) <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'মোট পরিশোধিত মূল্য আবশ্যক এবং ০ এর চেয়ে বেশি হতে হবে'
+      });
+    }
+
+    if (!paymentType || (paymentType !== 'one-time' && paymentType !== 'installment')) {
+      return res.status(400).json({
+        success: false,
+        message: 'পরিশোধের ধরন অবশ্যই হতে হবে "one-time" বা "installment"'
+      });
+    }
+
+    if (!purchaseDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'সম্পদ ক্রয়ের তারিখ আবশ্যক'
+      });
+    }
+
+    if (!status || (status !== 'active' && status !== 'inactive')) {
+      return res.status(400).json({
+        success: false,
+        message: 'স্ট্যাটাস অবশ্যই হতে হবে "active" বা "inactive"'
+      });
+    }
+
+    // Validate one-time payment
+    if (paymentType === 'one-time') {
+      if (!paymentDate) {
+        return res.status(400).json({
+          success: false,
+          message: 'পরিশোধের তারিখ আবশ্যক'
+        });
+      }
+    }
+
+    // Validate installment payment
+    if (paymentType === 'installment') {
+      if (!numberOfInstallments || isNaN(parseInt(numberOfInstallments)) || parseInt(numberOfInstallments) <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'কিস্তির সংখ্যা আবশ্যক এবং ০ এর চেয়ে বেশি হতে হবে'
+        });
+      }
+      if (!installmentAmount || isNaN(parseFloat(installmentAmount)) || parseFloat(installmentAmount) <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'প্রতি কিস্তির পরিমাণ আবশ্যক এবং ০ এর চেয়ে বেশি হতে হবে'
+        });
+      }
+      if (!installmentStartDate) {
+        return res.status(400).json({
+          success: false,
+          message: 'কিস্তি শুরু তারিখ আবশ্যক'
+        });
+      }
+    }
+
+    // Create asset document
+    const asset = {
+      name: String(name).trim(),
+      type: String(type).trim(),
+      providerCompanyId: providerCompanyId ? (ObjectId.isValid(providerCompanyId) ? new ObjectId(providerCompanyId) : String(providerCompanyId)) : null,
+      providerCompanyName: providerCompanyName ? String(providerCompanyName).trim() : '',
+      totalPaidAmount: parseFloat(totalPaidAmount),
+      paymentType: paymentType,
+      purchaseDate: new Date(purchaseDate),
+      status: status,
+      notes: notes ? String(notes).trim() : '',
+      isActive: true,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    // Add payment-specific fields
+    if (paymentType === 'one-time') {
+      asset.paymentDate = new Date(paymentDate);
+    } else if (paymentType === 'installment') {
+      asset.numberOfInstallments = parseInt(numberOfInstallments);
+      asset.installmentAmount = parseFloat(installmentAmount);
+      asset.installmentStartDate = new Date(installmentStartDate);
+      if (installmentEndDate) {
+        asset.installmentEndDate = new Date(installmentEndDate);
+      }
+    }
+
+    const result = await assets.insertOne(asset);
+
+    // Format response
+    const formattedAsset = {
+      _id: String(result.insertedId),
+      id: String(result.insertedId),
+      name: asset.name,
+      type: asset.type,
+      providerCompanyId: asset.providerCompanyId ? (asset.providerCompanyId instanceof ObjectId ? String(asset.providerCompanyId) : asset.providerCompanyId) : null,
+      providerCompanyName: asset.providerCompanyName,
+      totalPaidAmount: Number(asset.totalPaidAmount),
+      paymentType: asset.paymentType,
+      paymentDate: asset.paymentDate ? asset.paymentDate.toISOString().split('T')[0] : null,
+      purchaseDate: asset.purchaseDate.toISOString().split('T')[0],
+      status: asset.status,
+      notes: asset.notes,
+      numberOfInstallments: asset.numberOfInstallments || null,
+      installmentAmount: asset.installmentAmount ? Number(asset.installmentAmount) : null,
+      installmentStartDate: asset.installmentStartDate ? asset.installmentStartDate.toISOString().split('T')[0] : null,
+      installmentEndDate: asset.installmentEndDate ? asset.installmentEndDate.toISOString().split('T')[0] : null,
+      createdAt: asset.createdAt.toISOString(),
+      updatedAt: asset.updatedAt.toISOString()
+    };
+
+    res.status(201).json({
+      success: true,
+      message: 'পারিবারিক সম্পদ সফলভাবে যোগ করা হয়েছে',
+      data: formattedAsset
+    });
+
+  } catch (error) {
+    console.error('❌ Create family asset error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'সম্পদ যোগ করতে সমস্যা হয়েছে',
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get all family assets with pagination, search, and filters
+app.get("/api/personal/family-assets", async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 50,
+      q,
+      type,
+      status,
+      paymentType
+    } = req.query || {};
+
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit) || 50, 1), 200);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build query
+    const query = {
+      isActive: { $ne: false }
+    };
+
+    // Search filter
+    if (q && String(q).trim()) {
+      const searchTerm = String(q).trim();
+      query.$or = [
+        { name: { $regex: searchTerm, $options: 'i' } },
+        { providerCompanyName: { $regex: searchTerm, $options: 'i' } },
+        { notes: { $regex: searchTerm, $options: 'i' } }
+      ];
+    }
+
+    // Filter by type
+    if (type && String(type).trim()) {
+      query.type = String(type).trim();
+    }
+
+    // Filter by status
+    if (status && (status === 'active' || status === 'inactive')) {
+      query.status = status;
+    }
+
+    // Filter by payment type
+    if (paymentType && (paymentType === 'one-time' || paymentType === 'installment')) {
+      query.paymentType = paymentType;
+    }
+
+    // Get total count and data
+    const [total, data] = await Promise.all([
+      assets.countDocuments(query),
+      assets.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .toArray()
+    ]);
+
+    // Format response
+    const formattedAssets = data.map(asset => ({
+      _id: String(asset._id),
+      id: String(asset._id),
+      name: asset.name || '',
+      type: asset.type || '',
+      providerCompanyId: asset.providerCompanyId ? (asset.providerCompanyId instanceof ObjectId ? String(asset.providerCompanyId) : asset.providerCompanyId) : null,
+      providerCompanyName: asset.providerCompanyName || '',
+      totalPaidAmount: Number(asset.totalPaidAmount) || 0,
+      paymentType: asset.paymentType || 'one-time',
+      paymentDate: asset.paymentDate ? new Date(asset.paymentDate).toISOString().split('T')[0] : null,
+      purchaseDate: asset.purchaseDate ? new Date(asset.purchaseDate).toISOString().split('T')[0] : null,
+      status: asset.status || 'active',
+      notes: asset.notes || '',
+      numberOfInstallments: asset.numberOfInstallments || null,
+      installmentAmount: asset.installmentAmount ? Number(asset.installmentAmount) : null,
+      installmentStartDate: asset.installmentStartDate ? new Date(asset.installmentStartDate).toISOString().split('T')[0] : null,
+      installmentEndDate: asset.installmentEndDate ? new Date(asset.installmentEndDate).toISOString().split('T')[0] : null,
+      createdAt: asset.createdAt ? new Date(asset.createdAt).toISOString() : null,
+      updatedAt: asset.updatedAt ? new Date(asset.updatedAt).toISOString() : null
+    }));
+
+    res.json({
+      success: true,
+      data: formattedAssets,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get family assets error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'সম্পদ তালিকা লোড করতে সমস্যা হয়েছে',
+      error: error.message
+    });
+  }
+});
+
+// ✅ GET: Get single family asset by ID
+app.get("/api/personal/family-assets/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'অবৈধ সম্পদ ID'
+      });
+    }
+
+    const asset = await assets.findOne({ _id: new ObjectId(id), isActive: { $ne: false } });
+
+    if (!asset) {
+      return res.status(404).json({
+        success: false,
+        message: 'সম্পদ পাওয়া যায়নি'
+      });
+    }
+
+    // Format response
+    const formattedAsset = {
+      _id: String(asset._id),
+      id: String(asset._id),
+      name: asset.name || '',
+      type: asset.type || '',
+      providerCompanyId: asset.providerCompanyId ? (asset.providerCompanyId instanceof ObjectId ? String(asset.providerCompanyId) : asset.providerCompanyId) : null,
+      providerCompanyName: asset.providerCompanyName || '',
+      totalPaidAmount: Number(asset.totalPaidAmount) || 0,
+      paymentType: asset.paymentType || 'one-time',
+      paymentDate: asset.paymentDate ? new Date(asset.paymentDate).toISOString().split('T')[0] : null,
+      purchaseDate: asset.purchaseDate ? new Date(asset.purchaseDate).toISOString().split('T')[0] : null,
+      status: asset.status || 'active',
+      notes: asset.notes || '',
+      numberOfInstallments: asset.numberOfInstallments || null,
+      installmentAmount: asset.installmentAmount ? Number(asset.installmentAmount) : null,
+      installmentStartDate: asset.installmentStartDate ? new Date(asset.installmentStartDate).toISOString().split('T')[0] : null,
+      installmentEndDate: asset.installmentEndDate ? new Date(asset.installmentEndDate).toISOString().split('T')[0] : null,
+      createdAt: asset.createdAt ? new Date(asset.createdAt).toISOString() : null,
+      updatedAt: asset.updatedAt ? new Date(asset.updatedAt).toISOString() : null
+    };
+
+    res.json({
+      success: true,
+      data: formattedAsset
+    });
+
+  } catch (error) {
+    console.error('❌ Get family asset error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'সম্পদ লোড করতে সমস্যা হয়েছে',
+      error: error.message
+    });
+  }
+});
+
+// ✅ PUT: Update family asset by ID
+app.put("/api/personal/family-assets/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'অবৈধ সম্পদ ID'
+      });
+    }
+
+    // Check if asset exists
+    const existingAsset = await assets.findOne({ _id: new ObjectId(id), isActive: { $ne: false } });
+    if (!existingAsset) {
+      return res.status(404).json({
+        success: false,
+        message: 'সম্পদ পাওয়া যায়নি'
+      });
+    }
+
+    // Prepare update document
+    const updateDoc = {
+      updatedAt: new Date()
+    };
+
+    // Update name
+    if (updateData.name !== undefined) {
+      if (!updateData.name || !String(updateData.name).trim()) {
+        return res.status(400).json({
+          success: false,
+          message: 'সম্পদের নাম খালি হতে পারে না'
+        });
+      }
+      updateDoc.name = String(updateData.name).trim();
+    }
+
+    // Update type
+    if (updateData.type !== undefined) {
+      const validTypes = ['Office Equipment', 'Vehicle', 'Furniture', 'IT Equipment', 'Other'];
+      if (!validTypes.includes(updateData.type)) {
+        return res.status(400).json({
+          success: false,
+          message: `সম্পদের ধরণ অবশ্যই হতে হবে: ${validTypes.join(', ')}`
+        });
+      }
+      updateDoc.type = String(updateData.type).trim();
+    }
+
+    // Update provider company
+    if (updateData.providerCompanyId !== undefined) {
+      updateDoc.providerCompanyId = updateData.providerCompanyId ? (ObjectId.isValid(updateData.providerCompanyId) ? new ObjectId(updateData.providerCompanyId) : String(updateData.providerCompanyId)) : null;
+    }
+
+    if (updateData.providerCompanyName !== undefined) {
+      updateDoc.providerCompanyName = updateData.providerCompanyName ? String(updateData.providerCompanyName).trim() : '';
+    }
+
+    // Update total paid amount
+    if (updateData.totalPaidAmount !== undefined) {
+      const amount = parseFloat(updateData.totalPaidAmount);
+      if (isNaN(amount) || amount <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'মোট পরিশোধিত মূল্য ০ এর চেয়ে বেশি হতে হবে'
+        });
+      }
+      updateDoc.totalPaidAmount = amount;
+    }
+
+    // Update payment type
+    if (updateData.paymentType !== undefined) {
+      if (updateData.paymentType !== 'one-time' && updateData.paymentType !== 'installment') {
+        return res.status(400).json({
+          success: false,
+          message: 'পরিশোধের ধরন অবশ্যই হতে হবে "one-time" বা "installment"'
+        });
+      }
+      updateDoc.paymentType = updateData.paymentType;
+    }
+
+    // Update payment date (for one-time)
+    if (updateData.paymentDate !== undefined) {
+      updateDoc.paymentDate = updateData.paymentDate ? new Date(updateData.paymentDate) : null;
+    }
+
+    // Update purchase date
+    if (updateData.purchaseDate !== undefined) {
+      if (!updateData.purchaseDate) {
+        return res.status(400).json({
+          success: false,
+          message: 'সম্পদ ক্রয়ের তারিখ আবশ্যক'
+        });
+      }
+      updateDoc.purchaseDate = new Date(updateData.purchaseDate);
+    }
+
+    // Update status
+    if (updateData.status !== undefined) {
+      if (updateData.status !== 'active' && updateData.status !== 'inactive') {
+        return res.status(400).json({
+          success: false,
+          message: 'স্ট্যাটাস অবশ্যই হতে হবে "active" বা "inactive"'
+        });
+      }
+      updateDoc.status = updateData.status;
+    }
+
+    // Update notes
+    if (updateData.notes !== undefined) {
+      updateDoc.notes = updateData.notes ? String(updateData.notes).trim() : '';
+    }
+
+    // Update installment fields
+    if (updateData.numberOfInstallments !== undefined) {
+      if (updateData.numberOfInstallments === null || updateData.numberOfInstallments === '') {
+        updateDoc.numberOfInstallments = null;
+      } else {
+        const installments = parseInt(updateData.numberOfInstallments);
+        if (isNaN(installments) || installments <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'কিস্তির সংখ্যা ০ এর চেয়ে বেশি হতে হবে'
+          });
+        }
+        updateDoc.numberOfInstallments = installments;
+      }
+    }
+
+    if (updateData.installmentAmount !== undefined) {
+      if (updateData.installmentAmount === null || updateData.installmentAmount === '') {
+        updateDoc.installmentAmount = null;
+      } else {
+        const amount = parseFloat(updateData.installmentAmount);
+        if (isNaN(amount) || amount <= 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'প্রতি কিস্তির পরিমাণ ০ এর চেয়ে বেশি হতে হবে'
+          });
+        }
+        updateDoc.installmentAmount = amount;
+      }
+    }
+
+    if (updateData.installmentStartDate !== undefined) {
+      updateDoc.installmentStartDate = updateData.installmentStartDate ? new Date(updateData.installmentStartDate) : null;
+    }
+
+    if (updateData.installmentEndDate !== undefined) {
+      updateDoc.installmentEndDate = updateData.installmentEndDate ? new Date(updateData.installmentEndDate) : null;
+    }
+
+    // Update asset
+    const result = await assets.updateOne(
+      { _id: new ObjectId(id), isActive: { $ne: false } },
+      { $set: updateDoc }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'সম্পদ পাওয়া যায়নি'
+      });
+    }
+
+    // Get updated asset
+    const updatedAsset = await assets.findOne({ _id: new ObjectId(id) });
+
+    // Format response
+    const formattedAsset = {
+      _id: String(updatedAsset._id),
+      id: String(updatedAsset._id),
+      name: updatedAsset.name || '',
+      type: updatedAsset.type || '',
+      providerCompanyId: updatedAsset.providerCompanyId ? (updatedAsset.providerCompanyId instanceof ObjectId ? String(updatedAsset.providerCompanyId) : updatedAsset.providerCompanyId) : null,
+      providerCompanyName: updatedAsset.providerCompanyName || '',
+      totalPaidAmount: Number(updatedAsset.totalPaidAmount) || 0,
+      paymentType: updatedAsset.paymentType || 'one-time',
+      paymentDate: updatedAsset.paymentDate ? new Date(updatedAsset.paymentDate).toISOString().split('T')[0] : null,
+      purchaseDate: updatedAsset.purchaseDate ? new Date(updatedAsset.purchaseDate).toISOString().split('T')[0] : null,
+      status: updatedAsset.status || 'active',
+      notes: updatedAsset.notes || '',
+      numberOfInstallments: updatedAsset.numberOfInstallments || null,
+      installmentAmount: updatedAsset.installmentAmount ? Number(updatedAsset.installmentAmount) : null,
+      installmentStartDate: updatedAsset.installmentStartDate ? new Date(updatedAsset.installmentStartDate).toISOString().split('T')[0] : null,
+      installmentEndDate: updatedAsset.installmentEndDate ? new Date(updatedAsset.installmentEndDate).toISOString().split('T')[0] : null,
+      createdAt: updatedAsset.createdAt ? new Date(updatedAsset.createdAt).toISOString() : null,
+      updatedAt: updatedAsset.updatedAt ? new Date(updatedAsset.updatedAt).toISOString() : null
+    };
+
+    res.json({
+      success: true,
+      message: 'সম্পদ সফলভাবে আপডেট করা হয়েছে',
+      data: formattedAsset
+    });
+
+  } catch (error) {
+    console.error('❌ Update family asset error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'সম্পদ আপডেট করতে সমস্যা হয়েছে',
+      error: error.message
+    });
+  }
+});
+
+// ✅ DELETE: Delete family asset by ID (soft delete)
+app.delete("/api/personal/family-assets/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'অবৈধ সম্পদ ID'
+      });
+    }
+
+    // Check if asset exists
+    const asset = await assets.findOne({ _id: new ObjectId(id), isActive: { $ne: false } });
+    if (!asset) {
+      return res.status(404).json({
+        success: false,
+        message: 'সম্পদ পাওয়া যায়নি'
+      });
+    }
+
+    // Soft delete by setting isActive to false
+    const result = await assets.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { isActive: false, updatedAt: new Date() } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'সম্পদ পাওয়া যায়নি'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'সম্পদ সফলভাবে মুছে ফেলা হয়েছে'
+    });
+
+  } catch (error) {
+    console.error('❌ Delete family asset error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'সম্পদ মুছতে সমস্যা হয়েছে',
+      error: error.message
+    });
+  }
+});
+
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
